@@ -2,7 +2,7 @@ FROM archlinux as build_env
 
 RUN pacman --disable-download-timeout --noconfirm -Syyu
 RUN pacman --disable-download-timeout --noconfirm -S base-devel \
-    fish llvm cmake lld git make gcc fmt nlohmann-json pugixml clang python sudo python-intelhex cli11
+    fish llvm cmake lld git make gcc fmt nlohmann-json pugixml clang python sudo python-intelhex cli11 freetype2
 
 RUN useradd trizenuser --create-home
 RUN echo "trizenuser ALL=(ALL) NOPASSWD: /usr/bin/pacman" > "/etc/sudoers.d/allow_nobody_to_pacman"
