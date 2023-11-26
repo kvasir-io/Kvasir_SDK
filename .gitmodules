@@ -1,0 +1,21 @@
+[submodule "uc_log"]
+	path = uc_log
+	url = https://github.com/dominicpoeschko/uc_log.git
+[submodule "cmake_git_version"]
+	path = cmake_git_version
+	url = https://github.com/dominicpoeschko/cmake_git_version.git
+[submodule "svd_converter"]
+	path = svd_converter
+	url = https://github.com/dominicpoeschko/svd_converter.git
+[submodule "lib/libcxx"]
+	path = lib/libcxx
+	url = https://github.com/dominicpoeschko/libcxx.git
+[submodule "lib/libc"]
+	path = lib/libc
+	url = https://github.com/dominicpoeschko/libc.git
+[submodule "lib/libm"]
+	path = lib/libm
+	url = https://github.com/dominicpoeschko/libm.git
+[submodule "lib/compiler-rt"]
+	path = lib/compiler-rt
+	url = https://github.com/dominicpoeschko/compiler-rt.git
