@@ -2,7 +2,7 @@ FROM archlinux as build_env
 
 RUN pacman --disable-download-timeout --noconfirm -Syyu
 RUN pacman --disable-download-timeout --noconfirm --needed -S base-devel \
-    fish llvm cmake lld git make gcc fmt nlohmann-json pugixml clang python sudo python-intelhex cli11
+    fish llvm cmake lld git make gcc fmt nlohmann-json pugixml clang python sudo python-intelhex cli11 boost
 
 ARG PACKMANEXTRAPACKAGES=""
 RUN pacman --disable-download-timeout --noconfirm --needed -S base-devel $(echo "$PACKMANEXTRAPACKAGES")
