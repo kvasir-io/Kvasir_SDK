@@ -15,6 +15,8 @@ set(
   compliler_common_cxx_flags
   -std=c++2b
   -fno-exceptions
+  -fno-unwind-tables
+  -fno-use-cxa-atexit
   -fno-rtti
   -fno-threadsafe-statics
   -fstrict-enums
