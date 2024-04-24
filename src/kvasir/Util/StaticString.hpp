@@ -117,7 +117,7 @@ struct StaticString {
 };
 
 template<char... chars>
-constexpr StaticString<sizeof...(chars)> operator"" _ss() {
+constexpr StaticString<sizeof...(chars)> operator""_ss() {
     StaticString<sizeof...(chars)> ret;
     std::array                     s{chars...};
     std::copy(s.begin(), s.end(), ret.buff.begin());
