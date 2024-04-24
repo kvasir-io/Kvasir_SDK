@@ -206,6 +206,7 @@ set(common_warning_flags
     -Wno-c++98-compat
     -Wno-c++98-compat-pedantic
     -Wno-c++20-compat
+    -Wno-pre-c2x-compat
     -pedantic-errors
     -Wno-padded
     -Wno-covered-switch-default
