@@ -336,7 +336,9 @@ function(
       MAP_FILE
       ${name}.map
       HEX_FILE
-      "${name}_flash.hex")
+      "${name}_flash.hex"
+      GUI_TYPE
+      ${UCLOG_GUI_TYPE})
 
   endif()
 endfunction()

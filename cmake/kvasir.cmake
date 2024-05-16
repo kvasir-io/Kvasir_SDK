@@ -44,6 +44,11 @@ set(JLINK_IP
     ""
     CACHE STRING "Choose the ip address of jlink if not using USB")
 
+set(UCLOG_GUI_TYPE
+    simple
+    CACHE STRING "Choose the gui type for uclog, options are: simple ftxui")
+set_property(CACHE UCLOG_GUI_TYPE PROPERTY STRINGS simple ftxui)
+
 if(COMPILE_TARGET STREQUAL arm_clang)
   set(CPPLIB
       libc++
