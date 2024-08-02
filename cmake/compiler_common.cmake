@@ -7,7 +7,6 @@ set(
   -fomit-frame-pointer
   -fmerge-all-constants
   -fstack-protector-strong
-  -ffast-math
   -Wno-unused-macros
 )
 

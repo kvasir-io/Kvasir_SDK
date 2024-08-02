@@ -203,6 +203,8 @@ list(TRANSFORM system_libs PREPEND "--library=")
 
 set(common_warning_flags
     -Weverything
+    -Wno-switch-default
+    -Wnan-infinity-disabled
     -Wno-c++98-compat
     -Wno-c++98-compat-pedantic
     -Wno-c++20-compat
