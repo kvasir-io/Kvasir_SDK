@@ -1,4 +1,4 @@
-FROM archlinux as build_env
+FROM archlinux AS build_env
 
 RUN pacman --disable-download-timeout --noconfirm -Syyu
 RUN pacman --disable-download-timeout --noconfirm --needed -S base-devel \
@@ -20,5 +20,5 @@ RUN git config --global --add safe.directory /project
 RUN mkdir /project
 WORKDIR /project
 
-FROM build_env as build
-ENTRYPOINT /project/kvasir/docker_build.sh
+FROM build_env AS build
+ENTRYPOINT ["/project/kvasir/docker_build.sh"]

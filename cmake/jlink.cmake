@@ -1,4 +1,7 @@
 function(target_add_flash_jlink target)
+  if(POLICY CMP0174)
+    cmake_policy(SET CMP0174 NEW)
+  endif()
   cmake_parse_arguments(
     PARSE_ARGV
     1

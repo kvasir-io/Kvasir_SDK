@@ -132,11 +132,13 @@ set(sanitize_option
     -fsanitize=undefined
     -fsanitize=implicit-integer-truncation
     -fsanitize=implicit-integer-arithmetic-value-change
-    -fsanitize=implicit-conversion
+    # -fsanitize=implicit-conversion
     # -fsanitize=integer
     -fsanitize=nullability
     # runtime
-    -fsanitize-minimal-runtime)
+    -fsanitize-minimal-runtime
+    -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG
+)
 
 set(system_includes)
 
@@ -244,6 +246,8 @@ if("${CPPLIB}" STREQUAL "libc++")
     -D_LIBCPP_HAS_NO_GLOBAL_FILESYSTEM_NAMESPACE
     -D_LIBCPP_HAS_NO_STDIN
     -D_LIBCPP_HAS_NO_STDOUT
+    -D_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS
+    -D_LIBCPP_HARDENING_MODE_DEFAULT=_LIBCPP_HARDENING_MODE_FAST
     # -D_LIBCXXABI_NO_EXCEPTIONS -D_LIBCPP_NO_EXCEPTIONS -D_LIBCPP_NO_RTTI
     # -D_LIBCPP_DISABLE_NEW_DELETE_DEFINITIONS -D_LIBCXXABI_HAS_NO_THREADS
   )

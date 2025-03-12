@@ -316,14 +316,14 @@ namespace Kvasir { namespace Startup {
 #ifdef __arm__
 
 namespace uc_log {
-template<std::uint32_t Line, typename Filename, typename Expr>
+template<int Line, typename Filename, typename Expr>
 inline void log_assert() {
     UC_LOG_IMPL(
       uc_log::LogLevel::crit,
       Line,
-      Filename{}(),
+      std::string_view{Filename{}()},
       sc::escape(
-        sc::create(Expr{}),
+        sc::create([](){return std::string_view{Expr{}()};}),
         [](auto c) { return c == '{' || c == '}'; },
         [](auto c) { return c; }));
 }
@@ -362,6 +362,7 @@ extern "C" {
 [[gnu::used]] inline void __ubsan_handle_negate_overflow_minimal() { UC_LOG_C("UB"); }
 [[gnu::used]] inline void __ubsan_handle_builtin_unreachable_minimal() { UC_LOG_C("UB"); }
 [[gnu::used]] inline void __ubsan_handle_out_of_bounds_minimal() { UC_LOG_C("UB"); }
+[[gnu::used]] inline void __ubsan_handle_function_type_mismatch_minimal() { UC_LOG_C("UB"); }
 }
 
 namespace std {

@@ -278,7 +278,7 @@ namespace sv_detail {
             using data_t = std::conditional_t<
               !Const<T>,
               std::array<T, Capacity>,
-              const std::array<std::remove_const_t<T>, Capacity>>;
+              std::array<std::remove_const_t<T>, Capacity> const>;
             alignas(alignof(T)) data_t data_{};
 
             /// Number of elements allocated in the storage:
@@ -404,11 +404,11 @@ namespace sv_detail {
             /// Number of elements allocated in the embedded storage:
             size_type size_ = 0;
 
-            using aligned_storage_t = std::
-              aligned_storage_t<sizeof(std::remove_const_t<T>), alignof(std::remove_const_t<T>)>;
-            using data_t
-              = std::conditional_t<!Const<T>, aligned_storage_t, aligned_storage_t const>;
-            alignas(alignof(T)) data_t data_[Capacity]{};
+            using data_t = std::conditional_t<
+              !Const<T>,
+              std::array<T, Capacity>,
+              std::array<std::remove_const_t<T>, Capacity> const>;
+            alignas(alignof(T)) data_t data_{};
             // FIXME: ^ this won't work for types with "broken" alignof
             // like SIMD types (one would also need to provide an
             // overload of operator new to make heap allocations of this

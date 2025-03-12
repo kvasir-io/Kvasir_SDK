@@ -3,4 +3,4 @@
 mkdir -p docker_build
 cd docker_build
 cmake ..
-make
+cmake --build . -j $(nproc)

@@ -12,7 +12,7 @@ set(
 
 set(
   compliler_common_cxx_flags
-  -std=c++2b
+  -std=c++23
   -fno-exceptions
   -fno-unwind-tables
   -fno-use-cxa-atexit
@@ -23,7 +23,7 @@ set(
 
 set(
   compliler_common_c_flags
-  -std=c2x
+  -std=c23
 )
 
 set(compliler_common_asm_flags)
