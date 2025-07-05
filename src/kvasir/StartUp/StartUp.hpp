@@ -114,7 +114,7 @@ namespace Kvasir { namespace Startup {
         template<typename T, typename U>
         struct ExtractIsr<T, U, VoidT<typename T::Isr>> : T::Isr {};
         template<typename T>
-        struct ExtractIsr<T, void, VoidT<decltype(T::isr)>> : decltype(T::isr) {};
+        struct ExtractIsr<T, void, VoidT<decltype(T::isr)>> : std::remove_const_t<decltype(T::isr)> {};
 
     }   // namespace Detail
     template<typename... Ts>

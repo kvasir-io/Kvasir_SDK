@@ -211,6 +211,7 @@ set(common_warning_flags
     -Wno-c++98-compat-pedantic
     -Wno-c++20-compat
     -Wno-pre-c2x-compat
+    -Wno-pre-c11-compat
     -pedantic-errors
     -Wno-padded
     -Wno-covered-switch-default
@@ -227,7 +228,9 @@ set(common_warning_flags
     -Wno-documentation
     -Wno-declaration-after-statement
     -Wno-braced-scalar-init
-    -Wno-unsafe-buffer-usage)
+    -Wno-unsafe-buffer-usage
+
+)
 
 set(profile_flags)
 
@@ -257,9 +260,9 @@ set(common_flags
     ${target_flags} ${common_warning_flags} ${profile_flags} ${system_includes}
     ${compliler_common_flags} ${arm_compliler_common_flags})
 
-set(cxx_flags ${common_flags} ${compliler_common_cxx_flags})
+set(cxx_flags ${common_flags} ${compliler_common_cxx_flags} -nostdinc++)
 
-set(c_flags ${common_flags} ${compliler_common_c_flags})
+set(c_flags ${common_flags} ${compliler_common_c_flags} -nostdinc)
 
 set(asm_flags ${common_flags} ${compliler_common_asm_flags})
 
