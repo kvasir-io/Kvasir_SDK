@@ -11,21 +11,28 @@ namespace Io {
     namespace Action {
         template<PullConfiguration PC>
         struct Input {};
+
         template<OutputType OT, OutputSpeed OS>
         struct Output {};
+
         struct Set {};
+
         struct Clear {};
+
         struct Toggle {};
+
         struct Read {};
+
         struct Analog {};
-        template<
-          int               I,
-          OutputType        OT = OutputType::PushPull,
-          OutputSpeed       OS = OutputSpeed::Low,
-          PullConfiguration PC = PullConfiguration::PullNone>
+
+        template<int               I,
+                 OutputType        OT = OutputType::PushPull,
+                 OutputSpeed       OS = OutputSpeed::Low,
+                 PullConfiguration PC = PullConfiguration::PullNone>
         struct PinFunction {
             static constexpr int value = I;
         };
+
         static constexpr Input<PullConfiguration::PullNone>              input{};
         static constexpr Input<PullConfiguration::PullNone>              inputPN{};
         static constexpr Input<PullConfiguration::PullUp>                inputPU{};
@@ -80,6 +87,7 @@ namespace Io {
     struct NotUsed {};
 
 }   // namespace Io
+
 // Pin location needs to live in Register in order for the factory functions to be found by ADL
 namespace Register {
     template<int Port, int Pin>

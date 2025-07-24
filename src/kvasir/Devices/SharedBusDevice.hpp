@@ -41,9 +41,11 @@ struct SharedBusDevice {
         error_count = 0;
         reset_count = 1;
     }
+
     template<typename T>
     struct Fail {
-        static_assert(std::is_void_v<T>, "invalid resetter");
+        static_assert(std::is_void_v<T>,
+                      "invalid resetter");
     };
 
     template<typename... Resetter>

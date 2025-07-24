@@ -6,11 +6,12 @@ namespace Kvasir {
 template<typename ValueType, ValueType min, ValueType max>
 struct SaturatingValue {
 private:
-    ValueType                  v{};
+    ValueType v{};
+
     static constexpr ValueType clamped(ValueType vv) { return std::clamp(vv, min, max); }
 
 public:
-    constexpr auto operator<=>(const SaturatingValue&) const = default;
+    constexpr auto operator<=>(SaturatingValue const&) const = default;
 
     constexpr SaturatingValue() : SaturatingValue{ValueType{}} {}
 

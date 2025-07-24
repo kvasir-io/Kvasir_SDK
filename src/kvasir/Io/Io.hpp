@@ -2,6 +2,7 @@
 #include "PinFactories.hpp"
 #include "Types.hpp"
 #include "kvasir/Mpl/Utility.hpp"
+
 //#include "PortFactories.hpp"
 
 namespace Kvasir { namespace Io {
@@ -74,4 +75,4 @@ namespace Kvasir { namespace Io {
 
     template<typename T = void>
     struct PinLocationTraits;   // must be specialized in a chipxxxInterrupt file
-}}                              // namespace Kvasir::Io
+}}   // namespace Kvasir::Io

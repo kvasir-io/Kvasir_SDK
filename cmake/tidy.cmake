@@ -1,3 +1,7 @@
+# Clang-Tidy Static Analysis Configuration
+# Configures clang-tidy static analysis tool integration
+# Provides functions to enable modern C++ linting on targets
+
 set(
   USE_TIDY
   false

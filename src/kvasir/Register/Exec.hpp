@@ -19,7 +19,8 @@ namespace Kvasir { namespace Register {
                 static constexpr auto clearOrZeroIsNoChangeMask
                   = ClearMask | Address::writeIgnoredIfZeroMask;
                 static constexpr auto oneIsNoChangeMask
-                  = (Address::writeIgnoredIfOneMask & ~ClearMask);   // remove the bits we are working on
+                  = (Address::writeIgnoredIfOneMask
+                     & ~ClearMask);   // remove the bits we are working on
                 static constexpr auto bitsWithFixedValues
                   = oneIsNoChangeMask | clearOrZeroIsNoChangeMask;
                 static constexpr auto     allBitsSetMask = Address::allBitsSetMask;
@@ -45,7 +46,8 @@ namespace Kvasir { namespace Register {
                 static constexpr auto clearOrZeroIsNoChangeMask
                   = ClearMask | Address::writeIgnoredIfZeroMask;
                 static constexpr auto oneIsNoChangeMask
-                  = (Address::writeIgnoredIfOneMask & ~ClearMask);   // remove the bits we are working on
+                  = (Address::writeIgnoredIfOneMask
+                     & ~ClearMask);   // remove the bits we are working on
                 static constexpr auto bitsWithFixedValues
                   = oneIsNoChangeMask | clearOrZeroIsNoChangeMask;
                 static constexpr auto     allBitsSetMask = Address::allBitsSetMask;
@@ -65,30 +67,28 @@ namespace Kvasir { namespace Register {
         };
 
         // write literal with read modify write
-        template<
-          typename TAddress,
-          unsigned Mask,
-          typename Access,
-          typename FieldType,
-          unsigned Data>
-        struct RegisterExec<Register::Action<
-          FieldLocation<TAddress, Mask, Access, FieldType>,
-          WriteLiteralAction<Data>>>
+        template<typename TAddress,
+                 unsigned Mask,
+                 typename Access,
+                 typename FieldType,
+                 unsigned Data>
+        struct RegisterExec<Register::Action<FieldLocation<TAddress, Mask, Access, FieldType>,
+                                             WriteLiteralAction<Data>>>
           : GenericReadMaskOrWrite<FieldLocation<TAddress, Mask, Access, FieldType>, Mask, Data> {
-            static_assert((Data & (~Mask)) == 0, "bad mask");
+            static_assert((Data & (~Mask)) == 0,
+                          "bad mask");
         };
 
-        template<
-          typename TAddress,
-          unsigned Mask,
-          typename Access,
-          typename FieldType,
-          unsigned Data>
-        struct RegisterExec<Register::Action<
-          FieldLocation<TAddress, Mask, Access, FieldType>,
-          WriteRuntimeAndLiteralAction<Data>>>
+        template<typename TAddress,
+                 unsigned Mask,
+                 typename Access,
+                 typename FieldType,
+                 unsigned Data>
+        struct RegisterExec<Register::Action<FieldLocation<TAddress, Mask, Access, FieldType>,
+                                             WriteRuntimeAndLiteralAction<Data>>>
           : GenericReadMaskOrWrite<FieldLocation<TAddress, Mask, Access, FieldType>, Mask, Data> {
-            static_assert((Data & (~Mask)) == 0, "bad mask");
+            static_assert((Data & (~Mask)) == 0,
+                          "bad mask");
         };
 
         template<typename TAddress, unsigned Mask, typename Access, typename FieldType>
@@ -101,17 +101,17 @@ namespace Kvasir { namespace Register {
           Register::Action<FieldLocation<TAddress, Mask, Access, FieldType>, ReadAction>> {
             unsigned operator()(unsigned = 0) { return GetAddress<TAddress>::read(); }
         };
-        template<
-          typename TAddress,
-          unsigned Mask,
-          typename Access,
-          typename FieldType,
-          unsigned Data>
-        struct RegisterExec<Register::Action<
-          FieldLocation<TAddress, Mask, Access, FieldType>,
-          XorLiteralAction<Data>>>
+
+        template<typename TAddress,
+                 unsigned Mask,
+                 typename Access,
+                 typename FieldType,
+                 unsigned Data>
+        struct RegisterExec<Register::Action<FieldLocation<TAddress, Mask, Access, FieldType>,
+                                             XorLiteralAction<Data>>>
           : GenericReadMaskXorWrite<FieldLocation<TAddress, Mask, Access, FieldType>, Mask, Data> {
-            static_assert((Data & (~Mask)) == 0, "bad mask");
+            static_assert((Data & (~Mask)) == 0,
+                          "bad mask");
         };
     }   // namespace Detail
 

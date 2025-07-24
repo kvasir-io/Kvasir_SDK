@@ -1,10 +1,11 @@
 #pragma once
 
 #include "Types.hpp"
+
 namespace Kvasir { namespace MPL {
 
     template<class T>
-    void ignore(T const&) {}   // used to surpress compiler warning
+    void ignore(T const&) {}   // used to suppress compiler warning
 
     // type traits equivalents in case there is no standard library
     //#if (_MSC_VER == 1900)
@@ -23,6 +24,7 @@ namespace Kvasir { namespace MPL {
     struct TypeSink {
         using type = void;
     };
+
     template<typename T>
     using VoidT = typename TypeSink<T>::type;
 
@@ -33,31 +35,39 @@ namespace Kvasir { namespace MPL {
 
     template<typename T>
     typename AddRvalueReference<T>::type Declval();
+
     //#endif
     // invert bool types
     template<typename T>
     struct Not {
-        static_assert(AlwaysFalse<T>::value, "implausible type");
+        static_assert(AlwaysFalse<T>::value,
+                      "implausible type");
     };
+
     template<>
     struct Not<TrueType> : FalseType {};
+
     template<>
     struct Not<FalseType> : TrueType {};
 
     template<typename T>
     using NotT = typename Not<T>::type;
 
-    // predecate returning result of left < right
+    // predicate returning result of left < right
     template<typename TLeft, typename TRight>
     struct Less {
-        static_assert(AlwaysFalse<TLeft>::value, "implausible type");
+        static_assert(AlwaysFalse<TLeft>::value,
+                      "implausible type");
     };
+
     template<typename T, T v1, T v2>
     struct Less<Value<T, v1>, Value<T, v2>> : Bool<(v1 < v2)> {};
+
     using LessP = Template<Less>;
 
     template<typename T>
     struct IsValue : FalseType {};
+
     template<typename T, T I>
     struct IsValue<MPL::Value<T, I>> : TrueType {};
 
@@ -79,28 +89,40 @@ namespace Kvasir { namespace MPL {
 
     template<typename T>
     struct IsIntegral : FalseType {};
+
     template<>
     struct IsIntegral<long long> : TrueType {};
+
     template<>
     struct IsIntegral<unsigned long long> : TrueType {};
+
     template<>
     struct IsIntegral<long> : TrueType {};
+
     template<>
     struct IsIntegral<unsigned long> : TrueType {};
+
     template<>
     struct IsIntegral<int> : TrueType {};
+
     template<>
     struct IsIntegral<unsigned> : TrueType {};
+
     template<>
     struct IsIntegral<short> : TrueType {};
+
     template<>
     struct IsIntegral<unsigned short> : TrueType {};
+
     template<>
     struct IsIntegral<char> : TrueType {};
+
     template<>
     struct IsIntegral<signed char> : TrueType {};
+
     template<>
     struct IsIntegral<unsigned char> : TrueType {};
+
     template<>
     struct IsIntegral<bool> : TrueType {};
 
@@ -111,6 +133,7 @@ namespace Kvasir { namespace MPL {
     struct RemoveConst {
         using type = T;
     };
+
     template<class T>
     struct RemoveConst<T const> {
         using type = T;
@@ -120,6 +143,7 @@ namespace Kvasir { namespace MPL {
     struct RemoveVolatile {
         using type = T;
     };
+
     template<class T>
     struct RemoveVolatile<T volatile> {
         using type = T;
@@ -136,6 +160,7 @@ namespace Kvasir { namespace MPL {
     // equivalent to std::enable_if
     template<bool, typename U = void>
     struct EnableIf {};
+
     template<typename U>
     struct EnableIf<true, U> {
         using type = U;
@@ -163,8 +188,10 @@ namespace Kvasir { namespace MPL {
 
     template<typename TList>
     struct Size;
+
     template<typename... Ts>
     struct Size<brigand::list<Ts...>> : Int<int{sizeof...(Ts)}> {};
+
     template<typename TList>
     using SizeT = typename Size<TList>::type;
 
@@ -172,6 +199,7 @@ namespace Kvasir { namespace MPL {
     struct Conditional {
         using type = U;
     };
+
     template<typename T, typename U>
     struct Conditional<true, T, U> {
         using type = T;
@@ -183,10 +211,10 @@ namespace Kvasir { namespace MPL {
     // helper recursively derives from a list of base classes
     template<typename TTemplateList, typename... Ts>
     struct DeriveFromTemplates {
-        static_assert(
-          AlwaysFalse<TTemplateList>::value,
-          "implausible type, first parameter must be a MPL::List");
+        static_assert(AlwaysFalse<TTemplateList>::value,
+                      "implausible type, first parameter must be a MPL::List");
     };
+
     template<typename... Ts, typename... Us>
     struct DeriveFromTemplates<brigand::list<Ts...>, Us...> : ApplyTemplateT<Ts, Us...>... {};
 

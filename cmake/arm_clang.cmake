@@ -1,3 +1,7 @@
+# ARM Clang Compiler Configuration
+# Configures the build environment for ARM targets using Clang/LLVM toolchain
+# Supports both custom libc++ and GCC libstdc++ standard libraries
+
 include(${CMAKE_CURRENT_LIST_DIR}/compiler_common.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/arm_compiler_common.cmake)
 
@@ -105,7 +109,7 @@ set(sanitize_option
     -fsanitize=enum
     -fsanitize=float-cast-overflow
     -fsanitize=float-divide-by-zero
-    -fsanitize=implicit-unsigned-integer-truncation,
+    -fsanitize=implicit-unsigned-integer-truncation
     -fsanitize=implicit-signed-integer-truncation
     -fsanitize=implicit-unsigned-integer-truncation
     -fsanitize=implicit-signed-integer-truncation
@@ -258,13 +262,13 @@ endif()
 
 set(common_flags
     ${target_flags} ${common_warning_flags} ${profile_flags} ${system_includes}
-    ${compliler_common_flags} ${arm_compliler_common_flags})
+    ${compiler_common_flags} ${arm_compiler_common_flags})
 
-set(cxx_flags ${common_flags} ${compliler_common_cxx_flags} -nostdinc++)
+set(cxx_flags ${common_flags} ${compiler_common_cxx_flags} -nostdinc++)
 
-set(c_flags ${common_flags} ${compliler_common_c_flags} -nostdinc)
+set(c_flags ${common_flags} ${compiler_common_c_flags} -nostdinc)
 
-set(asm_flags ${common_flags} ${compliler_common_asm_flags})
+set(asm_flags ${common_flags} ${compiler_common_asm_flags})
 
 set(linker_flags
     ${linker_common_flags}

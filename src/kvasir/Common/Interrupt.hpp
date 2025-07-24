@@ -8,13 +8,20 @@
 namespace Kvasir { namespace Nvic {
     namespace Action {
         struct Enable {};
+
         struct Disable {};
+
         struct Read {};
+
         struct SetPending {};
+
         struct ClearPending {};
+
         template<int I>
         struct SetPriority {};
+
         struct TriggerInterrupt {};
+
         static constexpr Enable           enable{};
         static constexpr Disable          disable{};
         static constexpr SetPending       setPending{};
@@ -33,21 +40,25 @@ namespace Kvasir { namespace Nvic {
     template<int I>
     struct Index {
         static constexpr int value = I;
-        constexpr int        index() const { return value; }
+
+        constexpr int index() const { return value; }
     };
 
     template<typename TAction, typename TIndex>
     struct MakeAction {
-        static_assert(
-          MPL::AlwaysFalse<TAction>::value,
-          "could not find this configuration in the included Core");
+        static_assert(MPL::AlwaysFalse<TAction>::value,
+                      "could not find this configuration in the included Core");
     };
 
     template<typename TAction, typename TIndex>
     using MakeActionT = typename MakeAction<TAction, TIndex>::type;
 
-    template<typename TAction, typename TIndex>
-    constexpr MakeActionT<TAction, TIndex> action(TAction, TIndex) {
+    template<typename TAction,
+             typename TIndex>
+    constexpr MakeActionT<TAction,
+                          TIndex>
+    action(TAction,
+           TIndex) {
         return {};
     }
 
@@ -55,6 +66,7 @@ namespace Kvasir { namespace Nvic {
     constexpr auto makeEnable(Index<I>) {
         return MakeActionT<Action::Enable, Index<I>>{};
     }
+
     template<typename... Ts>
     constexpr auto makeEnable(brigand::list<Ts...>) {
         return MPL::list(makeEnable(Ts{})...);
@@ -64,6 +76,7 @@ namespace Kvasir { namespace Nvic {
     constexpr auto makeDisable(Index<I>) {
         return MakeActionT<Action::Disable, Index<I>>{};
     }
+
     template<typename... Ts>
     constexpr auto makeDisable(brigand::list<Ts...>) {
         return MPL::list(makeDisable(Ts{})...);
@@ -73,6 +86,7 @@ namespace Kvasir { namespace Nvic {
     constexpr auto makeRead(Index<I>) {
         return MakeActionT<Action::Read, Index<I>>{};
     }
+
     template<typename... Ts>
     constexpr auto makeRead(brigand::list<Ts...>) {
         return MPL::list(makeRead(Ts{})...);
@@ -82,6 +96,7 @@ namespace Kvasir { namespace Nvic {
     constexpr auto makeSetPending(Index<I>) {
         return MakeActionT<Action::SetPending, Index<I>>{};
     }
+
     template<typename... Ts>
     constexpr auto makeSetPending(brigand::list<Ts...>) {
         return MPL::list(makeSetPending(Ts{})...);
@@ -91,6 +106,7 @@ namespace Kvasir { namespace Nvic {
     constexpr auto makeClearPending(Index<I>) {
         return MakeActionT<Action::ClearPending, Index<I>>{};
     }
+
     template<typename... Ts>
     constexpr auto makeClearPending(brigand::list<Ts...>) {
         return MPL::list(makeClearPending(Ts{})...);
@@ -100,16 +116,20 @@ namespace Kvasir { namespace Nvic {
     constexpr auto makeTriggerInterrupt(Index<I>) {
         return MakeActionT<Action::TriggerInterrupt, Index<I>>{};
     }
+
     template<typename... Ts>
     constexpr auto makeTriggerInterrupt(brigand::list<Ts...>) {
         return MPL::list(makeTriggerInterrupt(Ts{})...);
     }
 
-    template<int Priority, int I>
+    template<int Priority,
+             int I>
     constexpr auto makeSetPriority(Index<I>) {
         return MakeActionT<Action::SetPriority<Priority>, Index<I>>{};
     }
-    template<int Priority, typename... Ts>
+
+    template<int Priority,
+             typename... Ts>
     constexpr auto makeSetPriority(brigand::list<Ts...>) {
         return MPL::list(makeSetPriority<Priority>(Ts{})...);
     }

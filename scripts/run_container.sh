@@ -2,6 +2,8 @@
 
 set -e
 
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then echo "Usage: $0 [-it] - Builds project (default) or opens interactive shell (-it)"; exit 0; fi
+
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 ${SCRIPT_DIR}/create_container.sh

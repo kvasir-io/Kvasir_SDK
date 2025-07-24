@@ -28,41 +28,50 @@ namespace Kvasir { namespace Startup {
     namespace Detail {
         using namespace MPL;
         namespace br = brigand;
+
         template<typename T>
         struct Listify {
-            static_assert(AlwaysFalse<T>::value, "implausible type");
+            static_assert(AlwaysFalse<T>::value,
+                          "implausible type");
         };
+
         template<typename T, typename U>
         struct Listify<Register::Action<T, U>> : br::list<Register::Action<T, U>> {};
+
         template<typename... Ts>
         struct Listify<br::list<Ts...>> : br::list<Ts...> {};
 
         template<typename T, typename = void>
         struct GetPowerClockInit : br::list<> {};
+
         template<typename T>
         struct GetPowerClockInit<T, VoidT<decltype(T::powerClockEnable)>>
           : Listify<RemoveCVT<decltype(T::powerClockEnable)>> {};
 
         template<typename T, typename = void, typename = void>
         struct GetPinInit : br::list<> {};
+
         template<typename T>
         struct GetPinInit<T, void, VoidT<decltype(T::initStepPinConfig)>>
           : Listify<RemoveCVT<decltype(T::initStepPinConfig)>> {};
 
         template<typename T, typename = void, typename = void>
         struct GetPeripheryInit : br::list<> {};
+
         template<typename T>
         struct GetPeripheryInit<T, void, VoidT<decltype(T::initStepPeripheryConfig)>>
           : Listify<RemoveCVT<decltype(T::initStepPeripheryConfig)>> {};
 
         template<typename T, typename = void, typename = void>
         struct GetInterruptInit : br::list<> {};
+
         template<typename T>
         struct GetInterruptInit<T, void, VoidT<decltype(T::initStepInterruptConfig)>>
           : Listify<RemoveCVT<decltype(T::initStepInterruptConfig)>> {};
 
         template<typename T, typename = void, typename = void>
         struct GetPeripheryEnableInit : br::list<> {};
+
         template<typename T>
         struct GetPeripheryEnableInit<T, void, VoidT<decltype(T::initStepPeripheryEnable)>>
           : Listify<RemoveCVT<decltype(T::initStepPeripheryEnable)>> {};
@@ -75,56 +84,63 @@ namespace Kvasir { namespace Startup {
 
         template<int I, typename TList, typename TModList>
         struct CompileIsrPointerList;
+
         template<int I, typename... Ts, typename TModList>
         struct CompileIsrPointerList<I, br::list<Ts...>, TModList>
           : CompileIsrPointerList<
               I + 1,
-              br::list<
-                Ts...,
-                GetT<TModList, Template<IsIsrByIndex<I>::template Apply>, Nvic::UnusedIsr>>,
+              br::list<Ts...,
+                       GetT<TModList, Template<IsIsrByIndex<I>::template Apply>, Nvic::UnusedIsr>>,
               TModList> {};
-        template<typename... Ts, typename TModList>
-        struct CompileIsrPointerList<
-          Nvic::InterruptOffsetTraits<void>::end,
-          br::list<Ts...>,
-          TModList> : br::list<Ts...> {};
 
-        // predecate retuning result of left < right for RegisterOptions
+        template<typename... Ts, typename TModList>
+        struct CompileIsrPointerList<Nvic::InterruptOffsetTraits<void>::end,
+                                     br::list<Ts...>,
+                                     TModList> : br::list<Ts...> {};
+
+        // predicate returning result of left < right for RegisterOptions
         template<typename TLeft, typename TRight>
         struct ListLengthLess : Bool<(SizeT<TLeft>::value < SizeT<TRight>::value)> {};
+
         using ListLengthLessP = Template<ListLengthLess>;
 
         template<typename TOut, typename TList>
         struct Merge;
+
         template<typename... Os, typename... Ts>
         struct Merge<br::list<Os...>, br::list<br::list<>, Ts...>>
           : Merge<   // if next is empty list remove it and continue
               br::list<Os...>,
               br::list<Ts...>> {};
+
         template<typename... Os, typename... Ts>
         struct Merge<br::list<Os...>, br::list<Ts...>>
-          : Merge<
-              br::list<Os..., br::flatten<br::list<AtT<Ts, Int<0>>...>>>,
-              br::list<RemoveT<Ts, Int<0>, Int<1>>...>> {};
+          : Merge<br::list<Os..., br::flatten<br::list<AtT<Ts, Int<0>>...>>>,
+                  br::list<RemoveT<Ts, Int<0>, Int<1>>...>> {};
+
         template<typename... Os>
         struct Merge<br::list<Os...>, br::list<>> : br::list<Os...> {};
 
         template<typename T, typename = void, typename = void>
         struct ExtractIsr : br::list<> {};
+
         template<typename T, typename U>
         struct ExtractIsr<T, U, VoidT<typename T::Isr>> : T::Isr {};
+
         template<typename T>
-        struct ExtractIsr<T, void, VoidT<decltype(T::isr)>> : std::remove_const_t<decltype(T::isr)> {};
+        struct ExtractIsr<T, void, VoidT<decltype(T::isr)>>
+          : std::remove_const_t<decltype(T::isr)> {};
 
     }   // namespace Detail
+
     template<typename... Ts>
     struct GetIsrPointers
       : Detail::CompileIsrPointerList<
           Nvic::InterruptOffsetTraits<void>::begin,
-          brigand::list<
-            Nvic::Isr<std::addressof(_LINKER_stack_end_), Nvic::Index<0>>,
-            Nvic::Isr<ResetISR, Nvic::Index<0>>>,
+          brigand::list<Nvic::Isr<std::addressof(_LINKER_stack_end_), Nvic::Index<0>>,
+                        Nvic::Isr<ResetISR, Nvic::Index<0>>>,
           brigand::flatten<brigand::list<typename Detail::ExtractIsr<Ts>::type...>>> {};
+
     template<typename... Ts>
     using GetIsrPointersT = typename GetIsrPointers<Ts...>::type;
 
@@ -135,6 +151,7 @@ namespace Kvasir { namespace Startup {
           = brigand::list<brigand::flatten<typename Detail::GetPowerClockInit<Ts>::type>...>;
         using type = brigand::flatten<FlattenedSequencePieces>;
     };
+
     template<typename... Ts>
     using GetPowerClockInitT = typename GetPowerClockInit<Ts...>::type;
 
@@ -145,6 +162,7 @@ namespace Kvasir { namespace Startup {
           = brigand::list<brigand::flatten<typename Detail::GetPinInit<Ts>::type>...>;
         using type = brigand::flatten<FlattenedSequencePieces>;
     };
+
     template<typename... Ts>
     using GetPinInitT = typename GetPinInit<Ts...>::type;
 
@@ -155,6 +173,7 @@ namespace Kvasir { namespace Startup {
           = brigand::list<brigand::flatten<typename Detail::GetPeripheryInit<Ts>::type>...>;
         using type = brigand::flatten<FlattenedSequencePieces>;
     };
+
     template<typename... Ts>
     using GetPeripheryInitT = typename GetPeripheryInit<Ts...>::type;
 
@@ -165,6 +184,7 @@ namespace Kvasir { namespace Startup {
           = brigand::list<brigand::flatten<typename Detail::GetInterruptInit<Ts>::type>...>;
         using type = brigand::flatten<FlattenedSequencePieces>;
     };
+
     template<typename... Ts>
     using GetInterruptInitT = typename GetInterruptInit<Ts...>::type;
 
@@ -175,11 +195,13 @@ namespace Kvasir { namespace Startup {
           = brigand::list<brigand::flatten<typename Detail::GetPeripheryEnableInit<Ts>::type>...>;
         using type = brigand::flatten<FlattenedSequencePieces>;
     };
+
     template<typename... Ts>
     using GetPeripheryEnableInitT = typename GetPeripheryEnableInit<Ts...>::type;
 
     template<typename T>
     struct NvicVectorTable;
+
     template<typename... Ts>
     struct NvicVectorTable<brigand::list<Ts...>> {
         std::array<Kvasir::Nvic::IsrFunctionPointer, sizeof...(Ts)> data{Ts::value...};
@@ -191,9 +213,11 @@ namespace Kvasir { namespace Startup {
         static constexpr std::false_type test(...) noexcept {
             return {};
         }
+
         template<typename U>
         static constexpr auto test(U*) noexcept ->
-          typename std::is_same<void, decltype(U::runtimeInit())>::type {
+          typename std::is_same<void,
+                                decltype(U::runtimeInit())>::type {
             return {};
         }
 
@@ -206,9 +230,11 @@ namespace Kvasir { namespace Startup {
         static constexpr std::false_type test(...) noexcept {
             return {};
         }
+
         template<typename U>
         static constexpr auto test(U*) noexcept ->
-          typename std::is_same<void, decltype(U::preEnableRuntimeInit())>::type {
+          typename std::is_same<void,
+                                decltype(U::preEnableRuntimeInit())>::type {
             return {};
         }
 
@@ -285,10 +311,11 @@ namespace Kvasir { namespace Startup {
     template<typename ClockSettings, typename... Peripherals>
     struct Startup {
         [[gnu::used, gnu::section(".core_vectors")]] static constexpr Kvasir::Startup::
-          NvicVectorTable<Kvasir::Startup::GetIsrPointersT<Peripherals...>>
-            nvicIsrVectors{};
+          NvicVectorTable<Kvasir::Startup::GetIsrPointersT<Peripherals...>> nvicIsrVectors{};
 
-        [[noreturn, gnu::always_inline]] static void ResetISR() {
+        [[noreturn,
+          gnu::always_inline]] static void
+        ResetISR() {
             FirstInitStep<Kvasir::Tag::User>{}();
             ClockSettings::coreClockInit();
 
@@ -316,22 +343,28 @@ namespace Kvasir { namespace Startup {
 #ifdef __arm__
 
 namespace uc_log {
-template<int Line, typename Filename, typename Expr>
+template<int Line,
+         typename Filename,
+         typename Expr>
 inline void log_assert() {
-    UC_LOG_IMPL(
-      uc_log::LogLevel::crit,
-      Line,
-      std::string_view{Filename{}()},
-      sc::escape(
-        sc::create([](){return std::string_view{Expr{}()};}),
-        [](auto c) { return c == '{' || c == '}'; },
-        [](auto c) { return c; }));
+    UC_LOG_IMPL(uc_log::LogLevel::crit,
+                Line,
+                std::string_view{Filename{}()},
+                sc::escape(
+                  sc::create([]() { return std::string_view{Expr{}()}; }),
+                  [](auto c) { return c == '{' || c == '}'; },
+                  [](auto c) { return c; }));
 }
 }   // namespace uc_log
 
 extern "C" {
 [[gnu::used]] inline constexpr std::uint32_t __stack_chk_guard{0xdeadc0de};
-[[noreturn, gnu::used]] inline void          __stack_chk_fail() { assert(false); }
+
+[[noreturn,
+  gnu::used]] inline void
+__stack_chk_fail() {
+    assert(false);
+}
 }
 
     #define KVASIR_START(Startup)                        \
@@ -344,24 +377,50 @@ extern "C" {
 #endif
 
 extern "C" {
-[[noreturn, gnu::used]] inline int __aeabi_idiv0(int);
-[[noreturn, gnu::used]] inline int __aeabi_idiv0(int) { assert(false); }
+[[noreturn,
+  gnu::used]] inline int
+__aeabi_idiv0(int);
 
-[[noreturn, gnu::used]] inline long long __aeabi_ldiv0(long long);
-[[noreturn, gnu::used]] inline long long __aeabi_ldiv0(long long) { assert(false); }
+[[noreturn,
+  gnu::used]] inline int
+__aeabi_idiv0(int) {
+    assert(false);
+}
+
+[[noreturn,
+  gnu::used]] inline long long
+__aeabi_ldiv0(long long);
+
+[[noreturn,
+  gnu::used]] inline long long
+__aeabi_ldiv0(long long) {
+    assert(false);
+}
 
 [[gnu::used]] inline void __ubsan_handle_mul_overflow_minimal() { UC_LOG_C("UB"); }
+
 [[gnu::used]] inline void __ubsan_handle_add_overflow_minimal() { UC_LOG_C("UB"); }
+
 [[gnu::used]] inline void __ubsan_handle_alignment_assumption_minimal() { UC_LOG_C("UB"); }
+
 [[gnu::used]] inline void __ubsan_handle_sub_overflow_minimal() { UC_LOG_C("UB"); }
+
 [[gnu::used]] inline void __ubsan_handle_implicit_conversion_minimal() { UC_LOG_C("UB"); }
+
 [[gnu::used]] inline void __ubsan_handle_load_invalid_value_minimal() { UC_LOG_C("UB"); }
+
 [[gnu::used]] inline void __ubsan_handle_type_mismatch_minimal() { UC_LOG_C("UB"); }
+
 [[gnu::used]] inline void __ubsan_handle_pointer_overflow_minimal() { UC_LOG_C("UB"); }
+
 [[gnu::used]] inline void __ubsan_handle_shift_out_of_bounds_minimal() { UC_LOG_C("UB"); }
+
 [[gnu::used]] inline void __ubsan_handle_negate_overflow_minimal() { UC_LOG_C("UB"); }
+
 [[gnu::used]] inline void __ubsan_handle_builtin_unreachable_minimal() { UC_LOG_C("UB"); }
+
 [[gnu::used]] inline void __ubsan_handle_out_of_bounds_minimal() { UC_LOG_C("UB"); }
+
 [[gnu::used]] inline void __ubsan_handle_function_type_mismatch_minimal() { UC_LOG_C("UB"); }
 }
 

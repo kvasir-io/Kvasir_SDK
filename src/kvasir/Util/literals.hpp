@@ -6,25 +6,29 @@
 
 namespace Kvasir { namespace literals {
     using namespace std::literals;
+
     namespace detail {
-        template<typename T, typename U, U Value>
+        template<typename T,
+                 typename U,
+                 U Value>
         constexpr T validate_value() {
-            static_assert(
-              sizeof(T) <= sizeof(U) && std::is_signed<U>::value == std::is_signed<T>::value,
-              "mismatched types");
-            static_assert(
-              U(std::numeric_limits<T>::min()) <= Value
-                && Value <= U(std::numeric_limits<T>::max()),
-              "integer literal overflow");
+            static_assert(sizeof(T) <= sizeof(U)
+                            && std::is_signed<U>::value == std::is_signed<T>::value,
+                          "mismatched types");
+            static_assert(U(std::numeric_limits<T>::min()) <= Value
+                            && Value <= U(std::numeric_limits<T>::max()),
+                          "integer literal overflow");
             return static_cast<T>(Value);
         }
 
-        template<typename T, char... Digits>
+        template<typename T,
+                 char... Digits>
         constexpr T parse_signed() {
             return validate_value<T, long long, parse<long long, Digits...>()>();
         }
 
-        template<typename T, char... Digits>
+        template<typename T,
+                 char... Digits>
         constexpr T parse_unsigned() {
             return validate_value<T, unsigned long long, parse<unsigned long long, Digits...>()>();
         }

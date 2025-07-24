@@ -24,22 +24,23 @@ namespace Kvasir { namespace Register {
 
     public:
         using iterator = typename std::vector<ReadValue>::iterator;
+
         ReadValue& operator[](size_t i) { return data_[i]; }
 
         iterator begin() { return data_.begin(); }
+
         iterator end() { return data_.end(); }
 
         void push(ReadValue const& val) {
-            data_.insert(
-              std::lower_bound(
-                data_.begin(),
-                data_.end(),
-                val,
-                [](ReadValue const& lhs, ReadValue const& rhs) {
-                    return lhs.address_ < rhs.address_;
-                }),
-              val);
+            data_.insert(std::lower_bound(data_.begin(),
+                                          data_.end(),
+                                          val,
+                                          [](ReadValue const& lhs, ReadValue const& rhs) {
+                                              return lhs.address_ < rhs.address_;
+                                          }),
+                         val);
         }
+
         ReadValue pop(unsigned address) {
             ReadValue ret{0, 0};
             auto      it = std::lower_bound(

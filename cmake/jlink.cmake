@@ -1,3 +1,7 @@
+# J-Link Flash and Debug Configuration
+# Provides functions to configure J-Link debugging and flashing capabilities
+# Generates J-Link command files and CMake targets for embedded development
+
 function(target_add_flash_jlink target)
   if(POLICY CMP0174)
     cmake_policy(SET CMP0174 NEW)
@@ -7,7 +11,7 @@ function(target_add_flash_jlink target)
     1
     PARSED_ARGS
     ""
-    "TARGET_MPU;SWD_SPEED;JLINK_IP;SUFFIX;AUXILARY_TARGETS_PREFIX"
+    "TARGET_MPU;SWD_SPEED;JLINK_IP;SUFFIX;AUXILIARY_TARGETS_PREFIX"
     "DEPENDS"
   )
 
@@ -27,8 +31,8 @@ function(target_add_flash_jlink target)
     set(PARSED_ARGS_SUFFIX "")
   endif()
 
-  if(NOT PARSED_ARGS_AUXILARY_TARGETS_PREFIX)
-    set(PARSED_ARGS_AUXILARY_TARGETS_PREFIX "")
+  if(NOT PARSED_ARGS_AUXILIARY_TARGETS_PREFIX)
+    set(PARSED_ARGS_AUXILIARY_TARGETS_PREFIX "")
   endif()
 
   if(NOT PARSED_ARGS_JLINK_IP OR "${PARSED_ARGS_JLINK_IP}" STREQUAL "")
@@ -67,7 +71,7 @@ function(target_add_flash_jlink target)
     DEPENDS ${target} ${PARSED_ARGS_DEPENDS}
   )
 
-  set(aux_suffix ${PARSED_ARGS_AUXILARY_TARGETS_PREFIX})
+  set(aux_suffix ${PARSED_ARGS_AUXILIARY_TARGETS_PREFIX})
   if(NOT TARGET ${aux_suffix}reset)
     file(
       CONFIGURE

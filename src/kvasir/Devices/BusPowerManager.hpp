@@ -1,6 +1,7 @@
 #pragma once
 #include <chrono>
 #include <tuple>
+
 namespace Kvasir {
 template<typename Bus, typename Clock, typename PowerPin, bool invert, typename... Devs>
 struct BusPowerManager {
@@ -58,6 +59,7 @@ struct BusPowerManager {
             return Kvasir::Register::clear(PowerPin{});
         }
     }
+
     constexpr auto set() {
         if constexpr(invert) {
             return Kvasir::Register::clear(PowerPin{});
@@ -109,7 +111,11 @@ struct BusPowerManager {
     }
 };
 
-template<typename Bus, typename Clock, typename PowerPin, bool invert = false, typename... Devs>
+template<typename Bus,
+         typename Clock,
+         typename PowerPin,
+         bool invert = false,
+         typename... Devs>
 auto make_BusPowerManager(Devs&... dev) {
     return BusPowerManager<Bus, Clock, PowerPin, invert, decltype(dev)...>{dev...};
 }

@@ -7,11 +7,18 @@ namespace Kvasir { namespace Register {
 
     template<typename T>
     constexpr MPL::EnableIfT<Detail::IsWriteLiteral<T>::value> atomic(T) {}
+
     template<typename T>
     constexpr MPL::EnableIfT<Detail::IsWriteRuntime<T>::value> atomic(T) {}
-    template<typename T, typename U, typename... Ts>
+
+    template<typename T,
+             typename U,
+             typename... Ts>
     constexpr MPL::EnableIfT<Detail::IsWriteLiteral<T>::value> atomic(T) {}
-    template<typename T, typename U, typename... Ts>
+
+    template<typename T,
+             typename U,
+             typename... Ts>
     constexpr MPL::EnableIfT<Detail::IsWriteRuntime<T>::value> atomic(T) {}
 
 }}   // namespace Kvasir::Register

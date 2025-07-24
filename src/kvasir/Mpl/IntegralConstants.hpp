@@ -13,8 +13,11 @@ namespace Kvasir { namespace MPL { namespace IntegralConstants {
     static constexpr Unsigned<8> _8{};
     static constexpr Unsigned<9> _9{};
 
-    template<unsigned L, unsigned R>
-    constexpr inline Unsigned<(L * 10 + R)> operator,(Unsigned<L>, Unsigned<R>) {
+    template<unsigned L,
+             unsigned R>
+    constexpr inline Unsigned<(L * 10 + R)> operator,
+      (Unsigned<L>,
+       Unsigned<R>) {
         return {};
     }
 }}}   // namespace Kvasir::MPL::IntegralConstants

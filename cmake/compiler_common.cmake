@@ -1,6 +1,10 @@
 
+# Common Compiler Configuration
+# Shared compiler flags and settings used across all compiler toolchains
+# Defines optimization, warning, and language standard settings
+
 set(
-  compliler_common_flags
+  compiler_common_flags
   -ffunction-sections
   -fdata-sections
   -fno-common
@@ -11,7 +15,7 @@ set(
 )
 
 set(
-  compliler_common_cxx_flags
+  compiler_common_cxx_flags
   -std=c++23
   -fno-exceptions
   -fno-unwind-tables
@@ -22,11 +26,11 @@ set(
 )
 
 set(
-  compliler_common_c_flags
+  compiler_common_c_flags
   -std=c23
 )
 
-set(compliler_common_asm_flags)
+set(compiler_common_asm_flags)
 
 set(
   linker_common_flags

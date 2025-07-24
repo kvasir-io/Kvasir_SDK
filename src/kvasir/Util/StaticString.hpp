@@ -64,7 +64,8 @@ struct StaticString {
         return std::string_view{str, NN - 1} == std::string_view{*this};
     }
 
-    constexpr iterator erase(iterator first, iterator last) {
+    constexpr iterator erase(iterator first,
+                             iterator last) {
         std::size_t const charsToRemove = static_cast<std::size_t>(std::distance(first, last));
         std::size_t const newSize       = size() - charsToRemove;
         std::copy(last, end(), first);
@@ -75,11 +76,15 @@ struct StaticString {
 
     constexpr bool starts_with(char c) const { return !empty() && front() == c; }
 
-    constexpr auto        data() const { return buff.data(); }
-    constexpr auto        data() { return buff.data(); }
+    constexpr auto data() const { return buff.data(); }
+
+    constexpr auto data() { return buff.data(); }
+
     constexpr std::size_t size() const { return size_; }
+
     constexpr std::size_t max_size() const { return N; }
-    constexpr void        resize(std::size_t size) {
+
+    constexpr void resize(std::size_t size) {
         assert(N >= size);
         size_ = size;
     }
@@ -89,30 +94,39 @@ struct StaticString {
         buff[size_] = c;
         ++size_;
     }
-    constexpr bool        empty() const { return size_ == 0; }
-    constexpr void        clear() { size_ = 0; }
+
+    constexpr bool empty() const { return size_ == 0; }
+
+    constexpr void clear() { size_ = 0; }
+
     constexpr std::size_t capacity() const { return N; }
 
     constexpr auto begin() const { return buff.begin(); }
+
     constexpr auto end() const {
         return std::next(buff.begin(), static_cast<std::make_signed_t<decltype(size_)>>(size_));
     }
 
     constexpr auto begin() { return buff.begin(); }
+
     constexpr auto end() {
         return std::next(buff.begin(), static_cast<std::make_signed_t<decltype(size_)>>(size_));
     }
 
     constexpr auto rbegin() const { return const_reverse_iterator{end()}; }
+
     constexpr auto rend() const { return const_reverse_iterator{begin()}; }
 
     constexpr auto rbegin() { return reverse_iterator{end()}; }
+
     constexpr auto rend() { return reverse_iterator{begin()}; }
 
-    constexpr char&       front() { return buff[0]; }
+    constexpr char& front() { return buff[0]; }
+
     constexpr char const& front() const { return buff[0]; }
 
-    constexpr char&       back() { return buff[size_ - 1]; }
+    constexpr char& back() { return buff[size_ - 1]; }
+
     constexpr char const& back() const { return buff[size_ - 1]; }
 };
 
@@ -123,6 +137,6 @@ constexpr StaticString<sizeof...(chars)> operator""_ss() {
     std::copy(s.begin(), s.end(), ret.buff.begin());
     s.resize(ret.size());
     return ret;
-};
+}
 
 }   // namespace Kvasir

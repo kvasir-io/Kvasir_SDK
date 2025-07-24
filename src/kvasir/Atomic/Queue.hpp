@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cassert>
+
 namespace Kvasir { namespace Atomic {
 
     // OverFlowPolicyAssert is the default action which is taken if
@@ -12,24 +13,29 @@ namespace Kvasir { namespace Atomic {
     struct OverFlowPolicyAssert {
         [[noreturn]] void operator()() { assert(false); }
     };
+
     struct OverFlowPolicyIgnore {
         void operator()() {}
     };
 
     namespace Detail {
         using namespace MPL;
+
         template<std::size_t Size, typename = void>
         struct GetIndexType {
             using type = std::uint32_t;
         };
+
         template<std::size_t Size>
         struct GetIndexType<Size, EnableIfT<(Size <= 255)>> {
             using type = std::uint8_t;
         };
+
         template<std::size_t Size>
         struct GetIndexType<Size, EnableIfT<(Size > 255 && Size <= 65535)>> {
             using type = std::uint16_t;
         };
+
         template<std::size_t Size>
         using GetIndexTypeT = typename GetIndexType<Size, void>::type;
 
@@ -38,7 +44,8 @@ namespace Kvasir { namespace Atomic {
     template<typename TDataType, std::size_t Size, typename TOverflowPolicy = OverFlowPolicyAssert>
     struct Queue {
         using IndexType = Detail::GetIndexTypeT<Size>;
-        static_assert(std::numeric_limits<IndexType>::max() > Size, "Size to big");
+        static_assert(std::numeric_limits<IndexType>::max() > Size,
+                      "Size to big");
         static constexpr auto       load_memory_order{std::memory_order_relaxed};
         static constexpr auto       store_memory_order{std::memory_order_relaxed};
         static constexpr auto       fence_memory_order{std::memory_order_release};
@@ -46,7 +53,8 @@ namespace Kvasir { namespace Atomic {
         std::atomic<IndexType>      tail_{};
         std::array<TDataType, Size> data_{};
 
-        static constexpr IndexType distance(IndexType head, IndexType tail) {
+        static constexpr IndexType distance(IndexType head,
+                                            IndexType tail) {
             auto d = int(unsigned(tail) - unsigned(head));
             if(d < 0) {
                 d += Size;
@@ -69,11 +77,10 @@ namespace Kvasir { namespace Atomic {
             }
         }
 
-        template<
-          typename TRange,
-          typename = std::enable_if_t<std::is_same<
-            std::decay_t<decltype(*std::declval<TRange>().begin())>,
-            TDataType>::value>>
+        template<typename TRange,
+                 typename = std::enable_if_t<
+                   std::is_same<std::decay_t<decltype(*std::declval<TRange>().begin())>,
+                                TDataType>::value>>
         void push(TRange const& range) {
             auto       tail = tail_.load(load_memory_order);
             auto const head = head_.load(load_memory_order);
@@ -91,6 +98,7 @@ namespace Kvasir { namespace Atomic {
                 TOverflowPolicy{}();
             }
         }
+
         bool pop_into(TDataType& out) {
             auto const tail = tail_.load(load_memory_order);
             auto const head = head_.load(load_memory_order);
@@ -103,11 +111,10 @@ namespace Kvasir { namespace Atomic {
             return true;
         }
 
-        template<
-          typename TRange,
-          typename = std::enable_if_t<std::is_same<
-            std::decay_t<decltype(*std::declval<TRange>().begin())>,
-            TDataType>::value>>
+        template<typename TRange,
+                 typename = std::enable_if_t<
+                   std::is_same<std::decay_t<decltype(*std::declval<TRange>().begin())>,
+                                TDataType>::value>>
         bool pop_into(TRange& range) {
             auto const tail  = tail_.load(load_memory_order);
             auto       head  = head_.load(load_memory_order);
@@ -149,9 +156,12 @@ namespace Kvasir { namespace Atomic {
         std::size_t size() const {
             return distance(head_.load(load_memory_order), tail_.load(load_memory_order));
         }
-        bool                  empty() const { return size() == 0; }
+
+        bool empty() const { return size() == 0; }
+
         constexpr std::size_t max_size() const { return Size - 1; }
-        void                  clear() {
+
+        void clear() {
             head_.store(0, store_memory_order);
             tail_.store(0, store_memory_order);
         }

@@ -2,6 +2,7 @@
 
 #include <iterator>
 #include <ranges>
+
 namespace Kvasir {
 
 template<typename T, std::size_t N>

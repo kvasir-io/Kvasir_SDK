@@ -1,3 +1,7 @@
+# CPPCheck Static Analysis Configuration
+# Configures cppcheck static analysis tool integration
+# Provides functions to enable static analysis on targets
+
 set(
   USE_CPPCHECK
   false

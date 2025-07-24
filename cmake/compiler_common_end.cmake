@@ -1,3 +1,7 @@
+# Compiler Configuration Finalization
+# Finalizes compiler flag setup by converting lists to CMake flag strings
+# Sets all compiler and linker flags for different build configurations
+
 set(emptylist)
 
 list(JOIN cxx_flags " " CMAKE_CXX_FLAGS)

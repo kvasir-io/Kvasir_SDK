@@ -1,3 +1,7 @@
+# Kvasir Main Configuration
+# Main entry point for Kvasir embedded development framework
+# Configures toolchain selection, git submodules, and build options
+
 set(kvasir_cmake_dir
     ${CMAKE_CURRENT_LIST_DIR}
     CACHE INTERNAL "")

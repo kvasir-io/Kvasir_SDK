@@ -1,3 +1,7 @@
+# Kvasir Utility Functions
+# Core utility functions and target configuration for Kvasir framework
+# Provides build system integration, size reporting, and target setup
+
 include(${kvasir_cmake_dir}/../cmake_git_version/CMakeLists.txt)
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
@@ -167,7 +171,7 @@ include(${kvasir_cmake_dir}/../lib/libm/libm.cmake)
 
 if("${CPPLIB}" STREQUAL "libstdc++")
   if("${CLIB}" STREQUAL "custom")
-    message(FATAL_ERROR "libstdc++ does not work with curstom libc")
+    message(FATAL_ERROR "libstdc++ does not work with custom libc")
   endif()
 endif()
 
@@ -216,7 +220,7 @@ function(
   generate_object(${name} .hex ihex)
   generate_lst(${name})
   print_size(${name} ${linker_file})
-  target_add_version_headers(${name} ${optimize})
+  cmake_git_version_add_headers_with_type(${name} ${optimize})
 
   if(NOT ${application} STREQUAL FALSE)
     add_bootloader_app_data(${name} ${application})

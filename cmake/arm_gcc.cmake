@@ -1,3 +1,7 @@
+# ARM GCC Compiler Configuration
+# Configures the build environment for ARM targets using GCC toolchain
+# Uses arm-none-eabi-gcc cross-compilation tools
+
 include(${CMAKE_CURRENT_LIST_DIR}/compiler_common.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/arm_compiler_common.cmake)
 
@@ -74,14 +78,14 @@ set(
   ${target_flags}
   ${common_warning_flags}
   ${profile_flags}
-  ${compliler_common_flags}
-  ${arm_compliler_common_flags}
+  ${compiler_common_flags}
+  ${arm_compiler_common_flags}
 )
 
 set(
   cxx_flags
   ${common_flags}
-  ${compliler_common_cxx_flags}
+  ${compiler_common_cxx_flags}
   -Woverloaded-virtual
   -Wsign-promo
   -Wstrict-null-sentinel
@@ -90,7 +94,7 @@ set(
 set(
   c_flags
   ${common_flags}
-  ${compliler_common_c_flags}
+  ${compiler_common_c_flags}
 )
 
 set(LINKER_PREFIX "-Wl,")
@@ -100,7 +104,7 @@ list(TRANSFORM linker_common_flags PREPEND ${LINKER_PREFIX})
 set(
   linker_flags
   ${linker_common_flags}
-  #-fuse-ld=gold //TODO add wenn gold is fixed
+  #-fuse-ld=gold //TODO add when gold is fixed
   #-Wl,--icf=all
   #-Wl,--detect-odr-violations
   #-Wl,--no-allow-multiple-definition

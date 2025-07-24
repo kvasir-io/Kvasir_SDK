@@ -20,6 +20,7 @@ namespace Kvasir { namespace Fault {
     template<typename TCleanUpAction = CleanUpActionNone, typename TFaultAction = FaultActionAssert>
     struct Handler {
         static void CleanUp() { TCleanUpAction{}(); }
+
         static void Fault() {
             [[maybe_unused]] auto const faultInfo = Core::Fault::info();
             UC_LOG_C("{}: fault flags: {:#010x}", faultInfo.first, faultInfo.second);
@@ -31,6 +32,7 @@ namespace Kvasir { namespace Fault {
             asm("blx %0 \n" : : "l"(std::addressof(CleanUp)) :);
             asm("blx %0 \n" : : "l"(std::addressof(Fault)) :);
         }
+
         static constexpr auto initStepPeripheryEnable = MPL::list(
           Nvic::makeEnable(Nvic::InterruptOffsetTraits<>::FaultInterruptIndexsNeedEnable{}));
 
@@ -39,6 +41,7 @@ namespace Kvasir { namespace Fault {
             return brigand::list<
               Kvasir::Nvic::Isr<std::addressof(onIsr), Nvic::Index<Ts::value>>...>{};
         }
+
         using Isr = decltype(makeIsr(
           typename Kvasir::Nvic::InterruptOffsetTraits<>::FaultInterruptIndexs{}));
     };

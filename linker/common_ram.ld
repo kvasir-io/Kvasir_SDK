@@ -1,4 +1,4 @@
-SECTIONS{
+SECTIONS {
     .noInitLowRam /*(NOLOAD)*/ : {
         . = ALIGN(4);
         _LINKER_INTERN_noInitLowRam_start_ = .;
@@ -10,9 +10,9 @@ SECTIONS{
     } > ram
 
     .stack /*(NOLOAD)*/ : {
-    . = ALIGN(4);
+    . = ALIGN(8);
     _LINKER_INTERN_stack_start_ = .;
-    . = ALIGN(4);
+    . = ALIGN(8);
     *(.stackProtector*)
     _LINKER_INTERN_stackProtector_end_ = .;
     . = . + ((cmake_min_stack_size + cmake_stack_size_extra) - ( cmake_stack_size_extra == 0 ? 0 : ((_LINKER_INTERN_stackProtector_end_ - _LINKER_INTERN_stack_start_))));
@@ -23,7 +23,7 @@ SECTIONS{
 
     _LINKER_INTERN_data_start_flash_ = ORIGIN(flash) + SIZEOF(.text);
     .data :  AT(_LINKER_INTERN_data_start_flash_) {
-        FILL(0xFFDEFFDE); /*"udf #255" instruction as fill pattern so we end up in Hardfault handler when PC goes wild*/
+        FILL(0xFFDEFFDE); /* ARM "udf #255" instruction - triggers HardFault if PC goes to uninitialized memory */
         . = ALIGN(4);
         _LINKER_INTERN_data_start_ = .;
         . = ALIGN(4);

@@ -28,23 +28,27 @@ namespace Kvasir { namespace literals { namespace detail {
     using bool_constant = std::integral_constant<bool, Value>;
 
     struct decimal_digit {};
+
     struct lower_hexadecimal_digit {};
+
     struct upper_hexadecimal_digit {};
+
     struct no_digit {};
 
     template<char C>
-    using digit_category = conditional<
-      bool_constant<C >= '0' && C <= '9'>,
-      decimal_digit,
-      bool_constant<C >= 'a' && C <= 'f'>,
-      lower_hexadecimal_digit,
-      bool_constant<C >= 'A' && C <= 'F'>,
-      upper_hexadecimal_digit,
-      no_digit>;
+    using digit_category = conditional<bool_constant<C >= '0' && C <= '9'>,
+                                       decimal_digit,
+                                       bool_constant<C >= 'a' && C <= 'f'>,
+                                       lower_hexadecimal_digit,
+                                       bool_constant<C >= 'A' && C <= 'F'>,
+                                       upper_hexadecimal_digit,
+                                       no_digit>;
 
     template<char C, typename Cat>
     struct to_digit_impl {
-        static_assert(!std::is_same<Cat, no_digit>::value, "invalid character, expected digit");
+        static_assert(!std::is_same<Cat,
+                                    no_digit>::value,
+                      "invalid character, expected digit");
     };
 
     template<char C>
@@ -62,7 +66,9 @@ namespace Kvasir { namespace literals { namespace detail {
         static constexpr auto value = static_cast<int>(C) - static_cast<int>('A') + 10;
     };
 
-    template<typename T, T Base, char C>
+    template<typename T,
+             T    Base,
+             char C>
     constexpr T to_digit() {
         using impl = to_digit_impl<C, digit_category<C>>;
         static_assert(impl::value < Base, "invalid digit for base");
@@ -74,7 +80,8 @@ namespace Kvasir { namespace literals { namespace detail {
 
     template<>
     struct parse_loop<> {
-        template<typename T, T>
+        template<typename T,
+                 T>
         static constexpr T parse(T value) {
             return value;
         }
@@ -82,7 +89,8 @@ namespace Kvasir { namespace literals { namespace detail {
 
     template<char... Tail>
     struct parse_loop<'\'', Tail...> {
-        template<typename T, T Base>
+        template<typename T,
+                 T Base>
         static constexpr T parse(T value) {
             return parse_loop<Tail...>::template parse<T, Base>(value);
         }
@@ -90,14 +98,18 @@ namespace Kvasir { namespace literals { namespace detail {
 
     template<char Head, char... Tail>
     struct parse_loop<Head, Tail...> {
-        template<typename T, T Base>
+        template<typename T,
+                 T Base>
         static constexpr T parse(T value) {
-            return parse_loop<Tail...>::template parse<T, Base>(
-              value * Base + to_digit<T, Base, Head>());
+            return parse_loop<Tail...>::template parse<T, Base>(value * Base
+                                                                + to_digit<T, Base, Head>());
         }
     };
 
-    template<typename T, T Base, char Head, char... Tail>
+    template<typename T,
+             T    Base,
+             char Head,
+             char... Tail>
     constexpr T do_parse_loop() {
         return parse_loop<Tail...>::template parse<T, Base>(to_digit<T, Base, Head>());
     }
@@ -132,7 +144,8 @@ namespace Kvasir { namespace literals { namespace detail {
         static constexpr T parse() { return do_parse_loop<T, 2, Tail...>(); }
     };
 
-    template<typename T, char... Digits>
+    template<typename T,
+             char... Digits>
     constexpr T parse() {
         return parse_base<T, Digits...>::parse();
     }

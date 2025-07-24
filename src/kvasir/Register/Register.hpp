@@ -11,19 +11,28 @@ namespace Kvasir { namespace Register {
     // one here allows adl to find it without the user having to write out the
     // whole namespace. Making the list take at least one parameter should
     // prevent ambiguity in a case where MPL::list is also an overload candidate
-    template<typename T, typename... Ts>
-    constexpr brigand::list<T, Ts...> list(T, Ts...) {
+    template<typename T,
+             typename... Ts>
+    constexpr brigand::list<T,
+                            Ts...>
+    list(T,
+         Ts...) {
         return brigand::list<T, Ts...>{};
     }
 
     // factory for compile time values
     template<std::uint32_t I>
-    constexpr MPL::Value<std::uint32_t, I> value() {
+    constexpr MPL::Value<std::uint32_t,
+                         I>
+    value() {
         return MPL::Value<std::uint32_t, I>{};
     }
 
-    template<typename T, T I>
-    constexpr MPL::Value<T, I> value() {
+    template<typename T,
+             T I>
+    constexpr MPL::Value<T,
+                         I>
+    value() {
         return MPL::Value<T, I>{};
     }
 
@@ -58,12 +67,15 @@ namespace Kvasir { namespace Register {
         struct AlwaysFalse {
             static constexpr bool value = false;
         };
-        template<typename T, typename... Ds>
+
+        template<typename T,
+                 typename... Ds>
         static constexpr bool isInDefault() {
             return (std::is_same_v<typename T::location, typename Ds::location> || ...);
         }
 
-        template<typename D, typename... TTs>
+        template<typename D,
+                 typename... TTs>
         static constexpr auto getDefaultIfNotInTs() {
             using DLoc = typename D::location;
             if constexpr((std::is_same_v<typename TTs::location, DLoc> || ...)) {
@@ -90,8 +102,10 @@ namespace Kvasir { namespace Register {
             }
         };
 
-        template<typename... Ts, typename... Vs>
-        static constexpr auto makeList(Ts const&... ts, brigand::list<Vs...>) {
+        template<typename... Ts,
+                 typename... Vs>
+        static constexpr auto makeList(Ts const&... ts,
+                                       brigand::list<Vs...>) {
             return list(Ts{ts}..., Vs{}...);
         }
 
@@ -141,20 +155,20 @@ namespace Kvasir { namespace Register {
 #if __has_include("remote_fmt/remote_fmt.hpp")
     #include "remote_fmt/remote_fmt.hpp"
 template<typename T>
-concept PrintableRegister
-  = requires {
-        {
-            T::fmt_string
-            } -> std::convertible_to<std::string_view>;
-        {
-            T::apply_fields([]<typename... Args>(Args&&...) { return true; })
-            } -> std::convertible_to<bool>;
-    };
+concept PrintableRegister = requires {
+    {
+        T::fmt_string
+    } -> std::convertible_to<std::string_view>;
+    {
+        T::apply_fields([]<typename... Args>(Args&&...) { return true; })
+    } -> std::convertible_to<bool>;
+};
 
 template<PrintableRegister R>
 struct remote_fmt::formatter<R> {
     template<typename FormatContext>
-    auto format(R const&, FormatContext& ctx) {
+    auto format(R const&,
+                FormatContext& ctx) {
         return R::apply_fields_with_dim([&]<typename... Args>(Args&&... args) {
             return format_to(ctx.out(), SC_LIFT(R::fmt_string), std::forward<Args>(args)...);
         });

@@ -4,16 +4,17 @@
 namespace Kvasir { namespace MPL {
 
     namespace Detail {
-        // in some cases we need a type that the user will nevere use
+        // in some cases we need a type that the user will never use
         struct InternalUseOnly {};
     }   // namespace Detail
 
-    // used to move the point of compilation to the point of instatiation of the parameter
+    // used to move the point of compilation to the point of instantiation of the parameter
     // use this class to static assert only if an implausible specialization is actually instantiated
     template<typename>
     struct AlwaysFalse {
         enum { value = 0 };
     };
+
     template<>
     struct AlwaysFalse<Detail::InternalUseOnly> {
         enum { value = 1 };
@@ -63,6 +64,7 @@ namespace Kvasir { namespace MPL {
         using First  = T;
         using Second = U;
     };
+
     template<typename T>
     using PairFirst = typename T::First;
     template<typename T>

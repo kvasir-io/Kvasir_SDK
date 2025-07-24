@@ -22,18 +22,17 @@ struct StaticFunction<R(Args...), Size> {
 
     template<typename F>
     constexpr StaticFunction(F&& f)
-      : invoke_ptr{[](Storage_t const& s, Args... args) -> R {
+      : invoke_ptr{[](Storage_t const& s,
+                      Args... args) -> R {
           return (*reinterpret_cast<std::remove_cvref_t<F> const*>(s.data()))(args...);
       }} {
         using FF = std::remove_cvref_t<F>;
-        static_assert(
-          std::is_trivially_destructible_v<FF>,
-          "only trivially destructible functions");
+        static_assert(std::is_trivially_destructible_v<FF>,
+                      "only trivially destructible functions");
         static_assert(std::is_trivially_copyable_v<FF>, "only trivially copyable functions");
         static_assert(Size >= sizeof(FF), "function too big to store");
-        static_assert(
-          std::alignment_of_v<StaticFunction> >= std::alignment_of_v<FF>,
-          "function is overalligned");
+        static_assert(std::alignment_of_v<StaticFunction> >= std::alignment_of_v<FF>,
+                      "function is overaligned");
 
         new(storage.data()) FF{std::forward<F>(f)};
     }
@@ -45,14 +44,16 @@ struct StaticFunction<R(Args...), Size> {
     }
 
     template<std::size_t OtherSize>
-    constexpr StaticFunction(StaticFunction<R(Args...), OtherSize> const& other)
+    constexpr StaticFunction(StaticFunction<R(Args...),
+                                            OtherSize> const& other)
       : invoke_ptr{other.invoke_ptr} {
         static_assert(Size >= OtherSize, "other function too big to store");
         std::memcpy(storage.data(), other.storage.data(), OtherSize);
     }
 
     template<std::size_t OtherSize>
-    constexpr StaticFunction& operator=(StaticFunction<R(Args...), OtherSize> const& other) {
+    constexpr StaticFunction& operator=(StaticFunction<R(Args...),
+                                                       OtherSize> const& other) {
         new(this) StaticFunction{other};
         return *this;
     }
@@ -69,7 +70,8 @@ struct StaticFunction<R(Args...), Size> {
 
 private:
     using Storage_t    = std::array<std::byte, Size>;
-    using Invoke_ptr_t = R (*)(Storage_t const&, Args...);
+    using Invoke_ptr_t = R (*)(Storage_t const&,
+                               Args...);
 
     Storage_t    storage;
     Invoke_ptr_t invoke_ptr{};

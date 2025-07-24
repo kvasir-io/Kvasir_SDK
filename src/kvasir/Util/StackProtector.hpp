@@ -10,19 +10,21 @@ namespace Kvasir {
 
 template<std::size_t Size = 32>
 struct StackProtector {
-    static constexpr std::uint32_t sentinalVal{0x55AA55AA};
+    static constexpr std::uint32_t sentinelVal{0x55AA55AA};
 
-    static_assert(Size % sizeof(sentinalVal) == 0, "size not valid");
+    static_assert(Size % sizeof(sentinelVal) == 0,
+                  "size not valid");
 
-    using Sentinal_t = std::array<std::decay_t<decltype(sentinalVal)>, Size / sizeof(sentinalVal)>;
+    using Sentinel_t = std::array<std::decay_t<decltype(sentinelVal)>, Size / sizeof(sentinelVal)>;
 
-    [[gnu::section(".stackProtector")]] static inline Sentinal_t sentinal{};
-    [[gnu::always_inline]] static void                           runtimeInit() {
-        std::fill(sentinal.begin(), sentinal.end(), sentinalVal);
+    [[gnu::section(".stackProtector")]] static inline Sentinel_t sentinel{};
+
+    [[gnu::always_inline]] static void runtimeInit() {
+        std::fill(sentinel.begin(), sentinel.end(), sentinelVal);
     }
 
     static void handler() {
-        if(std::any_of(sentinal.begin(), sentinal.end(), [](auto v) { return v != sentinalVal; })) {
+        if(std::any_of(sentinel.begin(), sentinel.end(), [](auto v) { return v != sentinelVal; })) {
             assert(false);
         }
     }
