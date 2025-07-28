@@ -45,25 +45,17 @@ jobs:
 
                   echo "Image is $DAYS_OLD days old"
 
-                  # Check if Dockerfile or workflow changed in this push
-                  FILES_CHANGED=false
-                  if [ "${{ github.event_name }}" = "push" ]; then
-                    # Check if relevant files were modified
-                    if git diff --name-only HEAD~1 HEAD | grep -E "(scripts/Dockerfile|\.github/workflows/docker-build\.yml)"; then
-                      FILES_CHANGED=true
-                      echo "Dockerfile or workflow has changed"
-                    fi
-                  fi
-
-                  # Build if: image >30 days old, relevant files changed, manual trigger, or scheduled
-                  if [ $DAYS_OLD -gt 30 ] || [ "$FILES_CHANGED" = "true" ] || \
+                  # Build if image is >30 days old, or if workflow was triggered
+                  # (Path filters ensure we only run when relevant files change)
+                  if [ $DAYS_OLD -gt 30 ] || \
                      [ "${{ github.event_name }}" = "workflow_dispatch" ] || \
-                     [ "${{ github.event_name }}" = "schedule" ]; then
+                     [ "${{ github.event_name }}" = "schedule" ] || \
+                     [ "${{ github.event_name }}" = "push" ]; then
                     echo "should-build=true" >> $GITHUB_OUTPUT
-                    echo "Build needed: Image is $DAYS_OLD days old, Files changed: $FILES_CHANGED"
+                    echo "Build needed: Image is $DAYS_OLD days old, triggered by ${{ github.event_name }}"
                   else
                     echo "should-build=false" >> $GITHUB_OUTPUT
-                    echo "Build not needed: Image is recent and Dockerfile unchanged"
+                    echo "Build not needed: Image is recent and no trigger conditions met"
                   fi
                 else
                   echo "should-build=true" >> $GITHUB_OUTPUT
