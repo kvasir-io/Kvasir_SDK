@@ -15,7 +15,6 @@ RUN su aur_user -c "/bin/sh -c 'yay -S --noconfirm jlink-software-and-documentat
 
 RUN git config --global --add safe.directory /project
 
-#test
 RUN mkdir /project
 WORKDIR /project
 

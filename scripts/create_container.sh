@@ -14,8 +14,8 @@ SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 if [ "$1" = "--local" ]; then
     echo "Building container locally..."
     docker pull archlinux
-    docker build ${SCRIPT_DIR} --tag kvasir-io/build_environment:latest
+    docker build ${SCRIPT_DIR} --tag kvasirio/build_environment:latest
 else
     echo "Pulling prebuilt container from DockerHub..."
-    docker pull kvasir-io/build_environment:latest
+    docker pull kvasirio/build_environment:latest
 fi

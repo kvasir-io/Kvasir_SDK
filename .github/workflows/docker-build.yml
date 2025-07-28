@@ -28,12 +28,12 @@ jobs:
 
                 # Check if image exists and get its creation date
                 IMAGE_EXISTS=$(curl -s -o /dev/null -w "%{http_code}" \
-                  "https://hub.docker.com/v2/repositories/kvasir-io/build_environment/tags/latest/")
+                  "https://hub.docker.com/v2/repositories/kvasirio/build_environment/tags/latest/")
 
                 if [ "$IMAGE_EXISTS" = "200" ]; then
                   # Get image creation date from DockerHub API
                   IMAGE_DATE=$(curl -s \
-                    "https://hub.docker.com/v2/repositories/kvasir-io/build_environment/tags/latest/" | \
+                    "https://hub.docker.com/v2/repositories/kvasirio/build_environment/tags/latest/" | \
                     jq -r '.last_updated' | cut -d'T' -f1)
 
                   # Convert to epoch for comparison
@@ -92,8 +92,8 @@ jobs:
                 push: true
                 platforms: linux/amd64
                 tags: |
-                    kvasir-io/build_environment:latest
-                    kvasir-io/build_environment:${{ needs.check-build-needed.outputs.build-date }}
+                    kvasirio/build_environment:latest
+                    kvasirio/build_environment:${{ needs.check-build-needed.outputs.build-date }}
                 cache-from: type=gha
                 cache-to: type=gha,mode=max
 
@@ -102,7 +102,7 @@ jobs:
               with:
                 username: ${{ secrets.DOCKERHUB_USERNAME }}
                 password: ${{ secrets.DOCKERHUB_TOKEN }}
-                repository: kvasir-io/build_environment
+                repository: kvasirio/build_environment
                 short-description: "Kvasir firmware development environment based on Arch Linux"
                 readme-filepath: ./scripts/README.md
               continue-on-error: true
@@ -119,7 +119,7 @@ jobs:
                   echo "BUILD_MESSAGE=⏭️ Docker build skipped - image is recent and Dockerfile unchanged" >> $GITHUB_ENV
                 elif [ "${{ needs.docker-build-push.result }}" = "success" ]; then
                   echo "BUILD_STATUS=success" >> $GITHUB_ENV
-                  echo "BUILD_MESSAGE=✅ Docker image built and pushed to kvasir-io/build_environment:latest" >> $GITHUB_ENV
+                  echo "BUILD_MESSAGE=✅ Docker image built and pushed to kvasirio/build_environment:latest" >> $GITHUB_ENV
                 elif [ "${{ needs.docker-build-push.result }}" = "failure" ]; then
                   echo "BUILD_STATUS=failure" >> $GITHUB_ENV
                   echo "BUILD_MESSAGE=❌ Docker build failed - check workflow logs" >> $GITHUB_ENV
@@ -161,8 +161,8 @@ jobs:
                    [ "${{ needs.docker-build-push.result }}" = "success" ]; then
                   echo "" >> $GITHUB_STEP_SUMMARY
                   echo "**Image Tags:**" >> $GITHUB_STEP_SUMMARY
-                  echo "- \`kvasir-io/build_environment:latest\`" >> $GITHUB_STEP_SUMMARY
-                  echo "- \`kvasir-io/build_environment:${{ needs.check-build-needed.outputs.build-date }}\`" >> $GITHUB_STEP_SUMMARY
+                  echo "- \`kvasirio/build_environment:latest\`" >> $GITHUB_STEP_SUMMARY
+                  echo "- \`kvasirio/build_environment:${{ needs.check-build-needed.outputs.build-date }}\`" >> $GITHUB_STEP_SUMMARY
                   echo "" >> $GITHUB_STEP_SUMMARY
-                  echo "[View on DockerHub](https://hub.docker.com/r/kvasir-io/build_environment)" >> $GITHUB_STEP_SUMMARY
+                  echo "[View on DockerHub](https://hub.docker.com/r/kvasirio/build_environment)" >> $GITHUB_STEP_SUMMARY
                 fi
