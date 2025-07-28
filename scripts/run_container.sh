@@ -6,9 +6,10 @@ if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then echo "Usage: $0 [-it] - Builds p
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
-${SCRIPT_DIR}/create_container.sh
+# Ensure we have the latest container image
+docker pull kvasir-io/build_environment:latest
 
-base_cmd="-v ${SCRIPT_DIR}/../../:/project -e LOCAL_USER_ID=`id -u $USER`  -e LOCAL_GROUP_ID=`id -g $USER` kvasir_fw_build"
+base_cmd="-v ${SCRIPT_DIR}/../../:/project -e LOCAL_USER_ID=`id -u $USER`  -e LOCAL_GROUP_ID=`id -g $USER` kvasir-io/build_environment:latest"
 
 if [ "$#" -eq 1  ] && [ "$1" == "-it" ]; then
     docker run --rm -it ${base_cmd} fish
