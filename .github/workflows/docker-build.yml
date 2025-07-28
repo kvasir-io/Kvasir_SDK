@@ -104,7 +104,7 @@ jobs:
                 password: ${{ secrets.DOCKERHUB_TOKEN }}
                 repository: kvasirio/build_environment
                 short-description: "Kvasir firmware development environment based on Arch Linux"
-                readme-filepath: ./scripts/README.md
+                readme-filepath: scripts/README.md
               continue-on-error: true
 
     notify-status:
