@@ -6,7 +6,9 @@ on:
         - cron: '0 2 1 * *'
     push:
         branches: [master]
-        paths: ['scripts/Dockerfile']
+        paths: 
+            - 'scripts/Dockerfile'
+            - '.github/workflows/docker-build.yml'
     workflow_dispatch:
 
 jobs:
@@ -43,21 +45,22 @@ jobs:
 
                   echo "Image is $DAYS_OLD days old"
 
-                  # Check if Dockerfile changed in this push
-                  DOCKERFILE_CHANGED=false
+                  # Check if Dockerfile or workflow changed in this push
+                  FILES_CHANGED=false
                   if [ "${{ github.event_name }}" = "push" ]; then
-                    if git diff --name-only ${{ github.event.before }}..${{ github.sha }} | grep -q "scripts/Dockerfile"; then
-                      DOCKERFILE_CHANGED=true
-                      echo "Dockerfile has changed"
+                    # Check if relevant files were modified
+                    if git diff --name-only HEAD~1 HEAD | grep -E "(scripts/Dockerfile|\.github/workflows/docker-build\.yml)"; then
+                      FILES_CHANGED=true
+                      echo "Dockerfile or workflow has changed"
                     fi
                   fi
 
-                  # Build if image is older than 30 days, Dockerfile changed, or manual trigger
-                  if [ $DAYS_OLD -gt 30 ] || [ "$DOCKERFILE_CHANGED" = "true" ] || \
+                  # Build if: image >30 days old, relevant files changed, manual trigger, or scheduled
+                  if [ $DAYS_OLD -gt 30 ] || [ "$FILES_CHANGED" = "true" ] || \
                      [ "${{ github.event_name }}" = "workflow_dispatch" ] || \
                      [ "${{ github.event_name }}" = "schedule" ]; then
                     echo "should-build=true" >> $GITHUB_OUTPUT
-                    echo "Build needed: Image is $DAYS_OLD days old, Dockerfile changed: $DOCKERFILE_CHANGED"
+                    echo "Build needed: Image is $DAYS_OLD days old, Files changed: $FILES_CHANGED"
                   else
                     echo "should-build=false" >> $GITHUB_OUTPUT
                     echo "Build not needed: Image is recent and Dockerfile unchanged"
