@@ -11,15 +11,12 @@ RUN pacman --disable-download-timeout --noconfirm -Syyu && \
     useradd aur_user -u 5000 -g 5000 --create-home && \
     echo "aur_user ALL=(ALL) NOPASSWD: /usr/bin/pacman" > "/etc/sudoers.d/allow_nobody_to_pacman" && \
     echo "MAKEFLAGS=\"-j$(nproc)\"" >> /etc/makepkg.conf && \
-    echo "OPTIONS=(!strip !docs !libtool !staticlibs !debug)" >> /etc/makepkg.conf && \
+    echo "OPTIONS=(strip !docs !libtool staticlibs !debug !check)" >> /etc/makepkg.conf && \
     su aur_user -c "cd ~ && git clone --depth 1 https://aur.archlinux.org/yay.git && cd yay && makepkg --noconfirm -si" && \
     su aur_user -c "yay -S --noconfirm --nodeps --needed jlink-software-and-documentation su-exec inja ftxui magic_enum $AUR_EXTRA_PACKAGES" && \
     yay -Rns --noconfirm $(yay -Qtdq) 2>/dev/null || true && \
     yay -Scc --noconfirm && \
     go clean -cache -modcache -testcache -fuzzcache 2>/dev/null || true && \
-    find /home/aur_user -type f -name "*.a" -delete && \
-    find /home/aur_user -type f -name "*.o" -delete && \
-    find /usr -type f -name "*.a" -delete 2>/dev/null || true && \
     rm -rf /home/aur_user/.cache/* /home/aur_user/yay /home/aur_user/.config/yay \
            /home/aur_user/.local/share/go /root/.cache/go-build /root/go \
            /tmp/* /var/tmp/* /var/cache/pacman/pkg/* /var/lib/pacman/sync/* \

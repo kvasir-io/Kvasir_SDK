@@ -92,15 +92,6 @@ jobs:
                 cache-from: type=gha
                 cache-to: type=gha,mode=max
 
-            - name: Update repository description
-              uses: peter-evans/dockerhub-description@v4
-              with:
-                username: ${{ secrets.DOCKERHUB_USERNAME }}
-                password: ${{ secrets.DOCKERHUB_TOKEN }}
-                repository: kvasirio/build_environment
-                short-description: "Kvasir firmware development environment based on Arch Linux"
-                readme-filepath: scripts/README.md
-              continue-on-error: true
 
     notify-status:
         runs-on: ubuntu-latest
