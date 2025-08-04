@@ -167,7 +167,6 @@ enable_language(ASM)
 include(${kvasir_cmake_dir}/../lib/compiler-rt/compiler-rt.cmake)
 include(${kvasir_cmake_dir}/../lib/libcxx/libcxx.cmake)
 include(${kvasir_cmake_dir}/../lib/libc/libc.cmake)
-include(${kvasir_cmake_dir}/../lib/libm/libm.cmake)
 
 if("${CPPLIB}" STREQUAL "libstdc++")
   if("${CLIB}" STREQUAL "llvm")
