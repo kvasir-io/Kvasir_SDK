@@ -40,22 +40,22 @@ if(USE_TIDY)
       cppcoreguidelines-pro-bounds-pointer-arithmetic
       bugprone-reserved-identifier
       bugprone-incorrect-roundings
-      
+
       cppcoreguidelines-c-copy-assignment-signature #already in misc-unconventional-assign-operator
       cppcoreguidelines-avoid-c-arrays #already in modernize-avoid-c-arrays
       cppcoreguidelines-avoid-magic-numbers #already in readability-magic-numbers
-      
+
       readability-misleading-indentation #TODO remove when constexpr bug is fixed
       readability-braces-around-statements  #TODO remove when constexpr bug is fixed
       bugprone-suspicious-semicolon #TODO remove when constexpr bug is fixed
-      
+
       cppcoreguidelines-pro-type-member-init #TODO remove when template delegation constructor bug is fixed
       modernize-avoid-c-arrays #TODO remove when template function to get size is fixed
-      
+
       readability-magic-numbers #TODO improve
       cppcoreguidelines-pro-type-vararg #TODO improve
       modernize-use-nodiscard #TODO improve
-      
+
       bugprone-dynamic-static-initializers
       cppcoreguidelines-avoid-non-const-global-variables
       readability-qualified-auto

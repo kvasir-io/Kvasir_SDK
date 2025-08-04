@@ -6,7 +6,7 @@ include(${kvasir_cmake_dir}/../cmake_git_version/CMakeLists.txt)
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
-add_subdirectory(${kvasir_cmake_dir}/../uc_log)
+
 include(${kvasir_cmake_dir}/jlink.cmake)
 
 function(add_clean_file target file)
@@ -170,8 +170,8 @@ include(${kvasir_cmake_dir}/../lib/libc/libc.cmake)
 include(${kvasir_cmake_dir}/../lib/libm/libm.cmake)
 
 if("${CPPLIB}" STREQUAL "libstdc++")
-  if("${CLIB}" STREQUAL "custom")
-    message(FATAL_ERROR "libstdc++ does not work with custom libc")
+  if("${CLIB}" STREQUAL "llvm")
+    message(FATAL_ERROR "libstdc++ does not work with llvm libc")
   endif()
 endif()
 
@@ -202,8 +202,7 @@ function(
     target_add_kvasir_lib(${name} cxx "${LIBCXX_SOURCE_FILES}")
   endif()
 
-  if("${CLIB}" STREQUAL "custom")
-    target_add_kvasir_lib(${name} m "${LIBM_SOURCE_FILES}")
+  if("${CLIB}" STREQUAL "llvm")
     target_add_kvasir_lib(${name} c "${LIBC_SOURCE_FILES}")
   endif()
 

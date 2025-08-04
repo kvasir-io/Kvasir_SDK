@@ -27,12 +27,12 @@ if(GIT_FOUND AND EXISTS "${PROJECT_SOURCE_DIR}/.git")
   endif()
 endif()
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CROSSCOMPILING True)
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../svd_converter)
+add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../uc_log)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../chip/cmake/chip.cmake)
-
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(COMPILE_TARGET
     arm_clang
@@ -60,9 +60,9 @@ if(COMPILE_TARGET STREQUAL arm_clang)
   set_property(CACHE CPPLIB PROPERTY STRINGS libc++ libstdc++)
 
   set(CLIB
-      custom
-      CACHE STRING "Choose libc to use, options are: custom newlib")
-  set_property(CACHE CLIB PROPERTY STRINGS custom newlib)
+      llvm
+      CACHE STRING "Choose libc to use, options are: llvm newlib")
+  set_property(CACHE CLIB PROPERTY STRINGS llvm newlib)
 
   set(COMPILER_RT
       clang

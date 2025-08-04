@@ -72,7 +72,4 @@ namespace Kvasir { namespace Io {
     static constexpr Pin<29> pin29{};
     static constexpr Pin<30> pin30{};
     static constexpr Pin<31> pin31{};
-
-    template<typename T = void>
-    struct PinLocationTraits;   // must be specialized in a chipxxxInterrupt file
 }}   // namespace Kvasir::Io

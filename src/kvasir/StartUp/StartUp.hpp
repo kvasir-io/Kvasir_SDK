@@ -429,3 +429,4 @@ void terminate() noexcept { assert(false); }
 }   // namespace std
 
 void operator delete(void*) {}
+void operator delete(void*, std::size_t) {}

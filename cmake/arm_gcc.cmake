@@ -11,6 +11,7 @@ set(CMAKE_ASM_COMPILER arm-none-eabi-gcc)
 set(CMAKE_SIZE arm-none-eabi-size)
 set(CMAKE_STRIP arm-none-eabi-strip)
 set(CMAKE_AR arm-none-eabi-ar)
+set(CMAKE_NM arm-none-eabi-nm)
 set(CMAKE_RANLIB arm-none-eabi-ranlib)
 set(CMAKE_OBJCOPY arm-none-eabi-objcopy)
 set(CMAKE_OBJDUMP arm-none-eabi-objdump)
@@ -54,7 +55,7 @@ set(
   -Wall
   -Wextra
   -pedantic
-  -pedantic-errors
+  #-pedantic-errors
   -Wdouble-promotion
   -Wcast-align
   -Wcast-qual
@@ -67,11 +68,12 @@ set(
   -Wstrict-overflow=5
   -Wundef
   -Wno-unused
-  -Wstrict-aliasing=1
+   -Wstrict-aliasing=1
 )
 
-set(profile_flags)
-
+set(profile_flags
+    -D__STDC_HOSTED__=1
+)
 
 set(
   common_flags
@@ -104,10 +106,6 @@ list(TRANSFORM linker_common_flags PREPEND ${LINKER_PREFIX})
 set(
   linker_flags
   ${linker_common_flags}
-  #-fuse-ld=gold //TODO add when gold is fixed
-  #-Wl,--icf=all
-  #-Wl,--detect-odr-violations
-  #-Wl,--no-allow-multiple-definition
   -nostartfiles
   --specs=${SPEC_REPLACEMENT_STRING}.specs
   -Wl,--start-group

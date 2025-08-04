@@ -13,9 +13,6 @@
 [submodule "lib/libc"]
 	path = lib/libc
 	url = https://github.com/dominicpoeschko/libc.git
-[submodule "lib/libm"]
-	path = lib/libm
-	url = https://github.com/dominicpoeschko/libm.git
 [submodule "lib/compiler-rt"]
 	path = lib/compiler-rt
 	url = https://github.com/dominicpoeschko/compiler-rt.git

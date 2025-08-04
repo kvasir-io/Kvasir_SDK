@@ -40,6 +40,7 @@ find_program(clang clang PATHS REQUIRED)
 find_program(clang++ clang++ PATHS REQUIRED)
 find_program(llvm-size llvm-size PATHS REQUIRED)
 find_program(llvm-ar llvm-ar PATHS REQUIRED)
+find_program(llvm-nm llvm-nm PATHS REQUIRED)
 find_program(llvm-strip llvm-strip PATHS REQUIRED)
 find_program(llvm-ranlib llvm-ranlib PATHS REQUIRED)
 find_program(ld.lld ld.lld PATHS REQUIRED)
@@ -52,6 +53,7 @@ mark_as_advanced(
   clang++
   llvm-size
   llvm-ar
+  llvm-nm
   llvm-strip
   llvm-ranlib
   ld.lld
@@ -64,6 +66,7 @@ set(CMAKE_ASM_COMPILER clang)
 set(CMAKE_SIZE llvm-size)
 set(CMAKE_STRIP llvm-strip)
 set(CMAKE_AR llvm-ar)
+set(CMAKE_NM llvm-nm)
 set(CMAKE_RANLIB llvm-ranlib)
 set(CMAKE_LINKER ld.lld)
 set(CMAKE_OBJCOPY llvm-objcopy)
@@ -158,7 +161,7 @@ else()
     list(APPEND system_includes ${GCC_ARM_NONE_EABI_ROOT}/include)
   else()
     list(APPEND system_includes ${kvasir_cmake_dir}/../lib/libc/include)
-    list(APPEND system_includes ${kvasir_cmake_dir}/../lib/libm/include)
+    list(APPEND system_includes ${kvasir_cmake_dir}/../lib/libc)
   endif()
 endif()
 
@@ -244,19 +247,16 @@ if("${CPPLIB}" STREQUAL "libc++")
   list(
     APPEND
     profile_flags
-    -D_GNU_SOURCE
-    -D_POSIX_MEMALIGN_VISIBLE
     -D_LIBCPP_ABI_VERSION=2
-    -D_LIBCPP_ABI_UNSTABLE
-    -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE
-    -D_LIBCPP_HAS_NO_RANDOM_DEVICE
-    -D_LIBCPP_HAS_NO_GLOBAL_FILESYSTEM_NAMESPACE
-    -D_LIBCPP_HAS_NO_STDIN
-    -D_LIBCPP_HAS_NO_STDOUT
-    -D_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS
     -D_LIBCPP_HARDENING_MODE_DEFAULT=_LIBCPP_HARDENING_MODE_FAST
-    # -D_LIBCXXABI_NO_EXCEPTIONS -D_LIBCPP_NO_EXCEPTIONS -D_LIBCPP_NO_RTTI
-    # -D_LIBCPP_DISABLE_NEW_DELETE_DEFINITIONS -D_LIBCXXABI_HAS_NO_THREADS
+  )
+endif()
+
+if("${CLIB}" STREQUAL "llvm")
+  list(
+    APPEND
+    profile_flags
+    -DLIBC_NAMESPACE=__llvm_libc
   )
 endif()
 
