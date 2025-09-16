@@ -159,4 +159,3 @@ constexpr StaticString<sizeof...(chars)> operator""_ss() {
 }
 
 }   // namespace Kvasir
-

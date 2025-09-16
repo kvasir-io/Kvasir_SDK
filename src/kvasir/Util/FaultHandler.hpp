@@ -32,6 +32,31 @@ namespace Kvasir { namespace Fault {
         }
 
         [[gnu::naked]] static void onIsr() {
+#if defined(__thumb__) && __ARM_ARCH_ISA_THUMB == 1
+            // Thumb1 (Cortex-M0/M0+) compatible version
+            asm volatile(
+              "mov sp, %0         \n"
+              "blx %1             \n"
+              "mov r0, lr         \n"
+              "movs r1, #4        \n"
+              "tst r0, r1         \n"
+              "beq 1f             \n"
+              "mrs r0, psp        \n"
+              "b 2f               \n"
+              "1:                 \n"
+              "mrs r0, msp        \n"
+              "2:                 \n"
+              "mov r1, lr         \n"
+              "bl %2              \n"
+              "blx %3             \n"
+              :
+              : "l"(GetSafeStackPointer()),
+                "l"(std::addressof(CleanUpFunc)),
+                "i"(std::addressof(Core::Fault::Log)),
+                "l"(std::addressof(FaultFunc))
+              : "r0", "r1", "r2");
+#else
+            // Thumb2 (Cortex-M3/M4/M7+) optimized version
             asm volatile(
               "mov sp, %0         \n"
               "blx %1             \n"
@@ -48,6 +73,7 @@ namespace Kvasir { namespace Fault {
                 "i"(std::addressof(Core::Fault::Log)),
                 "l"(std::addressof(FaultFunc))
               : "r0", "r1", "r2");
+#endif
         }
 
         [[gnu::naked]] static void onIsrNoLog() {
@@ -62,7 +88,7 @@ namespace Kvasir { namespace Fault {
               :);
         }
 
-   //     static constexpr auto earlyInit = Core::Fault::EarlyInitList{};
+        //     static constexpr auto earlyInit = Core::Fault::EarlyInitList{};
 
         static constexpr auto initStepPeripheryEnable = MPL::list(
           Nvic::makeEnable(Nvic::InterruptOffsetTraits<>::FaultInterruptIndexsNeedEnable{}));
@@ -82,4 +108,3 @@ namespace Kvasir { namespace Fault {
           typename Kvasir::Nvic::InterruptOffsetTraits<>::FaultInterruptIndexs{}));
     };
 }}   // namespace Kvasir::Fault
-
