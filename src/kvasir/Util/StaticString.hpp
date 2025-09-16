@@ -22,12 +22,24 @@ struct StaticString {
 
     StaticString() = default;
 
-    constexpr StaticString(std::string_view sv) { *this = sv; }
+    template<std::size_t NN>
+    constexpr StaticString(char const (&str)[NN]) {
+        static_assert(N >= NN, "Buffer to small");
+        assign(std::string_view{str, NN - 1});
+    }
 
+    constexpr StaticString(std::string_view sv) { assign(sv); }
+
+    template<std::size_t NN>
+    constexpr StaticString& operator=(char const (&str)[NN]) {
+        static_assert(N >= NN, "Buffer to small");
+        assign(std::string_view{str, NN - 1});
+        return *this;
+    }
+
+    template<std::size_t NN>
     constexpr StaticString& operator=(std::string_view sv) {
-        assert(N >= sv.size());
-        std::copy(sv.begin(), sv.end(), buff.begin());
-        size_ = sv.size();
+        assign(sv);
         return *this;
     }
 
@@ -43,7 +55,7 @@ struct StaticString {
     StaticString operator+(std::string_view sv) const {
         auto newS = *this;
         assert(N >= sv.size() + newS.size());
-        std::copy(sv.begin(), sv.end(), newS.begin() + newS.size());
+        std::copy(sv.begin(), sv.end(), std::next(newS.begin(), std::ssize(newS)));
         newS.size_ = sv.size() + newS.size();
         return newS;
     }
@@ -128,6 +140,13 @@ struct StaticString {
     constexpr char& back() { return buff[size_ - 1]; }
 
     constexpr char const& back() const { return buff[size_ - 1]; }
+
+private:
+    void assign(std::string_view sv) {
+        assert(N >= sv.size());
+        std::copy(sv.begin(), sv.end(), buff.begin());
+        size_ = sv.size();
+    }
 };
 
 template<char... chars>
@@ -140,3 +159,4 @@ constexpr StaticString<sizeof...(chars)> operator""_ss() {
 }
 
 }   // namespace Kvasir
+

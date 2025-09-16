@@ -1,4 +1,5 @@
 #pragma once
+#include "core/Fault.hpp"
 #include "uc_log/uc_log.hpp"
 
 #include <cassert>
@@ -17,32 +18,68 @@ namespace Kvasir { namespace Fault {
         }
     };
 
-    template<typename TCleanUpAction = CleanUpActionNone, typename TFaultAction = FaultActionAssert>
+    template<typename TCleanUpAction       = CleanUpActionNone,
+             typename TFaultAction         = FaultActionAssert,
+             std::size_t StackReserveBytes = 16384>
     struct Handler {
-        static void CleanUp() { TCleanUpAction{}(); }
+        static void CleanUpFunc() { TCleanUpAction{}(); }
 
-        static void Fault() {
-            [[maybe_unused]] auto const faultInfo = Core::Fault::info();
-            UC_LOG_C("{}: fault flags: {:#010x}", faultInfo.first, faultInfo.second);
-            TFaultAction{}();
+        static void FaultFunc() { TFaultAction{}(); }
+
+        static constexpr auto GetSafeStackPointer() {
+            return reinterpret_cast<std::uint32_t>(std::addressof(_LINKER_stack_end_))
+                 - StackReserveBytes;
         }
 
         [[gnu::naked]] static void onIsr() {
-            asm("mov sp, %0 \n" : : "l"(std::addressof(_LINKER_stack_end_)) :);
-            asm("blx %0 \n" : : "l"(std::addressof(CleanUp)) :);
-            asm("blx %0 \n" : : "l"(std::addressof(Fault)) :);
+            asm volatile(
+              "mov sp, %0         \n"
+              "blx %1             \n"
+              "tst lr, #4         \n"
+              "ite eq             \n"
+              "mrseq r0, msp      \n"
+              "mrsne r0, psp      \n"
+              "mov r1, lr         \n"
+              "bl %2              \n"
+              "blx %3             \n"
+              :
+              : "l"(GetSafeStackPointer()),
+                "l"(std::addressof(CleanUpFunc)),
+                "i"(std::addressof(Core::Fault::Log)),
+                "l"(std::addressof(FaultFunc))
+              : "r0", "r1", "r2");
         }
+
+        [[gnu::naked]] static void onIsrNoLog() {
+            asm volatile(
+              "mov sp, %0         \n"
+              "blx %1             \n"
+              "blx %2             \n"
+              :
+              : "l"(GetSafeStackPointer()),
+                "l"(std::addressof(CleanUpFunc)),
+                "l"(std::addressof(FaultFunc))
+              :);
+        }
+
+   //     static constexpr auto earlyInit = Core::Fault::EarlyInitList{};
 
         static constexpr auto initStepPeripheryEnable = MPL::list(
           Nvic::makeEnable(Nvic::InterruptOffsetTraits<>::FaultInterruptIndexsNeedEnable{}));
 
         template<typename... Ts>
         static constexpr auto makeIsr(brigand::list<Ts...>) {
+#ifdef USE_UC_LOG
             return brigand::list<
               Kvasir::Nvic::Isr<std::addressof(onIsr), Nvic::Index<Ts::value>>...>{};
+#else
+            return brigand::list<
+              Kvasir::Nvic::Isr<std::addressof(onIsrNoLog), Nvic::Index<Ts::value>>...>{};
+#endif
         }
 
         using Isr = decltype(makeIsr(
           typename Kvasir::Nvic::InterruptOffsetTraits<>::FaultInterruptIndexs{}));
     };
 }}   // namespace Kvasir::Fault
+

@@ -42,6 +42,13 @@ namespace Kvasir { namespace Startup {
         struct Listify<br::list<Ts...>> : br::list<Ts...> {};
 
         template<typename T, typename = void>
+        struct GetEarlyInit : br::list<> {};
+
+        template<typename T>
+        struct GetEarlyInit<T, VoidT<decltype(T::earlyInit)>>
+          : Listify<RemoveCVT<decltype(T::earlyInit)>> {};
+
+        template<typename T, typename = void>
         struct GetPowerClockInit : br::list<> {};
 
         template<typename T>
@@ -143,6 +150,17 @@ namespace Kvasir { namespace Startup {
 
     template<typename... Ts>
     using GetIsrPointersT = typename GetIsrPointers<Ts...>::type;
+
+    template<typename... Ts>
+    struct GetEarlyInit {
+        // make list of lists of actions corresponding to each sequence for each module
+        using FlattenedSequencePieces
+          = brigand::list<brigand::flatten<typename Detail::GetEarlyInit<Ts>::type>...>;
+        using type = brigand::flatten<FlattenedSequencePieces>;
+    };
+
+    template<typename... Ts>
+    using GetEarlyInitT = typename GetEarlyInit<Ts...>::type;
 
     template<typename... Ts>
     struct GetPowerClockInit {
@@ -317,6 +335,9 @@ namespace Kvasir { namespace Startup {
           gnu::always_inline]] static void
         ResetISR() {
             FirstInitStep<Kvasir::Tag::User>{}();
+
+            Kvasir::Register::apply(Kvasir::Startup::GetEarlyInitT<Peripherals...>{});
+
             ClockSettings::coreClockInit();
 
             initMemory();
@@ -425,7 +446,7 @@ __aeabi_ldiv0(long long) {
 }
 
 namespace std {
-void terminate() noexcept { assert(false); }
+//void terminate() noexcept { assert(false); }
 }   // namespace std
 
 void operator delete(void*) {}
