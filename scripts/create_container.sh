@@ -2,7 +2,7 @@
 
 set -e
 
-if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then 
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
     echo "Usage: $0 [--local] - Gets Kvasir development Docker container"
     echo "  (default): Pull prebuilt container from DockerHub"
     echo "  --local:   Build container locally from Dockerfile"

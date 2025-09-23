@@ -6,9 +6,6 @@ on:
         - cron: '0 2 1 * *'
     push:
         branches: [master]
-        paths: 
-            - 'scripts/Dockerfile'
-            - '.github/workflows/docker-build.yml'
     workflow_dispatch:
 
 jobs:
@@ -17,9 +14,35 @@ jobs:
         outputs:
             should-build: ${{ steps.check-build.outputs.should-build }}
             build-date: ${{ steps.check-build.outputs.build-date }}
+            env-files-changed: ${{ steps.check-env-changes.outputs.env-files-changed }}
         steps:
             - name: Checkout repository
               uses: actions/checkout@v4
+              with:
+                submodules: recursive
+
+            - name: Check if build environment files changed
+              id: check-env-changes
+              run: |
+                # Check if build environment related files changed
+                if [ "${{ github.event_name }}" = "push" ]; then
+                  # Get changed files in the push
+                  CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD || echo "")
+                  echo "Changed files: $CHANGED_FILES"
+
+                  # Check if build environment files changed
+                  if echo "$CHANGED_FILES" | grep -E "(scripts/Dockerfile\.build-env|\.github/workflows/docker-build\.yml)" > /dev/null; then
+                    echo "env-files-changed=true" >> $GITHUB_OUTPUT
+                    echo "Build environment files changed"
+                  else
+                    echo "env-files-changed=false" >> $GITHUB_OUTPUT
+                    echo "No build environment files changed"
+                  fi
+                else
+                  # For schedule or manual triggers, always check
+                  echo "env-files-changed=true" >> $GITHUB_OUTPUT
+                  echo "Non-push trigger - checking build environment"
+                fi
 
             - name: Check if build is needed
               id: check-build
@@ -64,11 +87,13 @@ jobs:
 
     docker-build-push:
         needs: check-build-needed
-        if: needs.check-build-needed.outputs.should-build == 'true'
+        if: needs.check-build-needed.outputs.should-build == 'true' && needs.check-build-needed.outputs.env-files-changed == 'true'
         runs-on: ubuntu-latest
         steps:
             - name: Checkout repository
               uses: actions/checkout@v4
+              with:
+                submodules: recursive
 
             - name: Set up Docker Buildx
               uses: docker/setup-buildx-action@v3
@@ -83,7 +108,7 @@ jobs:
               uses: docker/build-push-action@v5
               with:
                 context: scripts
-                file: scripts/Dockerfile
+                file: scripts/Dockerfile.build-env
                 push: true
                 platforms: linux/amd64
                 tags: |
@@ -92,20 +117,108 @@ jobs:
                 cache-from: type=gha
                 cache-to: type=gha,mode=max
 
+    kvasir-build-push:
+        needs: [check-build-needed, docker-build-push]
+        if: always() && (needs.docker-build-push.result == 'success' || (needs.check-build-needed.outputs.env-files-changed == 'false' && github.event_name == 'push') || (github.event_name != 'push'))
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+              with:
+                submodules: recursive
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+
+            - name: Log in to DockerHub
+              uses: docker/login-action@v3
+              with:
+                username: ${{ secrets.DOCKERHUB_USERNAME }}
+                password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+            - name: Build and push Kvasir Docker image
+              uses: docker/build-push-action@v5
+              with:
+                context: .
+                file: scripts/Dockerfile.kvasir
+                push: true
+                platforms: linux/amd64
+                tags: |
+                    kvasirio/kvasir:latest
+                    kvasirio/kvasir:${{ needs.check-build-needed.outputs.build-date }}
+                cache-from: type=gha
+                cache-to: type=gha,mode=max
+
+            - name: Trigger chip container rebuilds
+              uses: actions/github-script@v7
+              with:
+                github-token: ${{ secrets.GITHUB_TOKEN }}
+                script: |
+                    // Array of chip repositories to trigger
+                    const chipRepos = [
+                        {
+                            repo: 'chip_rp2350',
+                            workflow: 'rp2350-docker-build.yml',
+                            name: 'RP2350'
+                        }
+                        // Add more chip repositories here as needed
+                        // Example:
+                        // {
+                        //     repo: 'chip_rp2040',
+                        //     workflow: 'rp2040-docker-build.yml',
+                        //     name: 'RP2040'
+                        // }
+                    ];
+
+                    // Trigger each chip repository
+                    const results = [];
+                    for (const chip of chipRepos) {
+                        try {
+                            await github.rest.actions.createWorkflowDispatch({
+                                owner: context.repo.owner,
+                                repo: chip.repo,
+                                workflow_id: chip.workflow,
+                                ref: 'master'
+                            });
+                            console.log(`✅ Successfully triggered ${chip.name} container rebuild (${chip.repo})`);
+                            results.push(`✅ ${chip.name}: Success`);
+                        } catch (error) {
+                            console.log(`❌ Could not trigger ${chip.name} container rebuild: ${error.message}`);
+                            results.push(`❌ ${chip.name}: ${error.message}`);
+                            // Continue with other repos even if one fails
+                        }
+                    }
+
+                    // Summary
+                    console.log('\n=== Chip Container Trigger Summary ===');
+                    results.forEach(result => console.log(result));
+
+                    // Set output for use in notifications
+                    core.setOutput('trigger-results', results.join('; '));
 
     notify-status:
         runs-on: ubuntu-latest
-        needs: [check-build-needed, docker-build-push]
+        needs: [check-build-needed, docker-build-push, kvasir-build-push]
         if: always()
         steps:
             - name: Set build status
               run: |
+                ENV_CHANGED="${{ needs.check-build-needed.outputs.env-files-changed }}"
+                ENV_RESULT="${{ needs.docker-build-push.result }}"
+                KVASIR_RESULT="${{ needs.kvasir-build-push.result }}"
+
                 if [ "${{ needs.check-build-needed.outputs.should-build }}" = "false" ]; then
                   echo "BUILD_STATUS=skipped" >> $GITHUB_ENV
-                  echo "BUILD_MESSAGE=⏭️ Docker build skipped - image is recent and Dockerfile unchanged" >> $GITHUB_ENV
-                elif [ "${{ needs.docker-build-push.result }}" = "success" ]; then
+                  echo "BUILD_MESSAGE=⏭️ Docker build skipped - image is recent and no relevant files changed" >> $GITHUB_ENV
+                elif [ "$ENV_CHANGED" = "true" ] && [ "$ENV_RESULT" = "success" ] && [ "$KVASIR_RESULT" = "success" ]; then
                   echo "BUILD_STATUS=success" >> $GITHUB_ENV
-                  echo "BUILD_MESSAGE=✅ Docker image built and pushed to kvasirio/build_environment:latest" >> $GITHUB_ENV
+                  echo "BUILD_MESSAGE=✅ Both containers built and pushed: kvasirio/build_environment:latest and kvasirio/kvasir:latest" >> $GITHUB_ENV
+                elif [ "$ENV_CHANGED" = "false" ] && [ "$KVASIR_RESULT" = "success" ]; then
+                  echo "BUILD_STATUS=success" >> $GITHUB_ENV
+                  echo "BUILD_MESSAGE=✅ Kvasir container built and pushed: kvasirio/kvasir:latest (build environment unchanged)" >> $GITHUB_ENV
+                elif [ "$ENV_CHANGED" = "true" ] && [ "$ENV_RESULT" = "success" ] && [ "$KVASIR_RESULT" != "success" ]; then
+                  echo "BUILD_STATUS=partial" >> $GITHUB_ENV
+                  echo "BUILD_MESSAGE=⚠️ Build environment succeeded but kvasir container failed" >> $GITHUB_ENV
                 elif [ "${{ needs.docker-build-push.result }}" = "failure" ]; then
                   echo "BUILD_STATUS=failure" >> $GITHUB_ENV
                   echo "BUILD_MESSAGE=❌ Docker build failed - check workflow logs" >> $GITHUB_ENV
@@ -125,6 +238,7 @@ jobs:
                     if (status === 'success') state = 'success';
                     else if (status === 'failure') state = 'failure';
                     else if (status === 'skipped') state = 'success';
+                    else if (status === 'partial') state = 'failure';
                     else state = 'error';
 
                     await github.rest.repos.createCommitStatus({
@@ -143,12 +257,29 @@ jobs:
                 echo "" >> $GITHUB_STEP_SUMMARY
                 echo "${{ env.BUILD_MESSAGE }}" >> $GITHUB_STEP_SUMMARY
 
-                if [ "${{ needs.check-build-needed.outputs.should-build }}" = "true" ] && \
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "**Image Tags:**" >> $GITHUB_STEP_SUMMARY
+
+                # Show build environment tags if it was built
+                if [ "${{ needs.check-build-needed.outputs.env-files-changed }}" = "true" ] && \
                    [ "${{ needs.docker-build-push.result }}" = "success" ]; then
-                  echo "" >> $GITHUB_STEP_SUMMARY
-                  echo "**Image Tags:**" >> $GITHUB_STEP_SUMMARY
                   echo "- \`kvasirio/build_environment:latest\`" >> $GITHUB_STEP_SUMMARY
                   echo "- \`kvasirio/build_environment:${{ needs.check-build-needed.outputs.build-date }}\`" >> $GITHUB_STEP_SUMMARY
-                  echo "" >> $GITHUB_STEP_SUMMARY
-                  echo "[View on DockerHub](https://hub.docker.com/r/kvasirio/build_environment)" >> $GITHUB_STEP_SUMMARY
+                fi
+
+                # Show kvasir tags if it was built
+                if [ "${{ needs.kvasir-build-push.result }}" = "success" ]; then
+                  echo "- \`kvasirio/kvasir:latest\`" >> $GITHUB_STEP_SUMMARY
+                  echo "- \`kvasirio/kvasir:${{ needs.check-build-needed.outputs.build-date }}\`" >> $GITHUB_STEP_SUMMARY
+                fi
+
+                echo "" >> $GITHUB_STEP_SUMMARY
+
+                # Show links for built containers
+                if [ "${{ needs.docker-build-push.result }}" = "success" ]; then
+                  echo "[View Build Environment on DockerHub](https://hub.docker.com/r/kvasirio/build_environment)" >> $GITHUB_STEP_SUMMARY
+                fi
+
+                if [ "${{ needs.kvasir-build-push.result }}" = "success" ]; then
+                  echo "[View Kvasir on DockerHub](https://hub.docker.com/r/kvasirio/kvasir)" >> $GITHUB_STEP_SUMMARY
                 fi

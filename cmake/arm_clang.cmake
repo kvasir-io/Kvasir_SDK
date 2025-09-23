@@ -90,7 +90,7 @@ set(target_flags
 
 set(optimize_option_common -ggdb3 -flto -fwhole-program-vtables -fforce-emit-vtables)
 
-set(optimize_option_speed ${optimize_option_common} -Ofast -mllvm -arm-promote-constant=true)
+set(optimize_option_speed ${optimize_option_common} -O3 -mllvm -arm-promote-constant=true)
 set(optimize_option_size ${optimize_option_common} -Oz)
 set(optimize_option_debug ${optimize_option_common} -Og)
 

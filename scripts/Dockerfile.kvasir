@@ -1,0 +1,7 @@
+FROM kvasirio/build_environment:latest AS kvasir_dev
+
+ENV KVASIR_ROOT=/opt/kvasir
+COPY . ${KVASIR_ROOT}/
+WORKDIR ${KVASIR_ROOT}
+RUN git config --global --add safe.directory ${KVASIR_ROOT}
+ENTRYPOINT ${KVASIR_ROOT}/scripts/entrypoint.sh
