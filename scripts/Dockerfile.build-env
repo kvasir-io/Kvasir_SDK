@@ -31,6 +31,3 @@ RUN pacman --disable-download-timeout --noconfirm -Syyu && \
     mkdir /project
 
 WORKDIR /project
-
-FROM build_env AS build
-ENTRYPOINT ["/project/kvasir/scripts/entrypoint.sh"]
