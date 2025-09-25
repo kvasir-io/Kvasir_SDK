@@ -1,7 +1,7 @@
 # Kvasir Utility Functions Core utility functions and target configuration for Kvasir framework Provides build system
 # integration, size reporting, and target setup
 
-include(${kvasir_cmake_dir}/../cmake_git_version/CMakeLists.txt)
+include(${KVASIR_ROOT_DIR}/cmake_git_version/CMakeLists.txt)
 
 find_package(
     Python3
@@ -195,9 +195,9 @@ function(
     target_link_libraries(${name} peripherals)
     target_link_libraries(${name} core_peripherals)
     target_link_libraries(${name} uc_log::uc_log)
-    target_include_directories(${name} PUBLIC ${kvasir_cmake_dir}/../src)
-    target_include_directories(${name} PUBLIC ${kvasir_cmake_dir}/../../chip/src)
-    target_include_directories(${name} PUBLIC ${kvasir_cmake_dir}/../../chip/core/src)
+    target_include_directories(${name} PUBLIC ${KVASIR_ROOT_DIR}/src)
+    target_include_directories(${name} PUBLIC ${CHIP_ROOT_DIR}/src)
+    target_include_directories(${name} PUBLIC ${CHIP_ROOT_DIR}/core/src)
     generate_object(${name} .bin binary)
     generate_object(${name} .hex ihex)
     generate_lst(${name})

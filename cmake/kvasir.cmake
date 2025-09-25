@@ -5,6 +5,27 @@ set(kvasir_cmake_dir
     ${CMAKE_CURRENT_LIST_DIR}
     CACHE INTERNAL "")
 
+# Detect if running in container (env vars set) vs submodule mode
+if(DEFINED ENV{KVASIR_ROOT} AND DEFINED ENV{CHIP_ROOT})
+    # Container mode - use environment variables
+    set(KVASIR_ROOT_DIR $ENV{KVASIR_ROOT})
+    set(CHIP_ROOT_DIR $ENV{CHIP_ROOT})
+    message(STATUS "Kvasir: Container mode detected - KVASIR_ROOT=${KVASIR_ROOT_DIR}, CHIP_ROOT=${CHIP_ROOT_DIR}")
+else()
+    # Submodule mode - use relative paths
+    set(KVASIR_ROOT_DIR ${CMAKE_CURRENT_LIST_DIR}/..)
+    set(CHIP_ROOT_DIR ${CMAKE_CURRENT_LIST_DIR}/../../chip)
+    message(STATUS "Kvasir: Submodule mode detected - using relative paths")
+endif()
+
+# Make these available globally
+set(KVASIR_ROOT_DIR
+    ${KVASIR_ROOT_DIR}
+    CACHE INTERNAL "")
+set(CHIP_ROOT_DIR
+    ${CHIP_ROOT_DIR}
+    CACHE INTERNAL "")
+
 include(${CMAKE_CURRENT_LIST_DIR}/tidy.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/cppcheck.cmake)
 
@@ -26,10 +47,10 @@ endif()
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CROSSCOMPILING True)
-add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../svd_converter)
-add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../uc_log)
+add_subdirectory(${KVASIR_ROOT_DIR}/svd_converter ${CMAKE_BINARY_DIR}/kvasir_svd_converter)
+add_subdirectory(${KVASIR_ROOT_DIR}/uc_log ${CMAKE_BINARY_DIR}/kvasir_uc_log)
 
-include(${CMAKE_CURRENT_LIST_DIR}/../../chip/cmake/chip.cmake)
+include(${CHIP_ROOT_DIR}/cmake/chip.cmake)
 
 set(COMPILE_TARGET
     arm_clang
