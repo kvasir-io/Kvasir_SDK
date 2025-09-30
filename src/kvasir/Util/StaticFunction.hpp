@@ -20,6 +20,8 @@ struct StaticFunction<R(Args...), Size> {
     constexpr StaticFunction(StaticFunction&& other)            = default;
     constexpr StaticFunction& operator=(StaticFunction&& other) = default;
 
+    constexpr ~StaticFunction() = default;
+
     template<typename F>
     constexpr StaticFunction(F&& f)
       : invoke_ptr{[](Storage_t const& s,

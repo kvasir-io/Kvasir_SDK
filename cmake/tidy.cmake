@@ -45,16 +45,38 @@ if(USE_TIDY)
             bugprone-dynamic-static-initializers
             cppcoreguidelines-avoid-non-const-global-variables
             readability-qualified-auto
+            readability-identifier-length
+            performance-enum-size
+            modernize-use-constraints
+            readability-function-cognitive-complexity
+            cppcoreguidelines-avoid-do-while
+            readability-redundant-casting
+            fuchsia-multiple-inheritance
+            cppcoreguidelines-pro-bounds-constant-array-index
+            modernize-type-traits
+            readability-duplicate-include
+            cppcoreguidelines-macro-to-enum
+            modernize-macro-to-enum
+            readability-convert-member-functions-to-static
+            readability-implicit-bool-conversion
+            bugprone-easily-swappable-parameters
+            cppcoreguidelines-avoid-const-or-ref-data-members
+            cppcoreguidelines-pro-type-const-cast
+            readability-redundant-inline-specifier
+            modernize-use-auto
+            cppcoreguidelines-rvalue-reference-param-not-moved
+            performance-no-int-to-ptr
+            bugprone-crtp-constructor-accessibility
+            readability-redundant-declaration
+            cppcoreguidelines-pro-bounds-array-to-pointer-decay
+            bugprone-forwarding-reference-overload
+            bugprone-branch-clone
+            bugprone-macro-parentheses
+            readability-simplify-boolean-expr
+            readability-function-size
             ${GLOBAL_CXX_CLANG_TIDY_DISABLED_CHECKS})
 
-        set(enabled_clang_tidy_checks
-            bugprone*
-            clang-analyzer*
-            cppcoreguidelines*
-            # modernize*
-            performance*
-            # readability*
-        )
+        set(enabled_clang_tidy_checks bugprone* clang-analyzer* cppcoreguidelines* modernize* performance* readability*)
 
         list(JOIN enabled_clang_tidy_checks "," enabled_clang_tidy_checks_)
 
@@ -86,6 +108,6 @@ endif()
 function(target_add_tidy_flags target)
     if(USE_TIDY)
         set_target_properties(${target} PROPERTIES CXX_CLANG_TIDY "${DO_CLANG_TIDY_CXX}")
-        # set_target_properties(${target} PROPERTIES C_CLANG_TIDY  "${DO_CLANG_TIDY_C}")
+        set_target_properties(${target} PROPERTIES C_CLANG_TIDY "${DO_CLANG_TIDY_C}")
     endif()
 endfunction()

@@ -36,6 +36,8 @@ function(target_add_flash_jlink target)
 
     find_program(jlinkexe JLinkExe REQUIRED)
 
+    mark_as_advanced(FORCE jlinkexe)
+
     file(
         CONFIGURE
         OUTPUT

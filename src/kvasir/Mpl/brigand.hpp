@@ -217,7 +217,7 @@ namespace detail {
     template<class T, template<class...> class List, std::size_t N>
     struct filled_list_impl
       : dup_append_list<typename filled_list_impl<T, List, N / 2>::type,
-                        typename filled_list_impl<T, List, N - N / 2 * 2>::type> {};
+                        typename filled_list_impl<T, List, N - (N / 2 * 2)>::type> {};
 
     template<class T, template<class...> class List>
     struct filled_list_impl<T, List, 1> {
@@ -1157,7 +1157,7 @@ template<class F,
          class... Ts>
 F for_each_args(F f,
                 Ts&&... a) {
-    (void)std::initializer_list<int>{((void)std::ref(f)(static_cast<Ts&&>(a)), 0)...};
+    (void)std::initializer_list<int>{((void)std::ref(f)(std::forward<Ts>(a)), 0)...};
     return f;
 }
 }   // namespace brigand
@@ -1167,7 +1167,7 @@ namespace detail {
     template<template<class...> class List,
              typename... Elements,
              typename Functor>
-    Functor for_each_impl(List<Elements...>&&,
+    Functor for_each_impl(List<Elements...>&&,   //NOLINT
                           Functor f) {
         return for_each_args(f, type_<Elements>()...);
     }
@@ -1201,7 +1201,7 @@ namespace detail {
     struct range_impl
       : range_cat<T,
                   typename range_impl<T, Start, N / 2>::type,
-                  typename range_impl<T, Start, N - N / 2>::type,
+                  typename range_impl<T, Start, N - (N / 2)>::type,
                   N / 2> {};
 
     template<class T, T Start>
@@ -1230,7 +1230,7 @@ namespace detail {
     struct reverse_range_impl
       : reverse_range_cat<T,
                           typename reverse_range_impl<T, Start, N / 2>::type,
-                          typename reverse_range_impl<T, Start, N - N / 2>::type,
+                          typename reverse_range_impl<T, Start, N - (N / 2)>::type,
                           N / 2> {};
 
     template<class T, T Start>

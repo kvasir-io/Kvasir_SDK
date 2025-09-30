@@ -101,7 +101,7 @@ namespace Kvasir { namespace literals { namespace detail {
         template<typename T,
                  T Base>
         static constexpr T parse(T value) {
-            return parse_loop<Tail...>::template parse<T, Base>(value * Base
+            return parse_loop<Tail...>::template parse<T, Base>((value * Base)
                                                                 + to_digit<T, Base, Head>());
         }
     };

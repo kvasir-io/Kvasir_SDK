@@ -12,7 +12,7 @@ from typing import List, Union
 
 class MemoryRegion:
     """Represents a memory region with its size and associated sections."""
-    
+
     def __init__(self, name: str, size: Union[int, str], sections: List[str]) -> None:
         self.name = name
         self.size = size
@@ -21,7 +21,7 @@ class MemoryRegion:
 
 class PrintRecord:
     """Represents a formatted record for memory usage display."""
-    
+
     def __init__(self, name: str, used: Union[int, str], size: Union[int, str], perc: Union[float, str]) -> None:
         self.name = name
         self.used = used
@@ -31,7 +31,7 @@ class PrintRecord:
 
 class Section:
     """Represents a binary section with its name and size."""
-    
+
     def __init__(self, name: str, size: str) -> None:
         self.name = name
         self.size = size
@@ -54,15 +54,15 @@ def machinebytes(size_string: str) -> int:
     """Convert size string with suffixes (K, M) to bytes."""
     if not size_string:
         return 0
-        
+
     match = re.search(r'^\d+', size_string)
     if not match:
         raise ValueError(f"Invalid size format: {size_string}")
-        
+
     match_end = match.end()
     int_size = int(size_string[0:match_end])
     extension_part = size_string[match_end:]
-    
+
     if "K" in extension_part:
         return int_size * 1024
     if "M" in extension_part:
@@ -70,12 +70,13 @@ def machinebytes(size_string: str) -> int:
 
     return int_size
 
+
 def main() -> None:
     """Main function to analyze memory usage and generate report."""
     if len(sys.argv) != 7:
         print("Usage: pretty_size.py <size_tool> <binary> <flash_size> <ram_size> <eeprom_size> <linker_file>", file=sys.stderr)
         sys.exit(1)
-    
+
     memory_regions: List[MemoryRegion] = []
 
     size_tool = sys.argv[1]
@@ -89,7 +90,7 @@ def main() -> None:
     try:
         with open(linker_file, 'r') as f:
             linker_file_content = f.readlines()
-        
+
         for line in linker_file_content:
             key = "LENGTH"
             pos = line.find(key)
@@ -99,18 +100,18 @@ def main() -> None:
                     if len(tokens) < 1:
                         continue
                     region = tokens[0]
-                    
+
                     length_tokens = line[pos+len(key):].split()
                     if len(length_tokens) < 2:
                         continue
-                        
+
                     size = machinebytes(length_tokens[1])
                     if len(length_tokens) > 3:
                         if length_tokens[2] == "-":
                             size = size - machinebytes(length_tokens[3])
                         elif length_tokens[2] == "+":
                             size = size + machinebytes(length_tokens[3])
-                            
+
                     if region == "flash":
                         f_size = size
                     elif region == "ram":
@@ -118,9 +119,11 @@ def main() -> None:
                     elif region == "eeprom":
                         e_size = size
                 except (IndexError, ValueError, AttributeError) as e:
-                    print(f"Error parsing line '{line.strip()}': {e}", file=sys.stderr)
+                    print(
+                        f"Error parsing line '{line.strip()}': {e}", file=sys.stderr)
     except (IOError, OSError) as e:
-        print(f"Error reading linker file '{linker_file}': {e}", file=sys.stderr)
+        print(
+            f"Error reading linker file '{linker_file}': {e}", file=sys.stderr)
         # Continue with provided sizes as fallback
 
     # Convert string sizes to integers if needed
@@ -136,12 +139,14 @@ def main() -> None:
         sys.exit(1)
 
     memory_regions.append(MemoryRegion("flash", f_size, [".text", ".data"]))
-    memory_regions.append(MemoryRegion("ram", r_size, [".data", ".bss", ".heap", ".noInit", ".noInitLowRam"]))
+    memory_regions.append(MemoryRegion(
+        "ram", r_size, [".data", ".bss", ".heap", ".noInit", ".noInitLowRam"]))
     memory_regions.append(MemoryRegion("eeprom", e_size, [".eeprom"]))
 
     # Get section information from binary
     try:
-        objdump_res = subprocess.check_output([size_tool, "--format=sysv", binary], stderr=subprocess.STDOUT)
+        objdump_res = subprocess.check_output(
+            [size_tool, "--format=sysv", binary], stderr=subprocess.STDOUT)
         lines = objdump_res.splitlines()
     except subprocess.CalledProcessError as e:
         print(f"Error running size tool '{size_tool}': {e}", file=sys.stderr)
@@ -165,7 +170,8 @@ def main() -> None:
         try:
             sl = line.split()
             if len(sl) >= 2:
-                sections.append(Section(sl[0].decode('cp437'), sl[1].decode('cp437')))
+                sections.append(Section(sl[0].decode(
+                    'cp437'), sl[1].decode('cp437')))
         except (UnicodeDecodeError, IndexError) as e:
             print(f"Error parsing section line: {e}", file=sys.stderr)
             continue
@@ -183,7 +189,8 @@ def main() -> None:
                         try:
                             pr.used += int(s.size)
                         except ValueError:
-                            print(f"Warning: Could not parse section size '{s.size}' for section '{s.name}'", file=sys.stderr)
+                            print(
+                                f"Warning: Could not parse section size '{s.size}' for section '{s.name}'", file=sys.stderr)
 
     # Format output
     for pr in print_records:
@@ -195,7 +202,8 @@ def main() -> None:
             pr.used = humanbytes(pr.used)
             pr.size = humanbytes(pr.size)
         except (ValueError, ZeroDivisionError) as e:
-            print(f"Error formatting record for {pr.name}: {e}", file=sys.stderr)
+            print(
+                f"Error formatting record for {pr.name}: {e}", file=sys.stderr)
             pr.perc = "N/A"
 
     # Calculate column widths
@@ -204,9 +212,11 @@ def main() -> None:
     size_size = max(14, max(len(str(pr.size)) for pr in print_records))
     size_perc = max(14, max(len(str(pr.perc)) for pr in print_records))
 
-    fmt_string = "{{:>{}}} {{:>{}}} {{:>{}}} {{:>{}}}".format(size_name, size_used, size_size, size_perc)
+    fmt_string = "{{:>{}}} {{:>{}}} {{:>{}}} {{:>{}}}".format(
+        size_name, size_used, size_size, size_perc)
 
-    print(fmt_string.format("Memory region", "Used Size", "Region Size", "%age Used"))
+    print(fmt_string.format("Memory region",
+          "Used Size", "Region Size", "%age Used"))
     for pr in print_records:
         print(fmt_string.format(pr.name, pr.used, pr.size, pr.perc))
 

@@ -28,10 +28,11 @@ sys.argv[ocnt] = name + ".step1"
 process = subprocess.Popen(sys.argv[2:])
 process.wait()
 if process.returncode != 0:
-    os.remove(name + ".step1");
+    os.remove(name + ".step1")
     exit(1)
 
-objdump_res = subprocess.check_output([sys.argv[1], "--format=sysv", sys.argv[ocnt]])
+objdump_res = subprocess.check_output(
+    [sys.argv[1], "--format=sysv", sys.argv[ocnt]])
 lines = objdump_res.splitlines()
 
 del lines[-1]
@@ -39,10 +40,12 @@ del lines[-1]
 del lines[0]
 del lines[0]
 
+
 class Section:
     def __init__(self, n, si):
         self.name = n
         self.size = si
+
 
 sections = []
 
@@ -61,17 +64,20 @@ for s in sections:
         size = size + int(s.size)
     if s.name == ".noInitLowRam":
         size = size + int(s.size)
+
+
 def parseSize(sie):
     si = sie.split("=")[-1]
     if "k" in si:
         return int(si[:-1])*1024
     return int(si)
 
+
 ramsize = parseSize(sys.argv[rcnt])
 heapsize = parseSize(sys.argv[hcnt])
 minstacksize = parseSize(sys.argv[mcnt])
 
-stack_size_extra = (ramsize - (size+minstacksize+heapsize+ int(ramsize/256)))
+stack_size_extra = (ramsize - (size+minstacksize+heapsize + int(ramsize/256)))
 
 earg = sys.argv[ecnt].split("=")
 
@@ -83,6 +89,6 @@ sys.argv[ocnt] = name
 process = subprocess.Popen(sys.argv[2:])
 process.wait()
 
-os.remove(name + ".step1");
+os.remove(name + ".step1")
 if process.returncode != 0:
     exit(1)

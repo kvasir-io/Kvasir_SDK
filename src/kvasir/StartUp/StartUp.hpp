@@ -450,4 +450,6 @@ namespace std {
 }   // namespace std
 
 void operator delete(void*) {}
-void operator delete(void*, std::size_t) {}
+
+void operator delete(void*,
+                     std::size_t) {}

@@ -431,6 +431,8 @@ function(target_configure_kvasir target)
     endif()
 
     kvasir_set_target_property(${target} ASSERT ${USE_ASSERT})
+    target_add_tidy_flags(${target})
+    target_add_cppcheck_flags(${target})
 
     if(NOT ${PARSED_ARGS_APPLICATION} STREQUAL "FALSE")
         target_compile_definitions(${target} PUBLIC INPUT_ENABLE_SELF_OVERRIDE=${PARSED_ARGS_ENABLE_SELF_OVERRIDE})
@@ -438,3 +440,6 @@ function(target_configure_kvasir target)
     endif()
 
 endfunction()
+
+mark_as_advanced(FORCE CMAKE_INSTALL_PREFIX)
+mark_as_advanced(FORCE CMAKE_BUILD_TYPE)
