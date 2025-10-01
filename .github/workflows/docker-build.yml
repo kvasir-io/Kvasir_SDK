@@ -7,6 +7,12 @@ on:
     push:
         branches: [master]
     workflow_dispatch:
+        inputs:
+            rebuild_build_env:
+                description: 'Force rebuild build environment'
+                required: false
+                type: boolean
+                default: false
 
 jobs:
     check-build-needed:
@@ -39,9 +45,14 @@ jobs:
                     echo "No build environment files changed"
                   fi
                 else
-                  # For schedule or manual triggers, always check
-                  echo "env-files-changed=true" >> $GITHUB_OUTPUT
-                  echo "Non-push trigger - checking build environment"
+                  # For schedule or manual triggers with input, check build environment
+                  if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.rebuild_build_env }}" = "true" ]; then
+                    echo "env-files-changed=true" >> $GITHUB_OUTPUT
+                    echo "Non-push trigger - checking build environment"
+                  else
+                    echo "env-files-changed=false" >> $GITHUB_OUTPUT
+                    echo "Manual/external trigger - skipping build environment"
+                  fi
                 fi
 
             - name: Check if build is needed
