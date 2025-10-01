@@ -1,7 +1,13 @@
 FROM kvasirio/build_environment:latest AS kvasir_dev
 
 ENV KVASIR_ROOT=/opt/kvasir
+ENV KVASIR_DEVICES_ROOT=/opt/kvasir_devices
+
 COPY . ${KVASIR_ROOT}/
 RUN git config --global --add safe.directory ${KVASIR_ROOT}
+
+# Clone kvasir_devices repository
+RUN git clone https://github.com/kvasir-io/kvasir_devices.git ${KVASIR_DEVICES_ROOT} && \
+    git config --global --add safe.directory ${KVASIR_DEVICES_ROOT}
 
 ENTRYPOINT ["/opt/kvasir/scripts/entrypoint.sh"]

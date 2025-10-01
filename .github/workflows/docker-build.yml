@@ -119,7 +119,7 @@ jobs:
 
     kvasir-build-push:
         needs: [check-build-needed, docker-build-push]
-        if: always() && (needs.docker-build-push.result == 'success' || (needs.check-build-needed.outputs.env-files-changed == 'false' && github.event_name == 'push') || (github.event_name != 'push'))
+        if: always() && (needs.docker-build-push.result == 'success' || (needs.check-build-needed.outputs.env-files-changed == 'false' && github.event_name == 'push') || (github.event_name != 'push') || github.event_name == 'workflow_dispatch')
         runs-on: ubuntu-latest
         steps:
             - name: Checkout repository
