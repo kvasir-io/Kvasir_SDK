@@ -228,7 +228,8 @@ set(common_warning_flags
 set(profile_flags)
 
 if("${CPPLIB}" STREQUAL "libc++")
-    list(APPEND profile_flags -D_LIBCPP_ABI_VERSION=2 -D_LIBCPP_HARDENING_MODE_DEFAULT=_LIBCPP_HARDENING_MODE_FAST)
+    list(APPEND profile_flags -D_LIBCPP_ABI_VERSION=2 -D_LIBCPP_HARDENING_MODE_DEFAULT=_LIBCPP_HARDENING_MODE_FAST
+         -D_LIBCPP_ABI_NAMESPACE=__2)
 endif()
 
 if("${CLIB}" STREQUAL "llvm")
