@@ -5,12 +5,18 @@ set(kvasir_cmake_dir
     ${CMAKE_CURRENT_LIST_DIR}
     CACHE INTERNAL "")
 
-# Detect if running in container (env vars set) vs submodule mode
-if(DEFINED ENV{KVASIR_ROOT} AND DEFINED ENV{CHIP_ROOT})
-    # Container mode - use environment variables
+# Detect if running in external mode (env vars set) vs submodule mode First check if cached values exist from parent
+# CMakeLists.txt
+if(DEFINED KVASIR_ROOT AND DEFINED CHIP_ROOT)
+    # Use cached values from parent
+    set(KVASIR_ROOT_DIR ${KVASIR_ROOT})
+    set(CHIP_ROOT_DIR ${CHIP_ROOT})
+    message(STATUS "Kvasir: Using cached paths - KVASIR_ROOT=${KVASIR_ROOT_DIR}, CHIP_ROOT=${CHIP_ROOT_DIR}")
+elseif(DEFINED ENV{KVASIR_ROOT} AND DEFINED ENV{CHIP_ROOT})
+    # External mode - use environment variables
     set(KVASIR_ROOT_DIR $ENV{KVASIR_ROOT})
     set(CHIP_ROOT_DIR $ENV{CHIP_ROOT})
-    message(STATUS "Kvasir: Container mode detected - KVASIR_ROOT=${KVASIR_ROOT_DIR}, CHIP_ROOT=${CHIP_ROOT_DIR}")
+    message(STATUS "Kvasir: External mode detected - KVASIR_ROOT=${KVASIR_ROOT_DIR}, CHIP_ROOT=${CHIP_ROOT_DIR}")
 else()
     # Submodule mode - use relative paths
     set(KVASIR_ROOT_DIR ${CMAKE_CURRENT_LIST_DIR}/..)
