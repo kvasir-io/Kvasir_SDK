@@ -443,6 +443,8 @@ __aeabi_ldiv0(long long) {
 [[gnu::used]] inline void __ubsan_handle_out_of_bounds_minimal() { UC_LOG_C("UB"); }
 
 [[gnu::used]] inline void __ubsan_handle_function_type_mismatch_minimal() { UC_LOG_C("UB"); }
+
+[[gnu::used]] inline void __ubsan_handle_missing_return_minimal() { UC_LOG_C("UB"); }
 }
 
 namespace std {
@@ -453,3 +455,4 @@ void operator delete(void*) {}
 
 void operator delete(void*,
                      std::size_t) {}
+
