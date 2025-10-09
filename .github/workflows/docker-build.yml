@@ -26,6 +26,7 @@ jobs:
               uses: actions/checkout@v4
               with:
                 submodules: recursive
+                fetch-depth: 2
 
             - name: Check if build environment files changed
               id: check-env-changes
@@ -62,7 +63,16 @@ jobs:
                 BUILD_DATE=$(date +%Y.%m.%d)
                 echo "build-date=$BUILD_DATE" >> $GITHUB_OUTPUT
 
-                # Check if image exists and get its creation date
+                # For push events, only check file changes (not image age)
+                if [ "${{ github.event_name }}" = "push" ]; then
+                  # For push events, should-build is determined by env-files-changed
+                  # This will be evaluated in the job condition
+                  echo "should-build=true" >> $GITHUB_OUTPUT
+                  echo "Push event detected - will build if files changed"
+                  exit 0
+                fi
+
+                # For schedule/manual events, check if image is old or forced
                 IMAGE_EXISTS=$(curl -s -o /dev/null -w "%{http_code}" \
                   "https://hub.docker.com/v2/repositories/kvasirio/build_environment/tags/latest/")
 
@@ -72,19 +82,22 @@ jobs:
                     "https://hub.docker.com/v2/repositories/kvasirio/build_environment/tags/latest/" | \
                     jq -r '.last_updated' | cut -d'T' -f1)
 
-                  # Convert to epoch for comparison
-                  IMAGE_EPOCH=$(date -d "$IMAGE_DATE" +%s)
+                  # Convert to epoch for comparison (with error handling)
+                  IMAGE_EPOCH=$(date -d "$IMAGE_DATE" +%s 2>/dev/null || echo "0")
                   CURRENT_EPOCH=$(date +%s)
-                  DAYS_OLD=$(( (CURRENT_EPOCH - IMAGE_EPOCH) / 86400 ))
 
-                  echo "Image is $DAYS_OLD days old"
+                  if [ "$IMAGE_EPOCH" -gt 0 ]; then
+                    DAYS_OLD=$(( (CURRENT_EPOCH - IMAGE_EPOCH) / 86400 ))
+                    echo "Image is $DAYS_OLD days old"
+                  else
+                    echo "Could not parse image date, treating as old"
+                    DAYS_OLD=999
+                  fi
 
-                  # Build if image is >30 days old, or if workflow was triggered
-                  # (Path filters ensure we only run when relevant files change)
+                  # Build if image is >30 days old, or if manually triggered
                   if [ $DAYS_OLD -gt 30 ] || \
                      [ "${{ github.event_name }}" = "workflow_dispatch" ] || \
-                     [ "${{ github.event_name }}" = "schedule" ] || \
-                     [ "${{ github.event_name }}" = "push" ]; then
+                     [ "${{ github.event_name }}" = "schedule" ]; then
                     echo "should-build=true" >> $GITHUB_OUTPUT
                     echo "Build needed: Image is $DAYS_OLD days old, triggered by ${{ github.event_name }}"
                   else
