@@ -28,6 +28,7 @@ RUN pacman --disable-download-timeout --noconfirm -Syyu && \
     find /usr/bin -name "*-debug" -delete 2>/dev/null || true && \
     pacman -Scc --noconfirm && \
     git config --global --add safe.directory /workspace && \
-    mkdir /workspace
+    mkdir /workspace && \
+    chmod 777 /workspace
 
 WORKDIR /workspace
