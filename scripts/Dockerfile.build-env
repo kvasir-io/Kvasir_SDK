@@ -6,7 +6,7 @@ ARG AUR_EXTRA_PACKAGES=""
 RUN pacman --disable-download-timeout --noconfirm -Syyu && \
     pacman --disable-download-timeout --noconfirm --needed -S \
         base-devel fish llvm cmake lld git make gcc clang python sudo python-intelhex \
-        fmt nlohmann-json pugixml cli11 boost go $EXTRA_PACKAGES && \
+        fmt nlohmann-json pugixml cli11 boost go arm-none-eabi-gdb $EXTRA_PACKAGES && \
     groupadd -r -g 5000 aur_user && \
     useradd aur_user -u 5000 -g 5000 --create-home && \
     echo "aur_user ALL=(ALL) NOPASSWD: /usr/bin/pacman" > "/etc/sudoers.d/allow_nobody_to_pacman" && \
