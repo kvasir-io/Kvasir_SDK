@@ -27,7 +27,7 @@ RUN pacman --disable-download-timeout --noconfirm -Syyu && \
            /var/lib/systemd/* /var/log/* && \
     find /usr/bin -name "*-debug" -delete 2>/dev/null || true && \
     pacman -Scc --noconfirm && \
-    git config --global --add safe.directory /project && \
-    mkdir /project
+    git config --global --add safe.directory /workspace && \
+    mkdir /workspace
 
-WORKDIR /project
+WORKDIR /workspace
