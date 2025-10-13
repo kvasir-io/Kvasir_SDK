@@ -445,6 +445,10 @@ __aeabi_ldiv0(long long) {
 [[gnu::used]] inline void __ubsan_handle_function_type_mismatch_minimal() { UC_LOG_C("UB"); }
 
 [[gnu::used]] inline void __ubsan_handle_missing_return_minimal() { UC_LOG_C("UB"); }
+
+[[gnu::used]] inline void __ubsan_handle_float_cast_overflow_minimal() { UC_LOG_C("UB"); }
+
+[[gnu::used]] inline void __ubsan_handle_divrem_overflow_minimal() { UC_LOG_C("UB"); }
 }
 
 namespace std {

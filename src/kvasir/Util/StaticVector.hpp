@@ -441,12 +441,14 @@ namespace sv_detail {
             /// Direct access to the underlying storage.
             ///
             /// Complexity: O(1) in time and space.
-            const_pointer data() const noexcept { return reinterpret_cast<const_pointer>(data_); }
+            const_pointer data() const noexcept {
+                return reinterpret_cast<const_pointer>(data_.data());
+            }
 
             /// Direct access to the underlying storage.
             ///
             /// Complexity: O(1) in time and space.
-            pointer data() noexcept { return reinterpret_cast<pointer>(data_); }
+            pointer data() noexcept { return reinterpret_cast<pointer>(data_.data()); }
 
             /// Pointer to one-past-the-end.
             const_pointer end() const noexcept { return data() + size(); }
