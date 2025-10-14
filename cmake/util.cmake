@@ -10,6 +10,12 @@ find_package(
 
 include(${kvasir_cmake_dir}/jlink.cmake)
 
+# Add kvasir_devices subdirectory if it exists and contains CMakeLists.txt
+if(IS_DIRECTORY "${KVASIR_DEVICES_ROOT_DIR}" AND EXISTS "${KVASIR_DEVICES_ROOT_DIR}/CMakeLists.txt")
+    add_subdirectory(${KVASIR_DEVICES_ROOT_DIR} ${CMAKE_BINARY_DIR}/kvasir_devices)
+    message(STATUS "Kvasir: Added kvasir_devices subdirectory from ${KVASIR_DEVICES_ROOT_DIR}")
+endif()
+
 function(add_clean_file target file)
     get_target_property(cur_additional_clean_files ${target} ADDITIONAL_CLEAN_FILES)
     if("${cur_additional_clean_files}" MATCHES NOTFOUND)
@@ -320,6 +326,68 @@ function(
             "${name}_flash.hex")
 
     endif()
+endfunction()
+
+function(kvasir_executable_variants base_name)
+    cmake_parse_arguments(PARSE_ARGV 1 PARSED_ARGS "" "OPTIMIZATION"
+                          "SOURCES;LIBRARIES;ADDITIONAL_DEBUG_FLAGS;ADDITIONAL_RELEASE_FLAGS;ADDITIONAL_SANITIZE_FLAGS")
+
+    if(PARSED_ARGS_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR "unknown argument ${PARSED_ARGS_UNPARSED_ARGUMENTS}")
+    endif()
+
+    if(NOT PARSED_ARGS_SOURCES)
+        message(FATAL_ERROR "SOURCES argument is required")
+    endif()
+
+    if(NOT PARSED_ARGS_OPTIMIZATION)
+        set(PARSED_ARGS_OPTIMIZATION size)
+    endif()
+
+    # Handle empty base_name
+    if(base_name STREQUAL "")
+        set(debug_target "debug")
+        set(release_target "release")
+        set(release_log_target "release_log")
+        set(sanitize_target "sanitize")
+    else()
+        set(debug_target "${base_name}_debug")
+        set(release_target "${base_name}_release")
+        set(release_log_target "${base_name}_release_log")
+        set(sanitize_target "${base_name}_sanitize")
+    endif()
+
+    # Debug variant - with logging, debug optimization
+    add_executable(${debug_target} ${PARSED_ARGS_SOURCES})
+    target_configure_kvasir(${debug_target} OPTIMIZATION_STRATEGY debug USE_LOG ${PARSED_ARGS_ADDITIONAL_DEBUG_FLAGS})
+    if(PARSED_ARGS_LIBRARIES)
+        target_link_libraries(${debug_target} ${PARSED_ARGS_LIBRARIES})
+    endif()
+
+    # Release variant - no logging, no sanitizer, configurable optimization
+    add_executable(${release_target} ${PARSED_ARGS_SOURCES})
+    target_configure_kvasir(${release_target} OPTIMIZATION_STRATEGY ${PARSED_ARGS_OPTIMIZATION}
+                            ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
+    if(PARSED_ARGS_LIBRARIES)
+        target_link_libraries(${release_target} ${PARSED_ARGS_LIBRARIES})
+    endif()
+
+    # Release with log variant - with logging, no sanitizer, configurable optimization
+    add_executable(${release_log_target} ${PARSED_ARGS_SOURCES})
+    target_configure_kvasir(${release_log_target} OPTIMIZATION_STRATEGY ${PARSED_ARGS_OPTIMIZATION} USE_LOG
+                            ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
+    if(PARSED_ARGS_LIBRARIES)
+        target_link_libraries(${release_log_target} ${PARSED_ARGS_LIBRARIES})
+    endif()
+
+    # Sanitize variant - with logging and sanitizer, configurable optimization
+    add_executable(${sanitize_target} ${PARSED_ARGS_SOURCES})
+    target_configure_kvasir(${sanitize_target} OPTIMIZATION_STRATEGY ${PARSED_ARGS_OPTIMIZATION} USE_SANITIZER USE_LOG
+                            ${PARSED_ARGS_ADDITIONAL_SANITIZE_FLAGS})
+    if(PARSED_ARGS_LIBRARIES)
+        target_link_libraries(${sanitize_target} ${PARSED_ARGS_LIBRARIES})
+    endif()
+
 endfunction()
 
 function(target_configure_kvasir target)

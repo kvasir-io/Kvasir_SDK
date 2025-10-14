@@ -5,24 +5,56 @@ set(kvasir_cmake_dir
     ${CMAKE_CURRENT_LIST_DIR}
     CACHE INTERNAL "")
 
-# Detect if running in external mode (env vars set) vs submodule mode First check if cached values exist from parent
-# CMakeLists.txt
-if(DEFINED KVASIR_ROOT AND DEFINED CHIP_ROOT)
-    # Use cached values from parent
+# Detect paths from multiple sources - check each variable independently Priority: 1. CMake variable, 2. Environment
+# variable, 3. Default/computed
+
+# Determine KVASIR_ROOT_DIR
+if(DEFINED KVASIR_ROOT)
     set(KVASIR_ROOT_DIR ${KVASIR_ROOT})
-    set(CHIP_ROOT_DIR ${CHIP_ROOT})
-    message(STATUS "Kvasir: Using cached paths - KVASIR_ROOT=${KVASIR_ROOT_DIR}, CHIP_ROOT=${CHIP_ROOT_DIR}")
-elseif(DEFINED ENV{KVASIR_ROOT} AND DEFINED ENV{CHIP_ROOT})
-    # External mode - use environment variables
+    set(KVASIR_ROOT_SOURCE "CMake variable")
+elseif(DEFINED ENV{KVASIR_ROOT})
     set(KVASIR_ROOT_DIR $ENV{KVASIR_ROOT})
-    set(CHIP_ROOT_DIR $ENV{CHIP_ROOT})
-    message(STATUS "Kvasir: External mode detected - KVASIR_ROOT=${KVASIR_ROOT_DIR}, CHIP_ROOT=${CHIP_ROOT_DIR}")
+    set(KVASIR_ROOT_SOURCE "environment")
 else()
-    # Submodule mode - use relative paths
     set(KVASIR_ROOT_DIR ${CMAKE_CURRENT_LIST_DIR}/..)
-    set(CHIP_ROOT_DIR ${CMAKE_CURRENT_LIST_DIR}/../../chip)
-    message(STATUS "Kvasir: Submodule mode detected - using relative paths")
+    set(KVASIR_ROOT_SOURCE "submodule mode")
 endif()
+get_filename_component(KVASIR_ROOT_DIR ${KVASIR_ROOT_DIR} ABSOLUTE)
+
+# Determine CHIP_ROOT_DIR
+if(DEFINED CHIP_ROOT)
+    set(CHIP_ROOT_DIR ${CHIP_ROOT})
+    set(CHIP_ROOT_SOURCE "CMake variable")
+elseif(DEFINED ENV{CHIP_ROOT})
+    set(CHIP_ROOT_DIR $ENV{CHIP_ROOT})
+    set(CHIP_ROOT_SOURCE "environment")
+else()
+    # Compute from sibling relationship
+    get_filename_component(KVASIR_PARENT_DIR ${KVASIR_ROOT_DIR} DIRECTORY)
+    set(CHIP_ROOT_DIR "${KVASIR_PARENT_DIR}/chip")
+    set(CHIP_ROOT_SOURCE "computed as sibling")
+endif()
+get_filename_component(CHIP_ROOT_DIR ${CHIP_ROOT_DIR} ABSOLUTE)
+
+# Determine KVASIR_DEVICES_ROOT_DIR
+if(DEFINED KVASIR_DEVICES_ROOT)
+    set(KVASIR_DEVICES_ROOT_DIR ${KVASIR_DEVICES_ROOT})
+    set(KVASIR_DEVICES_ROOT_SOURCE "CMake variable")
+elseif(DEFINED ENV{KVASIR_DEVICES_ROOT})
+    set(KVASIR_DEVICES_ROOT_DIR $ENV{KVASIR_DEVICES_ROOT})
+    set(KVASIR_DEVICES_ROOT_SOURCE "environment")
+else()
+    # Compute from sibling relationship
+    get_filename_component(KVASIR_PARENT_DIR ${KVASIR_ROOT_DIR} DIRECTORY)
+    set(KVASIR_DEVICES_ROOT_DIR "${KVASIR_PARENT_DIR}/kvasir_devices")
+    set(KVASIR_DEVICES_ROOT_SOURCE "computed as sibling")
+endif()
+get_filename_component(KVASIR_DEVICES_ROOT_DIR ${KVASIR_DEVICES_ROOT_DIR} ABSOLUTE)
+
+# Report configuration
+message(STATUS "Kvasir: KVASIR_ROOT=${KVASIR_ROOT_DIR} (from ${KVASIR_ROOT_SOURCE})")
+message(STATUS "Kvasir: CHIP_ROOT=${CHIP_ROOT_DIR} (from ${CHIP_ROOT_SOURCE})")
+message(STATUS "Kvasir: KVASIR_DEVICES_ROOT=${KVASIR_DEVICES_ROOT_DIR} (from ${KVASIR_DEVICES_ROOT_SOURCE})")
 
 # Make these available globally
 set(KVASIR_ROOT_DIR
@@ -31,6 +63,14 @@ set(KVASIR_ROOT_DIR
 set(CHIP_ROOT_DIR
     ${CHIP_ROOT_DIR}
     CACHE INTERNAL "")
+set(KVASIR_DEVICES_ROOT_DIR
+    ${KVASIR_DEVICES_ROOT_DIR}
+    CACHE INTERNAL "")
+
+# Validate that CHIP_ROOT_DIR exists
+if(NOT IS_DIRECTORY "${CHIP_ROOT_DIR}")
+    message(FATAL_ERROR "CHIP_ROOT_DIR does not exist or is not a directory: ${CHIP_ROOT_DIR}")
+endif()
 
 include(${CMAKE_CURRENT_LIST_DIR}/tidy.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/cppcheck.cmake)
