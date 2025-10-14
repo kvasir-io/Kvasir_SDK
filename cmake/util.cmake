@@ -11,9 +11,9 @@ find_package(
 include(${kvasir_cmake_dir}/jlink.cmake)
 
 # Add kvasir_devices subdirectory if it exists and contains CMakeLists.txt
-if(IS_DIRECTORY "${KVASIR_DEVICES_ROOT_DIR}" AND EXISTS "${KVASIR_DEVICES_ROOT_DIR}/CMakeLists.txt")
-    add_subdirectory(${KVASIR_DEVICES_ROOT_DIR} ${CMAKE_BINARY_DIR}/kvasir_devices)
-    message(STATUS "Kvasir: Added kvasir_devices subdirectory from ${KVASIR_DEVICES_ROOT_DIR}")
+if(IS_DIRECTORY "${KVASIR_DEVICES_ROOT}" AND EXISTS "${KVASIR_DEVICES_ROOT}/CMakeLists.txt")
+    add_subdirectory(${KVASIR_DEVICES_ROOT} ${CMAKE_BINARY_DIR}/kvasir_devices)
+    message(STATUS "Kvasir: Added kvasir_devices subdirectory from ${KVASIR_DEVICES_ROOT}")
 endif()
 
 function(add_clean_file target file)

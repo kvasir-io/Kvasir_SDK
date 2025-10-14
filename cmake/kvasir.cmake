@@ -8,7 +8,7 @@ set(kvasir_cmake_dir
 # Detect paths from multiple sources - check each variable independently Priority: 1. CMake variable, 2. Environment
 # variable, 3. Default/computed
 
-# Determine KVASIR_ROOT_DIR
+# Determine KVASIR_ROOT
 if(DEFINED KVASIR_ROOT)
     set(KVASIR_ROOT_DIR ${KVASIR_ROOT})
     set(KVASIR_ROOT_SOURCE "CMake variable")
@@ -21,7 +21,7 @@ else()
 endif()
 get_filename_component(KVASIR_ROOT_DIR ${KVASIR_ROOT_DIR} ABSOLUTE)
 
-# Determine CHIP_ROOT_DIR
+# Determine CHIP_ROOT
 if(DEFINED CHIP_ROOT)
     set(CHIP_ROOT_DIR ${CHIP_ROOT})
     set(CHIP_ROOT_SOURCE "CMake variable")
@@ -36,7 +36,7 @@ else()
 endif()
 get_filename_component(CHIP_ROOT_DIR ${CHIP_ROOT_DIR} ABSOLUTE)
 
-# Determine KVASIR_DEVICES_ROOT_DIR
+# Determine KVASIR_DEVICES_ROOT
 if(DEFINED KVASIR_DEVICES_ROOT)
     set(KVASIR_DEVICES_ROOT_DIR ${KVASIR_DEVICES_ROOT})
     set(KVASIR_DEVICES_ROOT_SOURCE "CMake variable")
@@ -57,19 +57,19 @@ message(STATUS "Kvasir: CHIP_ROOT=${CHIP_ROOT_DIR} (from ${CHIP_ROOT_SOURCE})")
 message(STATUS "Kvasir: KVASIR_DEVICES_ROOT=${KVASIR_DEVICES_ROOT_DIR} (from ${KVASIR_DEVICES_ROOT_SOURCE})")
 
 # Make these available globally
-set(KVASIR_ROOT_DIR
+set(KVASIR_ROOT
     ${KVASIR_ROOT_DIR}
     CACHE INTERNAL "")
-set(CHIP_ROOT_DIR
+set(CHIP_ROOT
     ${CHIP_ROOT_DIR}
     CACHE INTERNAL "")
-set(KVASIR_DEVICES_ROOT_DIR
+set(KVASIR_DEVICES_ROOT
     ${KVASIR_DEVICES_ROOT_DIR}
     CACHE INTERNAL "")
 
-# Validate that CHIP_ROOT_DIR exists
-if(NOT IS_DIRECTORY "${CHIP_ROOT_DIR}")
-    message(FATAL_ERROR "CHIP_ROOT_DIR does not exist or is not a directory: ${CHIP_ROOT_DIR}")
+# Validate that CHIP_ROOT exists
+if(NOT IS_DIRECTORY "${CHIP_ROOT}")
+    message(FATAL_ERROR "CHIP_ROOT does not exist or is not a directory: ${CHIP_ROOT}")
 endif()
 
 include(${CMAKE_CURRENT_LIST_DIR}/tidy.cmake)
@@ -93,10 +93,10 @@ endif()
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CROSSCOMPILING True)
-add_subdirectory(${KVASIR_ROOT_DIR}/svd_converter ${CMAKE_BINARY_DIR}/kvasir_svd_converter)
-add_subdirectory(${KVASIR_ROOT_DIR}/uc_log ${CMAKE_BINARY_DIR}/kvasir_uc_log)
+add_subdirectory(${KVASIR_ROOT}/svd_converter ${CMAKE_BINARY_DIR}/kvasir_svd_converter)
+add_subdirectory(${KVASIR_ROOT}/uc_log ${CMAKE_BINARY_DIR}/kvasir_uc_log)
 
-include(${CHIP_ROOT_DIR}/cmake/chip.cmake)
+include(${CHIP_ROOT}/cmake/chip.cmake)
 
 set(COMPILE_TARGET
     arm_clang
