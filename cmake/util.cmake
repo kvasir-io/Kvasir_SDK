@@ -270,6 +270,7 @@ function(
 
         foreach(current_lib ${libraries})
             target_compile_options(${current_lib} PUBLIC ${optimize_flags} ${sanitize_flags})
+            target_link_options(${current_lib} PRIVATE --whole-archive)
             target_link_libraries(${name} ${current_lib})
         endforeach(current_lib)
 

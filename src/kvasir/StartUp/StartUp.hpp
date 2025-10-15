@@ -451,7 +451,6 @@ __aeabi_ldiv0(long long) {
 [[gnu::used]] inline void __ubsan_handle_divrem_overflow_minimal() { UC_LOG_C("UB"); }
 
 [[gnu::used]] inline void __ubsan_handle_invalid_builtin_minimal() { UC_LOG_C("UB"); }
-
 }
 
 namespace std {
