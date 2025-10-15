@@ -38,6 +38,16 @@ function(print_size target linker_file)
             "${TARGET_EEPROM_SIZE}" "${linker_file}")
 endfunction()
 
+function(check_undefined_refs target)
+    add_custom_command(
+        TARGET ${target}
+        POST_BUILD
+        COMMAND ${Python3_EXECUTABLE} ${kvasir_cmake_dir}/tools/find_undefined_refs.py
+                "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
+        COMMENT "Checking for undefined references in ${target}.elf"
+        VERBATIM)
+endfunction()
+
 function(generate_object target suffix type)
 
     list(TRANSFORM TARGET_EXTRA_FLASH_SECTIONS PREPEND "--only-section=" OUTPUT_VARIABLE extra_flash_sections)
@@ -204,6 +214,7 @@ function(
     target_include_directories(${name} PUBLIC ${KVASIR_ROOT_DIR}/src)
     target_include_directories(${name} PUBLIC ${CHIP_ROOT_DIR}/src)
     target_include_directories(${name} PUBLIC ${CHIP_ROOT_DIR}/core/src)
+    check_undefined_refs(${name})
     generate_object(${name} .bin binary)
     generate_object(${name} .hex ihex)
     generate_lst(${name})
@@ -221,6 +232,7 @@ function(
 
     add_target_linker_dependency(${name} ${linker_file})
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/two_stage_link.py)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/find_undefined_refs.py)
 
     get_filename_component(linker_file_path ${linker_file} ABSOLUTE)
     get_filename_component(linker_file_path ${linker_file_path} DIRECTORY)
@@ -270,7 +282,7 @@ function(
 
         foreach(current_lib ${libraries})
             target_compile_options(${current_lib} PUBLIC ${optimize_flags} ${sanitize_flags})
-            target_link_options(${current_lib} PRIVATE --whole-archive)
+            target_link_options(${current_lib} PUBLIC --whole-archive)
             target_link_libraries(${name} ${current_lib})
         endforeach(current_lib)
 
