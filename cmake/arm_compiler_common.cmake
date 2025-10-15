@@ -14,7 +14,7 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE NEVER)
 set(CMAKE_TRY_COMPILE_PLATFORM_VARIABLES)
 set(CMAKE_CROSSCOMPILING True)
 
-set(arm_compiler_common_flags -ffreestanding -mno-unaligned-access)
+set(arm_compiler_common_flags -ffreestanding)
 
 set(SPEC_REPLACEMENT_STRING spec_replace)
 set(SPEC_REPLACEMENT_EMPTY_MARKER NOTHING_TO_REPLACE)
