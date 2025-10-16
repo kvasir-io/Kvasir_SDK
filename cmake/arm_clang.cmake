@@ -233,7 +233,9 @@ set(common_warning_flags
     -Wno-documentation
     -Wno-declaration-after-statement
     -Wno-braced-scalar-init
-    -Wno-unsafe-buffer-usage)
+    -Wno-unsafe-buffer-usage
+    -Wno-nrvo
+    -Wno-unknown-warning-option)
 
 set(profile_flags)
 
