@@ -6,6 +6,7 @@
 #include "kvasir/Mpl/Utility.hpp"
 #include "kvasir/Register/Register.hpp"
 #include "kvasir/Util/attributes.hpp"
+#include "kvasir/Util/ubsan.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -417,40 +418,6 @@ __aeabi_ldiv0(long long);
 __aeabi_ldiv0(long long) {
     assert(false);
 }
-
-[[gnu::used]] inline void __ubsan_handle_mul_overflow_minimal() { UC_LOG_C("UB"); }
-
-[[gnu::used]] inline void __ubsan_handle_add_overflow_minimal() { UC_LOG_C("UB"); }
-
-[[gnu::used]] inline void __ubsan_handle_alignment_assumption_minimal() { UC_LOG_C("UB"); }
-
-[[gnu::used]] inline void __ubsan_handle_sub_overflow_minimal() { UC_LOG_C("UB"); }
-
-[[gnu::used]] inline void __ubsan_handle_implicit_conversion_minimal() { UC_LOG_C("UB"); }
-
-[[gnu::used]] inline void __ubsan_handle_load_invalid_value_minimal() { UC_LOG_C("UB"); }
-
-[[gnu::used]] inline void __ubsan_handle_type_mismatch_minimal() { UC_LOG_C("UB"); }
-
-[[gnu::used]] inline void __ubsan_handle_pointer_overflow_minimal() { UC_LOG_C("UB"); }
-
-[[gnu::used]] inline void __ubsan_handle_shift_out_of_bounds_minimal() { UC_LOG_C("UB"); }
-
-[[gnu::used]] inline void __ubsan_handle_negate_overflow_minimal() { UC_LOG_C("UB"); }
-
-[[gnu::used]] inline void __ubsan_handle_builtin_unreachable_minimal() { UC_LOG_C("UB"); }
-
-[[gnu::used]] inline void __ubsan_handle_out_of_bounds_minimal() { UC_LOG_C("UB"); }
-
-[[gnu::used]] inline void __ubsan_handle_function_type_mismatch_minimal() { UC_LOG_C("UB"); }
-
-[[gnu::used]] inline void __ubsan_handle_missing_return_minimal() { UC_LOG_C("UB"); }
-
-[[gnu::used]] inline void __ubsan_handle_float_cast_overflow_minimal() { UC_LOG_C("UB"); }
-
-[[gnu::used]] inline void __ubsan_handle_divrem_overflow_minimal() { UC_LOG_C("UB"); }
-
-[[gnu::used]] inline void __ubsan_handle_invalid_builtin_minimal() { UC_LOG_C("UB"); }
 }
 
 namespace std {

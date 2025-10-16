@@ -35,18 +35,20 @@ namespace Kvasir { namespace Fault {
 #if defined(__thumb__) && __ARM_ARCH_ISA_THUMB == 1
             // Thumb1 (Cortex-M0/M0+) compatible version
             asm volatile(
-              "mov sp, %0         \n"
-              "blx %1             \n"
-              "mov r0, lr         \n"
+              "mov r4, lr         \n"
               "movs r1, #4        \n"
+              "mov r0, r4         \n"
               "tst r0, r1         \n"
               "beq 1f             \n"
-              "mrs r0, psp        \n"
+              "mrs r5, psp        \n"
               "b 2f               \n"
               "1:                 \n"
-              "mrs r0, msp        \n"
+              "mrs r5, msp        \n"
               "2:                 \n"
-              "mov r1, lr         \n"
+              "mov sp, %0         \n"
+              "blx %1             \n"
+              "mov r0, r5         \n"
+              "mov r1, r4         \n"
               "bl %2              \n"
               "blx %3             \n"
               :
@@ -54,17 +56,19 @@ namespace Kvasir { namespace Fault {
                 "l"(std::addressof(CleanUpFunc)),
                 "i"(std::addressof(Core::Fault::Log)),
                 "l"(std::addressof(FaultFunc))
-              : "r0", "r1", "r2");
+              : "r0", "r1", "r2", "r4", "r5");
 #else
             // Thumb2 (Cortex-M3/M4/M7+) optimized version
             asm volatile(
+              "mov r4, lr         \n"
+              "tst r4, #4         \n"
+              "ite eq             \n"
+              "mrseq r5, msp      \n"
+              "mrsne r5, psp      \n"
               "mov sp, %0         \n"
               "blx %1             \n"
-              "tst lr, #4         \n"
-              "ite eq             \n"
-              "mrseq r0, msp      \n"
-              "mrsne r0, psp      \n"
-              "mov r1, lr         \n"
+              "mov r0, r5         \n"
+              "mov r1, r4         \n"
               "bl %2              \n"
               "blx %3             \n"
               :
@@ -72,7 +76,7 @@ namespace Kvasir { namespace Fault {
                 "l"(std::addressof(CleanUpFunc)),
                 "i"(std::addressof(Core::Fault::Log)),
                 "l"(std::addressof(FaultFunc))
-              : "r0", "r1", "r2");
+              : "r0", "r1", "r2", "r4", "r5");
 #endif
         }
 
@@ -88,7 +92,8 @@ namespace Kvasir { namespace Fault {
               :);
         }
 
-        //     static constexpr auto earlyInit = Core::Fault::EarlyInitList{};
+        //TODO check what is the bug here
+        // static constexpr auto earlyInit = Core::Fault::EarlyInitList{};
 
         static constexpr auto initStepPeripheryEnable = MPL::list(
           Nvic::makeEnable(Nvic::InterruptOffsetTraits<>::FaultInterruptIndexsNeedEnable{}));

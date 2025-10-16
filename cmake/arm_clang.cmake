@@ -98,7 +98,8 @@ set(optimize_specs_speed ${SPEC_REPLACEMENT_EMPTY_MARKER})
 set(optimize_specs_size "_nano")
 set(optimize_specs_debug "_nano")
 
-set(sanitize_option
+# Real Undefined Behavior (Standard C/C++ UB)
+set(sanitize_option_ub
     -fsanitize=alignment
     -fsanitize=bool
     -fsanitize=builtin
@@ -106,11 +107,6 @@ set(sanitize_option
     -fsanitize=enum
     -fsanitize=float-cast-overflow
     -fsanitize=float-divide-by-zero
-    -fsanitize=implicit-unsigned-integer-truncation
-    -fsanitize=implicit-signed-integer-truncation
-    -fsanitize=implicit-unsigned-integer-truncation
-    -fsanitize=implicit-signed-integer-truncation
-    -fsanitize=implicit-integer-sign-change
     -fsanitize=integer-divide-by-zero
     -fsanitize=nonnull-attribute
     -fsanitize=null
@@ -124,20 +120,34 @@ set(sanitize_option
     -fsanitize=shift
     -fsanitize=shift-base
     -fsanitize=shift-exponent
-    -fsanitize=unsigned-shift-base
     -fsanitize=signed-integer-overflow
     -fsanitize=unreachable
-    -fsanitize=unsigned-integer-overflow
     -fsanitize=vla-bound
+    -fsanitize=function
     # groups
     -fsanitize=undefined
+    -fsanitize=nullability)
+
+# Extensions/Implementation-Defined Behavior
+set(sanitize_option_extension
+    -fsanitize=unsigned-shift-base
+    -fsanitize=implicit-unsigned-integer-truncation
+    -fsanitize=implicit-signed-integer-truncation
+    -fsanitize=implicit-integer-sign-change
+    -fsanitize=implicit-bitfield-conversion
+    -fsanitize=unsigned-integer-overflow
+    # groups
     -fsanitize=implicit-integer-truncation
     -fsanitize=implicit-integer-arithmetic-value-change
-    # -fsanitize=implicit-conversion -fsanitize=integer
-    -fsanitize=nullability
-    # runtime
-    -fsanitize-minimal-runtime
-    -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG)
+    -fsanitize=implicit-conversion
+    -fsanitize=integer)
+
+set(sanitize_option ${sanitize_option_ub} -fsanitize-minimal-runtime
+                    -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG)
+
+if(ENABLE_SANITIZE_EXTENSIONS)
+    list(APPEND sanitize_option ${sanitize_option_extension})
+endif()
 
 set(system_includes)
 
