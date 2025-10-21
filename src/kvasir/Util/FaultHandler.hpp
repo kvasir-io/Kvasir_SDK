@@ -4,6 +4,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <type_traits>
 
 namespace Kvasir { namespace Fault {
     struct CleanUpActionNone {
@@ -12,9 +13,7 @@ namespace Kvasir { namespace Fault {
 
     struct FaultActionAssert {
         [[noreturn]] void operator()() {
-            while(true) {
-                asm("bkpt 6" : : :);
-            }
+            while(true) { asm("bkpt 6" : : :); }
         }
     };
 
@@ -80,7 +79,16 @@ namespace Kvasir { namespace Fault {
 #endif
         }
 
-        [[gnu::naked]] static void onIsrNoLog() {
+        [[gnu::naked]] static void onIsrNoLogNoCleanup() {
+            asm volatile(
+              "mov sp, %0         \n"
+              "blx %1             \n"
+              :
+              : "l"(GetSafeStackPointer()), "l"(std::addressof(FaultFunc))
+              :);
+        }
+
+        [[gnu::naked]] static void onIsrNoLogWithCleanup() {
             asm volatile(
               "mov sp, %0         \n"
               "blx %1             \n"
@@ -92,24 +100,30 @@ namespace Kvasir { namespace Fault {
               :);
         }
 
-        //TODO check what is the bug here
-        // static constexpr auto earlyInit = Core::Fault::EarlyInitList{};
+        static constexpr auto getIsrFunc() {
+#ifdef USE_UC_LOG
+            return std::addressof(onIsr);
+#else
+            if constexpr(std::is_same_v<TCleanUpAction, CleanUpActionNone>) {
+                return std::addressof(onIsrNoLogNoCleanup);
+            } else {
+                return std::addressof(onIsrNoLogWithCleanup);
+            }
+#endif
+        }
+
+        static constexpr auto earlyInit = Core::Fault::EarlyInitList{};
 
         static constexpr auto initStepPeripheryEnable = MPL::list(
           Nvic::makeEnable(Nvic::InterruptOffsetTraits<>::FaultInterruptIndexsNeedEnable{}));
 
         template<typename... Ts>
         static constexpr auto makeIsr(brigand::list<Ts...>) {
-#ifdef USE_UC_LOG
-            return brigand::list<
-              Kvasir::Nvic::Isr<std::addressof(onIsr), Nvic::Index<Ts::value>>...>{};
-#else
-            return brigand::list<
-              Kvasir::Nvic::Isr<std::addressof(onIsrNoLog), Nvic::Index<Ts::value>>...>{};
-#endif
+            return brigand::list<Kvasir::Nvic::Isr<getIsrFunc(), Nvic::Index<Ts::value>>...>{};
         }
 
         using Isr = decltype(makeIsr(
           typename Kvasir::Nvic::InterruptOffsetTraits<>::FaultInterruptIndexs{}));
     };
 }}   // namespace Kvasir::Fault
+
