@@ -9,12 +9,8 @@ namespace kvasir { namespace detail {
             constexpr std::string_view prefix = "__ubsan_handle_";
             constexpr std::string_view suffix = "_minimal";
 
-            if(f.starts_with(prefix)) {
-                f.remove_prefix(prefix.size());
-            }
-            if(f.ends_with(suffix)) {
-                f.remove_suffix(suffix.size());
-            }
+            if(f.starts_with(prefix)) { f.remove_prefix(prefix.size()); }
+            if(f.ends_with(suffix)) { f.remove_suffix(suffix.size()); }
             return f;
         }
 

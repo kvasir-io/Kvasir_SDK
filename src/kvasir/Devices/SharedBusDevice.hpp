@@ -13,9 +13,7 @@ struct SharedBusDevice {
     bool isOwner() const { return owner_; }
 
     bool acquire() {
-        if(owner_) {
-            return true;
-        }
+        if(owner_) { return true; }
 
         owner_ = SharedBus::acquire();
         return owner_;

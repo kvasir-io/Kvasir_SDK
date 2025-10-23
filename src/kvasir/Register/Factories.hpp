@@ -107,10 +107,9 @@ namespace Kvasir { namespace Register {
              typename... Ts>
     constexpr decltype(MPL::list(read(T{}),
                                  read(U{}),
-                                 read(Ts{})...))
-    read(T,
-         U,
-         Ts...) {
+                                 read(Ts{})...)) read(T,
+                                                      U,
+                                                      Ts...) {
         return {};
     }
 
@@ -126,10 +125,9 @@ namespace Kvasir { namespace Register {
              typename... Ts>
     constexpr decltype(MPL::list(set(T{}),
                                  set(U{}),
-                                 set(Ts{})...))
-    set(T,
-        U,
-        Ts...) {
+                                 set(Ts{})...)) set(T,
+                                                    U,
+                                                    Ts...) {
         return {};
     }
 
@@ -145,10 +143,9 @@ namespace Kvasir { namespace Register {
              typename... Ts>
     constexpr decltype(MPL::list(clear(T{}),
                                  clear(U{}),
-                                 clear(Ts{})...))
-    clear(T,
-          U,
-          Ts...) {
+                                 clear(Ts{})...)) clear(T,
+                                                        U,
+                                                        Ts...) {
         return {};
     }
 
@@ -166,10 +163,9 @@ namespace Kvasir { namespace Register {
              typename... Ts>
     constexpr decltype(MPL::list(reset(T{}),
                                  reset(U{}),
-                                 reset(Ts{})...))
-    reset(T,
-          U,
-          Ts...) {
+                                 reset(Ts{})...)) reset(T,
+                                                        U,
+                                                        Ts...) {
         return {};
     }
 
@@ -211,9 +207,8 @@ namespace Kvasir { namespace Register {
              typename T::DataType V>
     constexpr inline decltype(write(T{},
                                     MPL::Value<typename T::DataType,
-                                               V>{}))
-    write(FieldValue<T,
-                     V>) {
+                                               V>{})) write(FieldValue<T,
+                                                                       V>) {
         return {};
     }
 

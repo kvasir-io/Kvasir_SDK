@@ -74,9 +74,7 @@ namespace Kvasir { namespace Register {
             auto it = std::find_if(reads_.begin(), reads_.end(), [](ReadValue& v) {
                 return v.address_ == Address::value;
             });
-            if(it != reads_.end()) {
-                return reads_.pop(Address::value).value_;
-            }
+            if(it != reads_.end()) { return reads_.pop(Address::value).value_; }
             return 0;
         }
     };

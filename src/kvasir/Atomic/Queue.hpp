@@ -56,9 +56,7 @@ namespace Kvasir { namespace Atomic {
         static constexpr IndexType distance(IndexType head,
                                             IndexType tail) {
             auto d = int(unsigned(tail) - unsigned(head));
-            if(d < 0) {
-                d += Size;
-            }
+            if(d < 0) { d += Size; }
             return IndexType(d);
         }
 
@@ -102,9 +100,7 @@ namespace Kvasir { namespace Atomic {
         bool pop_into(TDataType& out) {
             auto const tail = tail_.load(load_memory_order);
             auto const head = head_.load(load_memory_order);
-            if(head == tail) {
-                return false;
-            }
+            if(head == tail) { return false; }
             out = data_[head];   //NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
             std::atomic_signal_fence(fence_memory_order);
             head_.store(next(head), store_memory_order);   // commit
@@ -119,9 +115,7 @@ namespace Kvasir { namespace Atomic {
             auto const tail  = tail_.load(load_memory_order);
             auto       head  = head_.load(load_memory_order);
             auto const lsize = distance(head, tail);
-            if(lsize < range.size()) {
-                return false;
-            }
+            if(lsize < range.size()) { return false; }
             auto       begin = range.begin();
             auto const end   = range.end();
             while(begin != end) {
@@ -137,17 +131,13 @@ namespace Kvasir { namespace Atomic {
         void pop() {
             auto const tail = tail_.load(load_memory_order);
             auto const head = head_.load(load_memory_order);
-            if(head == tail) {
-                return;
-            }
+            if(head == tail) { return; }
             head_.store(next(head), store_memory_order);   // commit
         }
 
         TDataType const& front() const {
             auto const head = head_.load(load_memory_order);
-            if(head == tail_.load(load_memory_order)) {
-                TOverflowPolicy{}();
-            }
+            if(head == tail_.load(load_memory_order)) { TOverflowPolicy{}(); }
             TDataType const& ret
               = data_[head];   //NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
             return ret;

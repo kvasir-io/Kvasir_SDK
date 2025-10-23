@@ -126,4 +126,3 @@ namespace Kvasir { namespace Fault {
           typename Kvasir::Nvic::InterruptOffsetTraits<>::FaultInterruptIndexs{}));
     };
 }}   // namespace Kvasir::Fault
-

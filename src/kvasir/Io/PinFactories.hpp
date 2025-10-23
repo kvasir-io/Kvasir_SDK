@@ -66,10 +66,9 @@ namespace Register {
              typename... Ts>
     constexpr decltype(MPL::list(makeInput(T{}),
                                  makeInput(U{}),
-                                 makeInput(Ts{})...))
-    makeInput(T,
-              U,
-              Ts...) {
+                                 makeInput(Ts{})...)) makeInput(T,
+                                                                U,
+                                                                Ts...) {
         return {};
     }
 
@@ -86,10 +85,9 @@ namespace Register {
              typename... Ts>
     constexpr decltype(MPL::list(makeOutput(T{}),
                                  makeOutput(U{}),
-                                 makeOutput(Ts{})...))
-    makeOutput(T,
-               U,
-               Ts...) {
+                                 makeOutput(Ts{})...)) makeOutput(T,
+                                                                  U,
+                                                                  Ts...) {
         return {};
     }
 

@@ -89,9 +89,7 @@ struct BusPowerManager {
             break;
         case State::poweron_wait:
             {
-                if(currentTime > waitTime_) {
-                    st_ = State::idle;
-                }
+                if(currentTime > waitTime_) { st_ = State::idle; }
             }
             break;
 

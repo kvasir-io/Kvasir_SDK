@@ -262,9 +262,7 @@ namespace Kvasir { namespace Startup {
 
     template<typename T>
     void callPreEnableRuntimeInit() {
-        if constexpr(has_preEnableRuntimeInit<T>::value) {
-            T::preEnableRuntimeInit();
-        }
+        if constexpr(has_preEnableRuntimeInit<T>::value) { T::preEnableRuntimeInit(); }
     }
 
     template<typename... Ts>
@@ -274,9 +272,7 @@ namespace Kvasir { namespace Startup {
 
     template<typename T>
     void callRuntimeInit() {
-        if constexpr(has_runtimeInit<T>::value) {
-            T::runtimeInit();
-        }
+        if constexpr(has_runtimeInit<T>::value) { T::runtimeInit(); }
     }
 
     template<typename... Ts>

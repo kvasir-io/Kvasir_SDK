@@ -24,9 +24,7 @@ public:
     InterruptGuard() { oldState = disable_all_and_get_old_state(); }
 
     ~InterruptGuard() {
-        if(oldState) {
-            enable_all();
-        }
+        if(oldState) { enable_all(); }
     }
 };
 

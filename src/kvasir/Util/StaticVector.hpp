@@ -160,9 +160,7 @@ namespace sv_detail {
     constexpr OutputIt move(InputIt  b,
                             InputIt  e,
                             OutputIt to) {
-        for(; b != e; ++b, (void)++to) {
-            *to = ::std::move(*b);
-        }
+        for(; b != e; ++b, (void)++to) { *to = ::std::move(*b); }
         return to;
     }
 
@@ -177,9 +175,7 @@ namespace sv_detail {
                        InputIterator2  last2,
                        BinaryPredicate pred) {
         for(; first1 != last1 && first2 != last2; ++first1, (void)++first2) {
-            if(!pred(*first1, *first2)) {
-                return false;
-            }
+            if(!pred(*first1, *first2)) { return false; }
         }
         return first1 == last1 && first2 == last2;
     }
@@ -390,9 +386,7 @@ namespace sv_detail {
                   il.size() <= capacity()
                   && "trying to construct storage from an initializer_list whose size exceeds the storage capacity");
                 std::array<std::remove_const_t<T>, Capacity> d_{};
-                for(size_t i = 0, e = il.size(); i < e; ++i) {
-                    index(d_, i) = index(il, i);
-                }
+                for(size_t i = 0, e = il.size(); i < e; ++i) { index(d_, i) = index(il, i); }
                 return d_;
             }
 
@@ -517,9 +511,7 @@ namespace sv_detail {
                                 InputIt last) noexcept(std::is_nothrow_destructible_v<T>) {
                 assert(first >= data() && first <= end() && "first is out-of-bounds");
                 assert(last >= data() && last <= end() && "last is out-of-bounds");
-                for(; first != last; ++first) {
-                    first->~T();
-                }
+                for(; first != last; ++first) { first->~T(); }
             }
 
             /// (unsafe) Destroys all elements of the storage.
@@ -552,9 +544,7 @@ namespace sv_detail {
                 assert(
                   il.size() <= capacity()
                   && "trying to construct storage from an initializer_list whose size exceeds the storage capacity");
-                for(size_t i = 0; i < il.size(); ++i) {
-                    emplace_back(index(il, i));
-                }
+                for(size_t i = 0; i < il.size(); ++i) { emplace_back(index(il, i)); }
             }
         };
 
@@ -813,9 +803,7 @@ public:
         // insert at the end and then just rotate:
         // cannot use try in constexpr function
         // try {  // if copy_constructor throws you get basic-guarantee?
-        for(; first != last; ++first) {
-            emplace_back(*first);
-        }
+        for(; first != last; ++first) { emplace_back(*first); }
         // } catch (...) {
         //   erase(b, end());
         //   throw;
@@ -840,9 +828,7 @@ public:
         iterator b = end();
 
         // we insert at the end and then just rotate:
-        for(; first != last; ++first) {
-            emplace_back(move(*first));
-        }
+        for(; first != last; ++first) { emplace_back(move(*first)); }
         auto writable_position = begin() + (position - begin());
         sv_detail::slow_rotate<iterator>(writable_position, b, end());
         return writable_position;
@@ -895,9 +881,7 @@ public:
 
     constexpr void resize(size_type sz,
                           T const&  value) noexcept(std::is_nothrow_copy_constructible_v<T>) {
-        if(sz == size()) {
-            return;
-        }
+        if(sz == size()) { return; }
         if(sz > size()) {
             assert(sz <= capacity()
                    && "StaticVector cannot be resized to a size greater than capacity");
@@ -914,9 +898,7 @@ private:
       (sv_detail::MoveConstructible<T> && std::is_nothrow_move_constructible_v<T>)
       || (sv_detail::CopyConstructible<T> && std::is_nothrow_copy_constructible_v<T>)) {
         assert(n <= capacity() && "StaticVector cannot be resized to a size greater than capacity");
-        while(n != size()) {
-            emplace_back(T{});
-        }
+        while(n != size()) { emplace_back(T{}); }
     }
 
 public:
@@ -928,9 +910,7 @@ public:
     constexpr void resize(size_type sz) noexcept(
       (sv_detail::MoveConstructible<T> && std::is_nothrow_move_constructible_v<T>)
       || (sv_detail::CopyConstructible<T> && std::is_nothrow_copy_constructible_v<T>)) {
-        if(sz == size()) {
-            return;
-        }
+        if(sz == size()) { return; }
 
         if(sz > size()) {
             emplace_n(sz);

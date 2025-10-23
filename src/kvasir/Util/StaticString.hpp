@@ -46,9 +46,7 @@ struct StaticString {
     constexpr operator std::string_view() const { return std::string_view{buff.data(), size_}; }
 
     constexpr bool starts_with(std::string_view sv) const {
-        if(sv.size() > size()) {
-            return false;
-        }
+        if(sv.size() > size()) { return false; }
         return std::equal(sv.begin(), sv.end(), buff.begin());
     }
 

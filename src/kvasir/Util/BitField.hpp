@@ -126,14 +126,10 @@ private:
     }
 
     constexpr static value_Type mask(std::size_t n) {
-        if(n * 8 > (High / 8) * 8) {
-            return 0;
-        }
+        if(n * 8 > (High / 8) * 8) { return 0; }
 
         if constexpr(Low >= 8) {
-            if((Low / 8) * 8 > n * 8) {
-                return 0;
-            }
+            if((Low / 8) * 8 > n * 8) { return 0; }
         }
 
         std::size_t high = High;
@@ -182,9 +178,7 @@ private:
                                                              N> const& a,
                                                   std::index_sequence<Is...>) {
         auto calcRshift = [](auto n) -> value_Type {
-            if(n == 0) {
-                return 0;
-            }
+            if(n == 0) { return 0; }
             return value_Type((n * 8) - FrontMaskOffset);
         };
         return (

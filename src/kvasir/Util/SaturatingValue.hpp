@@ -22,16 +22,12 @@ public:
     constexpr ValueType value() const { return v; }
 
     constexpr SaturatingValue& operator++() {
-        if(v != max) {
-            ++v;
-        }
+        if(v != max) { ++v; }
         return *this;
     }
 
     constexpr SaturatingValue& operator--() {
-        if(v != min) {
-            --v;
-        }
+        if(v != min) { --v; }
         return *this;
     }
 

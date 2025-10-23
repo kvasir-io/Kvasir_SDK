@@ -156,9 +156,7 @@ namespace Kvasir { namespace Register {
     #include "remote_fmt/remote_fmt.hpp"
 template<typename T>
 concept PrintableRegister = requires {
-    {
-        T::fmt_string
-    } -> std::convertible_to<std::string_view>;
+    { T::fmt_string } -> std::convertible_to<std::string_view>;
     {
         T::apply_fields([]<typename... Args>(Args&&...) { return true; })
     } -> std::convertible_to<bool>;
