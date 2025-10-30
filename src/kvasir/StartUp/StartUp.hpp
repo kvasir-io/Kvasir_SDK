@@ -348,6 +348,7 @@ namespace Kvasir { namespace Startup {
             Kvasir::Register::apply(Kvasir::Startup::GetPeripheryInitT<Peripherals...>{});
             Kvasir::Register::apply(Kvasir::Startup::GetInterruptInitT<Peripherals...>{});
             callPreEnableRuntimeInits<Peripherals...>();
+            Kvasir::Nvic::enable_all();
             Kvasir::Register::apply(Kvasir::Startup::GetPeripheryEnableInitT<Peripherals...>{});
             callRuntimeInits<Peripherals...>();
 
