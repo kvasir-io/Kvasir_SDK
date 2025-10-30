@@ -343,7 +343,7 @@ endfunction()
 
 function(kvasir_executable_variants base_name)
     cmake_parse_arguments(PARSE_ARGV 1 PARSED_ARGS "" "OPTIMIZATION"
-                          "SOURCES;LIBRARIES;ADDITIONAL_DEBUG_FLAGS;ADDITIONAL_RELEASE_FLAGS;ADDITIONAL_SANITIZE_FLAGS")
+                          "SOURCES;LIBRARIES;ADDITIONAL_FLAGS;ADDITIONAL_DEBUG_FLAGS;ADDITIONAL_RELEASE_FLAGS;ADDITIONAL_SANITIZE_FLAGS")
 
     if(PARSED_ARGS_UNPARSED_ARGUMENTS)
         message(FATAL_ERROR "unknown argument ${PARSED_ARGS_UNPARSED_ARGUMENTS}")
@@ -372,14 +372,14 @@ function(kvasir_executable_variants base_name)
 
     # Debug variant - with logging, debug optimization
     add_executable(${debug_target} ${PARSED_ARGS_SOURCES})
-    target_configure_kvasir(${debug_target} OPTIMIZATION_STRATEGY debug USE_LOG ${PARSED_ARGS_ADDITIONAL_DEBUG_FLAGS})
+    target_configure_kvasir(${debug_target} OPTIMIZATION_STRATEGY debug USE_LOG ${PARSED_ARGS_ADDITIONAL_FLAGS} ${PARSED_ARGS_ADDITIONAL_DEBUG_FLAGS})
     if(PARSED_ARGS_LIBRARIES)
         target_link_libraries(${debug_target} ${PARSED_ARGS_LIBRARIES})
     endif()
 
     # Release variant - no logging, no sanitizer, configurable optimization
     add_executable(${release_target} ${PARSED_ARGS_SOURCES})
-    target_configure_kvasir(${release_target} OPTIMIZATION_STRATEGY ${PARSED_ARGS_OPTIMIZATION}
+    target_configure_kvasir(${release_target} OPTIMIZATION_STRATEGY ${PARSED_ARGS_OPTIMIZATION} ${PARSED_ARGS_ADDITIONAL_FLAGS}
                             ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
     if(PARSED_ARGS_LIBRARIES)
         target_link_libraries(${release_target} ${PARSED_ARGS_LIBRARIES})
@@ -387,7 +387,7 @@ function(kvasir_executable_variants base_name)
 
     # Release with log variant - with logging, no sanitizer, configurable optimization
     add_executable(${release_log_target} ${PARSED_ARGS_SOURCES})
-    target_configure_kvasir(${release_log_target} OPTIMIZATION_STRATEGY ${PARSED_ARGS_OPTIMIZATION} USE_LOG
+    target_configure_kvasir(${release_log_target} OPTIMIZATION_STRATEGY ${PARSED_ARGS_OPTIMIZATION} USE_LOG ${PARSED_ARGS_ADDITIONAL_FLAGS}
                             ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
     if(PARSED_ARGS_LIBRARIES)
         target_link_libraries(${release_log_target} ${PARSED_ARGS_LIBRARIES})
@@ -395,7 +395,7 @@ function(kvasir_executable_variants base_name)
 
     # Sanitize variant - with logging and sanitizer, configurable optimization
     add_executable(${sanitize_target} ${PARSED_ARGS_SOURCES})
-    target_configure_kvasir(${sanitize_target} OPTIMIZATION_STRATEGY ${PARSED_ARGS_OPTIMIZATION} USE_SANITIZER USE_LOG
+    target_configure_kvasir(${sanitize_target} OPTIMIZATION_STRATEGY ${PARSED_ARGS_OPTIMIZATION} USE_SANITIZER USE_LOG ${PARSED_ARGS_ADDITIONAL_FLAGS}
                             ${PARSED_ARGS_ADDITIONAL_SANITIZE_FLAGS})
     if(PARSED_ARGS_LIBRARIES)
         target_link_libraries(${sanitize_target} ${PARSED_ARGS_LIBRARIES})
