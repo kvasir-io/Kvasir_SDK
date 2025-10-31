@@ -18,7 +18,7 @@ def is_linker_internal_symbol(name):
         r'^ld-temp\.o$',                    # Temporary linker object
         # CMake-generated symbols (cmake_heap_size, etc.)
         r'^cmake_',
-        r'^_LINKER_INTERN_',               # Linker internal symbols
+        r'^_LINKER_',               # Linker symbols
         r'\.o$',                           # Any object file names
         # ARM EABI C++ exception unwinding personality routines
         r'^__aeabi_unwind_cpp_pr\d+$',

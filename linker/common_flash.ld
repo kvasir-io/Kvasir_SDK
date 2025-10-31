@@ -1,18 +1,7 @@
-SECTIONS {
-    . = ORIGIN(flash);
-    .text : {
-        FILL(0xFFDEFFDE); /* ARM "udf #255" instruction - triggers HardFault if PC goes to uninitialized memory */
-        . = ALIGN(4);
-        KEEP(*(.core_vectors*))
-        KEEP(*(.after_vectors*))
-        *(.text*)
-        *(.rodata*)
-        . = ALIGN(4);
-        _LINKER_INTERN_init_array_start_ = .;
-        . = ALIGN(4);
-        KEEP(*(.init_array*))
-        . = ALIGN(4);
-        _LINKER_INTERN_init_array_end_ = .;
-        . = ALIGN(4);
-    } > flash
-}
+/* Flash-based execution: .text section in flash memory */
+INCLUDE common_text_flash.ld
+
+/* Flash/ROM memory symbols */
+_LINKER_INTERN_rom_start_   = ORIGIN(flash);
+_LINKER_INTERN_rom_size_    = LENGTH(flash);
+_LINKER_INTERN_rom_end_     = _LINKER_INTERN_rom_start_ + _LINKER_INTERN_rom_size_;

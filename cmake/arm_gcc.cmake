@@ -20,10 +20,12 @@ find_package(
     COMPONENTS Interpreter
     REQUIRED)
 
-set(CMAKE_C_LINK_EXECUTABLE "${Python3_EXECUTABLE} ${kvasir_cmake_dir}/tools/two_stage_link.py ${CMAKE_SIZE} \
+set(CMAKE_C_LINK_EXECUTABLE
+    "${Python3_EXECUTABLE} -X pycache_prefix=<CMAKE_BINARY_DIR>/__pycache__ ${kvasir_cmake_dir}/tools/two_stage_link.py ${CMAKE_SIZE} \
 <CMAKE_C_COMPILER> <FLAGS> <CMAKE_C_LINK_FLAGS> <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>")
 
-set(CMAKE_CXX_LINK_EXECUTABLE "${Python3_EXECUTABLE} ${kvasir_cmake_dir}/tools/two_stage_link.py ${CMAKE_SIZE} \
+set(CMAKE_CXX_LINK_EXECUTABLE
+    "${Python3_EXECUTABLE} -X pycache_prefix=<CMAKE_BINARY_DIR>/__pycache__ ${kvasir_cmake_dir}/tools/two_stage_link.py ${CMAKE_SIZE} \
 <CMAKE_CXX_COMPILER> <FLAGS> <CMAKE_CXX_LINK_FLAGS> <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>")
 
 if(TARGET_FPU MATCHES none)

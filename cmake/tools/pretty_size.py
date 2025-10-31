@@ -8,6 +8,7 @@ import subprocess
 import sys
 import re
 from typing import List, Union
+from linker_utils import get_flash_address_range, parse_size as parse_size_util
 
 
 class MemoryRegion:
@@ -52,23 +53,7 @@ def humanbytes(B: Union[int, float]) -> str:
 
 def machinebytes(size_string: str) -> int:
     """Convert size string with suffixes (K, M) to bytes."""
-    if not size_string:
-        return 0
-
-    match = re.search(r'^\d+', size_string)
-    if not match:
-        raise ValueError(f"Invalid size format: {size_string}")
-
-    match_end = match.end()
-    int_size = int(size_string[0:match_end])
-    extension_part = size_string[match_end:]
-
-    if "K" in extension_part:
-        return int_size * 1024
-    if "M" in extension_part:
-        return int_size * 1024 * 1024
-
-    return int_size
+    return parse_size_util(size_string)
 
 
 def main() -> None:
@@ -86,12 +71,22 @@ def main() -> None:
     e_size = sys.argv[5]
     linker_file = sys.argv[6]
 
-    # Parse linker file to extract actual memory region sizes
+    # Parse linker file to extract actual memory region sizes and flash address range
+    has_flash_region = False
+    flash_range = None
     try:
         with open(linker_file, 'r') as f:
-            linker_file_content = f.readlines()
+            linker_file_content = f.read()
 
-        for line in linker_file_content:
+        # Get flash address range using shared utility
+        flash_range = get_flash_address_range(linker_file)
+        if flash_range:
+            has_flash_region = True
+            flash_start, flash_end = flash_range
+            f_size = flash_end - flash_start
+
+        # Parse memory sizes from lines
+        for line in linker_file_content.splitlines():
             key = "LENGTH"
             pos = line.find(key)
             if pos != -1:
@@ -112,9 +107,7 @@ def main() -> None:
                         elif length_tokens[2] == "+":
                             size = size + machinebytes(length_tokens[3])
 
-                    if region == "flash":
-                        f_size = size
-                    elif region == "ram":
+                    if region == "ram":
                         r_size = size
                     elif region == "eeprom":
                         e_size = size
@@ -138,12 +131,8 @@ def main() -> None:
         print(f"Error converting size values: {e}", file=sys.stderr)
         sys.exit(1)
 
-    memory_regions.append(MemoryRegion("flash", f_size, [".text", ".data"]))
-    memory_regions.append(MemoryRegion(
-        "ram", r_size, [".data", ".bss", ".heap", ".noInit", ".noInitLowRam"]))
-    memory_regions.append(MemoryRegion("eeprom", e_size, [".eeprom"]))
-
-    # Get section information from binary
+    # Get section information from binary first
+    # We need this to determine if .text is actually in flash or RAM
     try:
         objdump_res = subprocess.check_output(
             [size_tool, "--format=sysv", binary], stderr=subprocess.STDOUT)
@@ -166,15 +155,54 @@ def main() -> None:
         sys.exit(1)
 
     sections: List[Section] = []
+    text_addr = None
     for line in lines:
         try:
             sl = line.split()
             if len(sl) >= 2:
-                sections.append(Section(sl[0].decode(
-                    'cp437'), sl[1].decode('cp437')))
+                section_name = sl[0].decode('cp437')
+                section_size = sl[1].decode('cp437')
+                sections.append(Section(section_name, section_size))
+
+                # Get .text address if available
+                if section_name == ".text" and len(sl) >= 3:
+                    try:
+                        # Parse address - could be hex (0x...) or decimal
+                        # base 0 auto-detects 0x prefix
+                        text_addr = int(sl[2].decode('cp437'), 0)
+                    except (ValueError, UnicodeDecodeError):
+                        pass
         except (UnicodeDecodeError, IndexError) as e:
             print(f"Error parsing section line: {e}", file=sys.stderr)
             continue
+
+    # Determine if RAM-only by checking if .text is in flash address range
+    is_ram_only = False
+    if text_addr is not None and flash_range is not None:
+        flash_start, flash_end = flash_range
+        is_in_flash = (flash_start <= text_addr < flash_end)
+        is_ram_only = not is_in_flash
+    elif text_addr is not None and flash_range is None:
+        # No flash region defined, must be RAM-only
+        is_ram_only = True
+    elif not has_flash_region:
+        # No flash region at all
+        is_ram_only = True
+
+    # Adjust section assignments based on actual configuration
+    # Note: .stack and .heap are excluded from "used" calculation (they're allocated space)
+    if is_ram_only:
+        # RAM-only: everything in RAM, no flash
+        memory_regions.append(MemoryRegion("flash", 0, []))
+        memory_regions.append(MemoryRegion(
+            "ram", r_size, [".text", ".data", ".bss", ".noInit"]))
+    else:
+        # Flash-based: .text in flash, data copied from flash to RAM
+        memory_regions.append(MemoryRegion(
+            "flash", f_size, [".text", ".data"]))
+        memory_regions.append(MemoryRegion(
+            "ram", r_size, [".data", ".bss", ".noInit", ".noInitLowRam"]))
+    memory_regions.append(MemoryRegion("eeprom", e_size, [".eeprom"]))
 
     # Calculate memory usage
     print_records: List[PrintRecord] = []

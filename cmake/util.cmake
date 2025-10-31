@@ -33,17 +33,17 @@ function(print_size target linker_file)
         POST_BUILD
         COMMAND ${CMAKE_SIZE} -x --format=sysv "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
         COMMAND
-            ${Python3_EXECUTABLE} ${kvasir_cmake_dir}/tools/pretty_size.py "${CMAKE_SIZE}"
-            "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf" "${TARGET_FLASH_SIZE}" "${TARGET_RAM_SIZE}"
-            "${TARGET_EEPROM_SIZE}" "${linker_file}")
+            ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
+            ${kvasir_cmake_dir}/tools/pretty_size.py "${CMAKE_SIZE}" "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
+            "${TARGET_FLASH_SIZE}" "${TARGET_RAM_SIZE}" "${TARGET_EEPROM_SIZE}" "${linker_file}")
 endfunction()
 
 function(check_undefined_refs target)
     add_custom_command(
         TARGET ${target}
         POST_BUILD
-        COMMAND ${Python3_EXECUTABLE} ${kvasir_cmake_dir}/tools/find_undefined_refs.py
-                "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
+        COMMAND ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
+                ${kvasir_cmake_dir}/tools/find_undefined_refs.py "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
         COMMENT "Checking for undefined references in ${target}.elf"
         VERBATIM)
 endfunction()
@@ -81,24 +81,24 @@ function(generate_object target suffix type)
             TARGET ${target}
             POST_BUILD
             COMMAND
-                ${Python3_EXECUTABLE} ${kvasir_cmake_dir}/tools/ihex_to_uf2.py
-                "${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom${suffix}"
+                ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
+                ${kvasir_cmake_dir}/tools/ihex_to_uf2.py "${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom${suffix}"
                 "${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom.uf2" ${TARGET_UF2_CODE}
             BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom.uf2)
         add_custom_command(
             TARGET ${target}
             POST_BUILD
             COMMAND
-                ${Python3_EXECUTABLE} ${kvasir_cmake_dir}/tools/ihex_to_uf2.py
-                "${CMAKE_CURRENT_BINARY_DIR}/${target}_flash${suffix}" "${CMAKE_CURRENT_BINARY_DIR}/${target}_flash.uf2"
-                ${TARGET_UF2_CODE}
+                ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
+                ${kvasir_cmake_dir}/tools/ihex_to_uf2.py "${CMAKE_CURRENT_BINARY_DIR}/${target}_flash${suffix}"
+                "${CMAKE_CURRENT_BINARY_DIR}/${target}_flash.uf2" ${TARGET_UF2_CODE}
             BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${target}_flash.uf2)
         add_custom_command(
             TARGET ${target}
             POST_BUILD
             COMMAND
-                ${Python3_EXECUTABLE} ${kvasir_cmake_dir}/tools/ihex_to_uf2.py
-                "${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom_flash${suffix}"
+                ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
+                ${kvasir_cmake_dir}/tools/ihex_to_uf2.py "${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom_flash${suffix}"
                 "${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom_flash.uf2" ${TARGET_UF2_CODE}
             BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom_flash.uf2)
     endif()
@@ -120,8 +120,8 @@ function(add_bootloader_app_data target application)
     add_custom_command(
         TARGET ${application}
         COMMAND
-            ${Python3_EXECUTABLE} ${kvasir_cmake_dir}/tools/gen_app_data_for_bootloader.py
-            ${app_bin_dir}/${application}_flash.bin
+            ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
+            ${kvasir_cmake_dir}/tools/gen_app_data_for_bootloader.py ${app_bin_dir}/${application}_flash.bin
             ${CMAKE_CURRENT_BINARY_DIR}/generated/${target}/bootloader/app_data.inl DEPENDS
             ${kvasir_cmake_dir}/tools/gen_app_data_for_bootloader.py
         BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/generated/${target}/bootloader/app_data.inl)
@@ -228,10 +228,21 @@ function(
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common.ld)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_flash.ld)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_ram.ld)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_ram_only.ld)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_eeprom.ld)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_text_flash.ld)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_text_ram.ld)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_text_body.inc.ld)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_data_flash.ld)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_data_ram_only.ld)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_data_body.inc.ld)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_sections.ld)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_heap.ld)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_stack_heap.ld)
 
     add_target_linker_dependency(${name} ${linker_file})
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/two_stage_link.py)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/linker_utils.py)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/find_undefined_refs.py)
 
     get_filename_component(linker_file_path ${linker_file} ABSOLUTE)
@@ -342,8 +353,9 @@ function(
 endfunction()
 
 function(kvasir_executable_variants base_name)
-    cmake_parse_arguments(PARSE_ARGV 1 PARSED_ARGS "" "OPTIMIZATION"
-                          "SOURCES;LIBRARIES;ADDITIONAL_FLAGS;ADDITIONAL_DEBUG_FLAGS;ADDITIONAL_RELEASE_FLAGS;ADDITIONAL_SANITIZE_FLAGS")
+    cmake_parse_arguments(
+        PARSE_ARGV 1 PARSED_ARGS "" "OPTIMIZATION"
+        "SOURCES;LIBRARIES;ADDITIONAL_FLAGS;ADDITIONAL_DEBUG_FLAGS;ADDITIONAL_RELEASE_FLAGS;ADDITIONAL_SANITIZE_FLAGS")
 
     if(PARSED_ARGS_UNPARSED_ARGUMENTS)
         message(FATAL_ERROR "unknown argument ${PARSED_ARGS_UNPARSED_ARGUMENTS}")
@@ -372,31 +384,38 @@ function(kvasir_executable_variants base_name)
 
     # Debug variant - with logging, debug optimization
     add_executable(${debug_target} ${PARSED_ARGS_SOURCES})
-    target_configure_kvasir(${debug_target} OPTIMIZATION_STRATEGY debug USE_LOG ${PARSED_ARGS_ADDITIONAL_FLAGS} ${PARSED_ARGS_ADDITIONAL_DEBUG_FLAGS})
+    target_configure_kvasir(${debug_target} OPTIMIZATION_STRATEGY debug USE_LOG ${PARSED_ARGS_ADDITIONAL_FLAGS}
+                            ${PARSED_ARGS_ADDITIONAL_DEBUG_FLAGS})
     if(PARSED_ARGS_LIBRARIES)
         target_link_libraries(${debug_target} ${PARSED_ARGS_LIBRARIES})
     endif()
 
     # Release variant - no logging, no sanitizer, configurable optimization
     add_executable(${release_target} ${PARSED_ARGS_SOURCES})
-    target_configure_kvasir(${release_target} OPTIMIZATION_STRATEGY ${PARSED_ARGS_OPTIMIZATION} ${PARSED_ARGS_ADDITIONAL_FLAGS}
-                            ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
+    target_configure_kvasir(${release_target} OPTIMIZATION_STRATEGY ${PARSED_ARGS_OPTIMIZATION}
+                            ${PARSED_ARGS_ADDITIONAL_FLAGS} ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
     if(PARSED_ARGS_LIBRARIES)
         target_link_libraries(${release_target} ${PARSED_ARGS_LIBRARIES})
     endif()
 
     # Release with log variant - with logging, no sanitizer, configurable optimization
     add_executable(${release_log_target} ${PARSED_ARGS_SOURCES})
-    target_configure_kvasir(${release_log_target} OPTIMIZATION_STRATEGY ${PARSED_ARGS_OPTIMIZATION} USE_LOG ${PARSED_ARGS_ADDITIONAL_FLAGS}
-                            ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
+    target_configure_kvasir(${release_log_target} OPTIMIZATION_STRATEGY ${PARSED_ARGS_OPTIMIZATION} USE_LOG
+                            ${PARSED_ARGS_ADDITIONAL_FLAGS} ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
     if(PARSED_ARGS_LIBRARIES)
         target_link_libraries(${release_log_target} ${PARSED_ARGS_LIBRARIES})
     endif()
 
     # Sanitize variant - with logging and sanitizer, configurable optimization
     add_executable(${sanitize_target} ${PARSED_ARGS_SOURCES})
-    target_configure_kvasir(${sanitize_target} OPTIMIZATION_STRATEGY ${PARSED_ARGS_OPTIMIZATION} USE_SANITIZER USE_LOG ${PARSED_ARGS_ADDITIONAL_FLAGS}
-                            ${PARSED_ARGS_ADDITIONAL_SANITIZE_FLAGS})
+    target_configure_kvasir(
+        ${sanitize_target}
+        OPTIMIZATION_STRATEGY
+        ${PARSED_ARGS_OPTIMIZATION}
+        USE_SANITIZER
+        USE_LOG
+        ${PARSED_ARGS_ADDITIONAL_FLAGS}
+        ${PARSED_ARGS_ADDITIONAL_SANITIZE_FLAGS})
     if(PARSED_ARGS_LIBRARIES)
         target_link_libraries(${sanitize_target} ${PARSED_ARGS_LIBRARIES})
     endif()
