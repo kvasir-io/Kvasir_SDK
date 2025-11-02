@@ -1,7 +1,7 @@
 import sys
 import subprocess
 import os
-from linker_utils import get_flash_address_range, parse_size
+from linker_utils import get_memory_regions, find_region_for_address, parse_size
 
 cnt = 0
 ocnt = 0
@@ -33,13 +33,14 @@ for a in sys.argv:
 name = sys.argv[ocnt]
 sys.argv[ocnt] = name + ".step1"
 
-# Detect RAM-only configuration by checking if .text is in flash address range
-# Get flash address range from linker script
-flash_range = None
+# Parse memory regions from linker script
+memory_regions = []
 if linker_script:
-    flash_range = get_flash_address_range(linker_script)
+    memory_regions = get_memory_regions(linker_script)
+    if not memory_regions:
+        print(f"[two_stage_link.py] WARNING: Could not parse memory regions from linker script", file=sys.stderr)
 else:
-    print(f"[two_stage_link.py] WARNING: No linker script found in arguments, assuming flash-based", file=sys.stderr)
+    print(f"[two_stage_link.py] WARNING: No linker script found in arguments", file=sys.stderr)
 
 process = subprocess.Popen(sys.argv[2:])
 process.wait()
@@ -72,42 +73,29 @@ for l in lines:
         sections.append(Section(sl[0].decode(
             'cp437'), sl[1].decode('cp437'), sl[2].decode('cp437')))
 
-# Determine if RAM-only by checking if .text is in flash address range
-is_ram_only = False
-text_addr = None
-
-for s in sections:
-    if s.name == ".text":
-        # Parse address - could be hex (0x...) or decimal
-        text_addr = int(s.addr, 0)  # base 0 auto-detects 0x prefix
-
-        if flash_range:
-            flash_start, flash_end = flash_range
-            is_in_flash = (flash_start <= text_addr < flash_end)
-            is_ram_only = not is_in_flash
-        else:
-            # No flash region defined, must be RAM-only
-            is_ram_only = True
-        break
-
-if text_addr is None:
-    print(f"[two_stage_link.py] WARNING: .text section not found, assuming flash-based", file=sys.stderr)
-    is_ram_only = False
-
+# Calculate RAM usage by checking which sections are actually in RAM
+# This works for any configuration (flash+RAM, RAM-only, custom layouts)
 size = 0
 
 for s in sections:
-    if s.name == ".text" and is_ram_only:
-        # In RAM-only config, .text is in RAM and must be counted
-        size = size + int(s.size)
-    if s.name == ".data":
-        size = size + int(s.size)
-    if s.name == ".bss":
-        size = size + int(s.size)
-    if s.name == ".noInit":
-        size = size + int(s.size)
-    if s.name == ".noInitLowRam":
-        size = size + int(s.size)
+    # Skip .stack and .heap - these are what we're calculating
+    if s.name in [".stack", ".heap"]:
+        continue
+
+    # Parse section address
+    try:
+        addr = int(s.addr, 0)  # base 0 auto-detects 0x prefix
+    except (ValueError, AttributeError):
+        # Skip sections without valid addresses
+        continue
+
+    # Check which memory region this section is in
+    region = find_region_for_address(memory_regions, addr)
+
+    # Only count sections that are in RAM
+    if region and region.name == "ram":
+        section_size = int(s.size)
+        size = size + section_size
 
 
 def parseSize(sie):

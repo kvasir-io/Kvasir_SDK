@@ -225,20 +225,22 @@ function(
         add_bootloader_app_data(${name} ${application})
     endif()
 
+    # Main linker composition files
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common.ld)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_flash.ld)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_ram.ld)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_ram_only.ld)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_eeprom.ld)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_text_flash.ld)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_text_ram.ld)
+
+    # Section body include files
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_text_body.inc.ld)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_data_flash.ld)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_data_ram_only.ld)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_vectors_body.inc.ld)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_data_body.inc.ld)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_sections.ld)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_heap.ld)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_stack_heap.ld)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_bss_body.inc.ld)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_noInit_body.inc.ld)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_noInitLowRam_body.inc.ld)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_stack_body.inc.ld)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_heap_body.inc.ld)
 
     add_target_linker_dependency(${name} ${linker_file})
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/two_stage_link.py)

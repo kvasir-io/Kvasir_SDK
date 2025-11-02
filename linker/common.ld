@@ -20,9 +20,11 @@
  *
  * FLASH:
  * ┌─────────────────────────────────────┐ ORIGIN(flash)
- * │ .text (code & read-only data)       │
+ * │ .vectors (interrupt vectors)        │
  * │  - .core_vectors (ISR table)        │
  * │  - .after_vectors                   │
+ * ├─────────────────────────────────────┤
+ * │ .text (code & read-only data)       │
  * │  - .text* (program code)            │
  * │  - .rodata* (const data)            │
  * │  - .init_array (C++ constructors)   │
@@ -34,9 +36,11 @@
  * ┌─────────────────────────────────────┐ ORIGIN(ram)
  * │ .noInitLowRam (special low RAM)     │ <- Not cleared at startup
  * ├─────────────────────────────────────┤ _LINKER_INTERN_stack_start_
- * │ .stack (early placement)            │
- * │  - .stackProtector                  │
- * │  - Stack space                      │ <- Size from two-stage link
+ * │ .stackProtector                 ^   │
+ * │                                 |   │
+ * │ .stack (early placement)        |   │
+ * │                                 |   │
+ * │ Stack space (two-stage link)    |   │
  * ├─────────────────────────────────────┤ _LINKER_INTERN_stack_end_
  * │ .data (initialized globals)         │ <- LMA=flash, VMA=RAM, copied at startup
  * ├─────────────────────────────────────┤ _LINKER_INTERN_bss_start_
@@ -44,7 +48,10 @@
  * ├─────────────────────────────────────┤ _LINKER_INTERN_noInit_start_
  * │ .noInit (uninitialized data)        │ <- Not touched at startup
  * ├─────────────────────────────────────┤ _LINKER_INTERN_heap_start_
- * │ .heap (dynamic allocation)          │
+ * │                                 |   │
+ * │ .heap (dynamic allocation)      |   │
+ * │                                 |   │
+ * │                                 v   │
  * └─────────────────────────────────────┘ _LINKER_INTERN_heap_end_
  *
  * Key: .data has AT(_LINKER_INTERN_data_start_flash_) - startup must copy from flash!
@@ -61,9 +68,13 @@
  *
  * RAM:
  * ┌─────────────────────────────────────┐ ORIGIN(ram)
- * │ .text (code executed from RAM)      │
+ * │ .vectors (interrupt vectors)        │
  * │  - .core_vectors (ISR table)        │
  * │  - .after_vectors                   │
+ * ├─────────────────────────────────────┤
+ * │ .noInitLowRam (special low RAM)     │ <- Not cleared at startup
+ * ├─────────────────────────────────────┤
+ * │ .text (code executed from RAM)      │
  * │  - .text* (program code)            │
  * │  - .rodata* (const data)            │
  * │  - .init_array (C++ constructors)   │
@@ -74,11 +85,17 @@
  * ├─────────────────────────────────────┤ _LINKER_INTERN_noInit_start_
  * │ .noInit (uninitialized data)        │ <- Not touched at startup
  * ├─────────────────────────────────────┤ _LINKER_INTERN_stack_start_
- * │ .stack (late placement)             │
- * │  - .stackProtector                  │
- * │  - Stack space                      │ <- Size from two-stage link
- * ├─────────────────────────────────────┤ _LINKER_INTERN_heap_start_
- * │ .heap (dynamic allocation)          │
+ * │ .stackProtector                 ^   │
+ * │                                 |   │
+ * │ .stack (late placement)         |   │
+ * │                                 |   │
+ * │ Stack space (two-stage link)    |   │
+ * ├─────────────────────────────────┴───┤ _LINKER_INTERN_stack_end_
+ * ├─────────────────────────────────┬───┤ _LINKER_INTERN_heap_start_
+ * │                                 |   │
+ * │ .heap (dynamic allocation)      |   │
+ * │                                 |   │
+ * │                                 v   │
  * └─────────────────────────────────────┘ _LINKER_INTERN_heap_end_
  *
  * Key: .data has NO AT() - startup skips copy (check _LINKER_data_start_flash_ == 0)
@@ -93,22 +110,20 @@
  * includes the appropriate composition files.
  *
  * Composition Files (to be included by chip-specific scripts):
- *   common_flash.ld     -> Includes common_text_flash.ld (for flash config)
- *   common_ram.ld       -> Includes common_data_flash.ld + common_sections.ld + common_heap.ld
- *   common_ram_only.ld  -> Includes all needed files for RAM-only config
- *   common.ld           -> This file (always include last)
+ *   common_flash.ld     -> Flash sections: .vectors, .text
+ *   common_ram.ld       -> RAM sections for flash config: .noInitLowRam, .stack, .data, .bss, .noInit, .heap
+ *   common_ram_only.ld  -> All sections in RAM: .vectors, .noInitLowRam, .text, .data, .bss, .noInit, .stack, .heap
+ *   common.ld           -> This file (symbols, assertions, /DISCARD/)
  *
- * Building Blocks (low-level section definitions):
- *   common_text_flash.ld     = .text in flash memory
- *   common_text_ram.ld       = .text in RAM memory
- *   common_text_body.inc.ld  = Shared .text section body (included by both)
- *   common_data_flash.ld     = .noInitLowRam, .stack (early), .data (with AT)
- *   common_data_ram_only.ld  = .data (without AT), flash symbols = 0
- *   common_data_body.inc.ld  = Shared .data section body (included by both)
- *   common_sections.ld       = .bss, .noInit (shared by both configs)
- *   common_stack_heap.ld     = .stack (late), .heap (for RAM-only)
- *   common_heap.ld           = .heap (for flash config)
- *   common.ld                = This file (symbols, assertions, /DISCARD/)
+ * Section Body Files (included by composition files):
+ *   common_text_body.inc.ld         = .text section content
+ *   common_vectors_body.inc.ld      = .vectors section content
+ *   common_data_body.inc.ld         = .data section content
+ *   common_bss_body.inc.ld          = .bss section content
+ *   common_noInit_body.inc.ld       = .noInit section content
+ *   common_noInitLowRam_body.inc.ld = .noInitLowRam section content
+ *   common_stack_body.inc.ld        = .stack section content
+ *   common_heap_body.inc.ld         = .heap section content
  *
  * =============================================================================
  * USAGE EXAMPLE
@@ -169,7 +184,6 @@ _LINKER_INTERN_stack_size_          = _LINKER_INTERN_stack_end_ - _LINKER_INTERN
 _LINKER_INTERN_stackProtector_size_ = _LINKER_INTERN_stackProtector_end_ - _LINKER_INTERN_stack_start_;
 
 /* Flash-based assertions (skip for RAM-only when flash addresses are zero) */
-ASSERT( _LINKER_INTERN_data_start_flash_ == 0 || _LINKER_INTERN_init_array_end_ == _LINKER_INTERN_data_start_flash_,"ERROR: corrupted linker file - data and text not consecutive");
 ASSERT( _LINKER_INTERN_data_start_flash_ == 0 || _LINKER_INTERN_data_end_flash_ - _LINKER_INTERN_data_start_flash_
      == _LINKER_INTERN_data_end_ - _LINKER_INTERN_data_start_,"ERROR: corrupted linker file - data in RAM smaller than in flash");
 

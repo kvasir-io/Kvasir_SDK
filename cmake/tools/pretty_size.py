@@ -7,17 +7,17 @@ Analyzes binary files and generates formatted memory usage reports
 import subprocess
 import sys
 import re
-from typing import List, Union
-from linker_utils import get_flash_address_range, parse_size as parse_size_util
+from typing import List, Union, Dict
+from linker_utils import get_memory_regions, find_region_for_address, parse_size as parse_size_util
 
 
-class MemoryRegion:
-    """Represents a memory region with its size and associated sections."""
+class MemoryRegionUsage:
+    """Represents memory region usage for display."""
 
-    def __init__(self, name: str, size: Union[int, str], sections: List[str]) -> None:
+    def __init__(self, name: str, size: int) -> None:
         self.name = name
         self.size = size
-        self.sections = sections
+        self.used = 0  # Will be accumulated from sections
 
 
 class PrintRecord:
@@ -31,11 +31,12 @@ class PrintRecord:
 
 
 class Section:
-    """Represents a binary section with its name and size."""
+    """Represents a binary section with its name, size, and address."""
 
-    def __init__(self, name: str, size: str) -> None:
+    def __init__(self, name: str, size: str, addr: str = None) -> None:
         self.name = name
         self.size = size
+        self.addr = addr
 
 
 def humanbytes(B: Union[int, float]) -> str:
@@ -62,77 +63,21 @@ def main() -> None:
         print("Usage: pretty_size.py <size_tool> <binary> <flash_size> <ram_size> <eeprom_size> <linker_file>", file=sys.stderr)
         sys.exit(1)
 
-    memory_regions: List[MemoryRegion] = []
-
     size_tool = sys.argv[1]
     binary = sys.argv[2]
-    f_size = sys.argv[3]
-    r_size = sys.argv[4]
-    e_size = sys.argv[5]
     linker_file = sys.argv[6]
 
-    # Parse linker file to extract actual memory region sizes and flash address range
-    has_flash_region = False
-    flash_range = None
-    try:
-        with open(linker_file, 'r') as f:
-            linker_file_content = f.read()
+    # Parse memory regions from linker script
+    memory_regions = get_memory_regions(linker_file)
+    if not memory_regions:
+        print(f"Warning: Could not parse memory regions from linker file '{linker_file}'", file=sys.stderr)
 
-        # Get flash address range using shared utility
-        flash_range = get_flash_address_range(linker_file)
-        if flash_range:
-            has_flash_region = True
-            flash_start, flash_end = flash_range
-            f_size = flash_end - flash_start
+    # Create usage tracking for each memory region
+    region_usage: Dict[str, MemoryRegionUsage] = {}
+    for region in memory_regions:
+        region_usage[region.name] = MemoryRegionUsage(region.name, region.length)
 
-        # Parse memory sizes from lines
-        for line in linker_file_content.splitlines():
-            key = "LENGTH"
-            pos = line.find(key)
-            if pos != -1:
-                try:
-                    tokens = line.split()
-                    if len(tokens) < 1:
-                        continue
-                    region = tokens[0]
-
-                    length_tokens = line[pos+len(key):].split()
-                    if len(length_tokens) < 2:
-                        continue
-
-                    size = machinebytes(length_tokens[1])
-                    if len(length_tokens) > 3:
-                        if length_tokens[2] == "-":
-                            size = size - machinebytes(length_tokens[3])
-                        elif length_tokens[2] == "+":
-                            size = size + machinebytes(length_tokens[3])
-
-                    if region == "ram":
-                        r_size = size
-                    elif region == "eeprom":
-                        e_size = size
-                except (IndexError, ValueError, AttributeError) as e:
-                    print(
-                        f"Error parsing line '{line.strip()}': {e}", file=sys.stderr)
-    except (IOError, OSError) as e:
-        print(
-            f"Error reading linker file '{linker_file}': {e}", file=sys.stderr)
-        # Continue with provided sizes as fallback
-
-    # Convert string sizes to integers if needed
-    try:
-        if isinstance(f_size, str):
-            f_size = machinebytes(f_size)
-        if isinstance(r_size, str):
-            r_size = machinebytes(r_size)
-        if isinstance(e_size, str):
-            e_size = machinebytes(e_size)
-    except ValueError as e:
-        print(f"Error converting size values: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    # Get section information from binary first
-    # We need this to determine if .text is actually in flash or RAM
+    # Get section information from binary
     try:
         objdump_res = subprocess.check_output(
             [size_tool, "--format=sysv", binary], stderr=subprocess.STDOUT)
@@ -154,71 +99,51 @@ def main() -> None:
         print("Unexpected output format from size tool", file=sys.stderr)
         sys.exit(1)
 
+    # Parse sections with addresses
     sections: List[Section] = []
-    text_addr = None
     for line in lines:
         try:
             sl = line.split()
-            if len(sl) >= 2:
+            if len(sl) >= 3:
                 section_name = sl[0].decode('cp437')
                 section_size = sl[1].decode('cp437')
-                sections.append(Section(section_name, section_size))
-
-                # Get .text address if available
-                if section_name == ".text" and len(sl) >= 3:
-                    try:
-                        # Parse address - could be hex (0x...) or decimal
-                        # base 0 auto-detects 0x prefix
-                        text_addr = int(sl[2].decode('cp437'), 0)
-                    except (ValueError, UnicodeDecodeError):
-                        pass
+                section_addr = sl[2].decode('cp437')
+                sections.append(Section(section_name, section_size, section_addr))
         except (UnicodeDecodeError, IndexError) as e:
             print(f"Error parsing section line: {e}", file=sys.stderr)
             continue
 
-    # Determine if RAM-only by checking if .text is in flash address range
-    is_ram_only = False
-    if text_addr is not None and flash_range is not None:
-        flash_start, flash_end = flash_range
-        is_in_flash = (flash_start <= text_addr < flash_end)
-        is_ram_only = not is_in_flash
-    elif text_addr is not None and flash_range is None:
-        # No flash region defined, must be RAM-only
-        is_ram_only = True
-    elif not has_flash_region:
-        # No flash region at all
-        is_ram_only = True
+    # For each section, determine which memory region it belongs to
+    # Skip .stack and .heap as they're allocated space, not "used"
+    for section in sections:
+        if section.name in [".stack", ".heap"]:
+            continue
 
-    # Adjust section assignments based on actual configuration
-    # Note: .stack and .heap are excluded from "used" calculation (they're allocated space)
-    if is_ram_only:
-        # RAM-only: everything in RAM, no flash
-        memory_regions.append(MemoryRegion("flash", 0, []))
-        memory_regions.append(MemoryRegion(
-            "ram", r_size, [".text", ".data", ".bss", ".noInit"]))
-    else:
-        # Flash-based: .text in flash, data copied from flash to RAM
-        memory_regions.append(MemoryRegion(
-            "flash", f_size, [".text", ".data"]))
-        memory_regions.append(MemoryRegion(
-            "ram", r_size, [".data", ".bss", ".noInit", ".noInitLowRam"]))
-    memory_regions.append(MemoryRegion("eeprom", e_size, [".eeprom"]))
+        # Parse section address
+        try:
+            addr = int(section.addr, 0)  # base 0 auto-detects 0x prefix
+        except (ValueError, AttributeError):
+            # Skip sections without valid addresses
+            continue
 
-    # Calculate memory usage
+        # Find which memory region contains this section
+        region = find_region_for_address(memory_regions, addr)
+
+        if region and region.name in region_usage:
+            try:
+                size = int(section.size)
+                region_usage[region.name].used += size
+            except ValueError:
+                print(f"Warning: Could not parse section size '{section.size}' for section '{section.name}'", file=sys.stderr)
+
+    # Create print records only for regions that exist
     print_records: List[PrintRecord] = []
-    for mr in memory_regions:
-        print_records.append(PrintRecord(mr.name, 0, mr.size, 0))
+    for usage in region_usage.values():
+        print_records.append(PrintRecord(usage.name, usage.used, usage.size, 0))
 
-    for s in sections:
-        for mr in memory_regions:
-            if s.name in mr.sections:
-                for pr in print_records:
-                    if pr.name == mr.name:
-                        try:
-                            pr.used += int(s.size)
-                        except ValueError:
-                            print(
-                                f"Warning: Could not parse section size '{s.size}' for section '{s.name}'", file=sys.stderr)
+    if not print_records:
+        print("No memory regions found", file=sys.stderr)
+        return
 
     # Format output
     for pr in print_records:
