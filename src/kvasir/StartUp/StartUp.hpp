@@ -375,10 +375,17 @@ inline void log_assert() {
                   [](auto c) { return c; }));
 }
 
-void log_assert(int line, const char* filename, const char* expr);
-void log_assert(int line, const char* filename, const char* expr)
-{
-    UC_LOG_C("libc/libc++ assert({}) {}:{}", std::string_view{expr}, std::string_view{filename}, line);
+void log_assert(int         line,
+                char const* filename,
+                char const* expr);
+
+void log_assert([[maybe_unused]] int         line,
+                [[maybe_unused]] char const* filename,
+                [[maybe_unused]] char const* expr) {
+    UC_LOG_C("libc/libc++ assert({}) {}:{}",
+             std::string_view{expr},
+             std::string_view{filename},
+             line);
 }
 
 }   // namespace uc_log
@@ -432,3 +439,4 @@ void operator delete(void*) {}
 
 void operator delete(void*,
                      std::size_t) {}
+
