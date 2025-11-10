@@ -56,8 +56,9 @@ function(generate_object target suffix type)
         TARGET ${target}
         POST_BUILD
         COMMAND
-            ${CMAKE_OBJCOPY} --output-target ${type} --only-section=.data --only-section=.text ${extra_flash_sections}
-            "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf" "${CMAKE_CURRENT_BINARY_DIR}/${target}_flash${suffix}"
+            ${CMAKE_OBJCOPY} --output-target ${type} --only-section=.vectors --only-section=.text --only-section=.data
+            ${extra_flash_sections} "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
+            "${CMAKE_CURRENT_BINARY_DIR}/${target}_flash${suffix}"
         BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${target}_flash${suffix})
 
     add_custom_command(
@@ -72,8 +73,9 @@ function(generate_object target suffix type)
             TARGET ${target}
             POST_BUILD
             COMMAND
-                ${CMAKE_OBJCOPY} --output-target ${type} --only-section=.data --only-section=.text
-                --only-section=.eeprom ${extra_flash_sections} "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
+                ${CMAKE_OBJCOPY} --output-target ${type} --only-section=.vectors --only-section=.text
+                --only-section=.data --only-section=.eeprom ${extra_flash_sections}
+                "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
                 "${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom_flash${suffix}"
             BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom_flash${suffix})
 
@@ -109,8 +111,10 @@ function(generate_lst target)
     add_custom_command(
         TARGET ${target}
         POST_BUILD
-        COMMAND ${CMAKE_OBJDUMP} --section=.text --section=.data ${extra_flash_sections} --disassemble --demangle
-                --all-headers "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf" > "${CMAKE_CURRENT_BINARY_DIR}/${target}.lst"
+        COMMAND
+            ${CMAKE_OBJDUMP} --section=.vectors --section=.text --section=.data ${extra_flash_sections} --disassemble
+            --demangle --all-headers "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf" >
+            "${CMAKE_CURRENT_BINARY_DIR}/${target}.lst"
         BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${target}.lst)
 endfunction()
 
