@@ -374,6 +374,13 @@ inline void log_assert() {
                   [](auto c) { return c == '{' || c == '}'; },
                   [](auto c) { return c; }));
 }
+
+void log_assert(int line, const char* filename, const char* expr);
+void log_assert(int line, const char* filename, const char* expr)
+{
+    UC_LOG_C("libc/libc++ assert({}) {}:{}", std::string_view{expr}, std::string_view{filename}, line);
+}
+
 }   // namespace uc_log
 
 extern "C" {

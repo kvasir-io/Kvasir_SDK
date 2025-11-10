@@ -203,3 +203,7 @@ _LINKER_data_start_flash_ = _LINKER_INTERN_data_start_flash_;
 _LINKER_data_end_flash_   = _LINKER_INTERN_data_end_flash_;
 _LINKER_data_start_       = _LINKER_INTERN_data_start_;
 _LINKER_bss_end_          = _LINKER_INTERN_bss_end_;
+
+/* llvm libc heap support */
+__llvm_libc_heap_limit  = _LINKER_INTERN_heap_end_;
+_end                    = _LINKER_INTERN_heap_start_;

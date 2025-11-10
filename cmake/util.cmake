@@ -208,6 +208,9 @@ function(
 
     if("${CLIB}" STREQUAL "llvm")
         target_add_kvasir_lib(${name} c "${LIBC_SOURCE_FILES}")
+        if(NOT heap_size EQUAL 0)
+            target_add_kvasir_lib(${name} c_malloc "${LIBC_MALLOC_SOURCE_FILES}")
+        endif()
     endif()
 
     set_target_properties(${name} PROPERTIES SUFFIX ".elf")
