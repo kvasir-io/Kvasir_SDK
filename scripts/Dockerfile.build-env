@@ -6,14 +6,14 @@ ARG AUR_EXTRA_PACKAGES=""
 RUN pacman --disable-download-timeout --noconfirm -Syyu && \
     pacman --disable-download-timeout --noconfirm --needed -S \
         base-devel fish llvm cmake lld git make gcc clang python sudo python-intelhex \
-        fmt nlohmann-json pugixml cli11 boost go ninja arm-none-eabi-gdb lldb $EXTRA_PACKAGES && \
+        fmt nlohmann-json pugixml cli11 boost go ninja arm-none-eabi-gdb arm-none-eabi-gcc lldb $EXTRA_PACKAGES && \
     groupadd -r -g 5000 aur_user && \
     useradd aur_user -u 5000 -g 5000 --create-home && \
     echo "ALL ALL=(ALL) NOPASSWD: /usr/bin/pacman" > "/etc/sudoers.d/allow_nobody_to_pacman" && \
     echo "MAKEFLAGS=\"-j$(nproc)\"" >> /etc/makepkg.conf && \
     echo "OPTIONS=(strip !docs !libtool staticlibs !debug !check)" >> /etc/makepkg.conf && \
     su aur_user -c "cd ~ && git clone --depth 1 https://aur.archlinux.org/yay.git && cd yay && makepkg --noconfirm -si" && \
-    su aur_user -c "yay -S --noconfirm --nodeps --needed jlink-software-and-documentation su-exec inja ftxui magic_enum $AUR_EXTRA_PACKAGES" && \
+    su aur_user -c "yay -S --cleanafter --noconfirm --disable-download-timeout --removemake --nodeps --needed jlink-software-and-documentation su-exec inja ftxui magic_enum $AUR_EXTRA_PACKAGES" && \
     yay -Rns --noconfirm $(yay -Qtdq) 2>/dev/null || true && \
     yay -Scc --noconfirm && \
     go clean -cache -modcache -testcache -fuzzcache 2>/dev/null || true && \
