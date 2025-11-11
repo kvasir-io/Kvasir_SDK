@@ -6,7 +6,7 @@ ENV KVASIR_DEVICES_ROOT=/opt/kvasir_devices
 COPY . ${KVASIR_ROOT}/
 
 RUN git clone https://github.com/kvasir-io/kvasir_devices.git ${KVASIR_DEVICES_ROOT} && \
-    git config --global --add safe.directory ${KVASIR_DEVICES_ROOT}
+    git config --global --add safe.directory ${KVASIR_DEVICES_ROOT} && \
     git config --global --add safe.directory ${KVASIR_ROOT}
 
 ENTRYPOINT ["/opt/kvasir/scripts/entrypoint.sh"]
