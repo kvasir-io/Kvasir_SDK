@@ -70,12 +70,14 @@ def main() -> None:
     # Parse memory regions from linker script
     memory_regions = get_memory_regions(linker_file)
     if not memory_regions:
-        print(f"Warning: Could not parse memory regions from linker file '{linker_file}'", file=sys.stderr)
+        print(
+            f"Warning: Could not parse memory regions from linker file '{linker_file}'", file=sys.stderr)
 
     # Create usage tracking for each memory region
     region_usage: Dict[str, MemoryRegionUsage] = {}
     for region in memory_regions:
-        region_usage[region.name] = MemoryRegionUsage(region.name, region.length)
+        region_usage[region.name] = MemoryRegionUsage(
+            region.name, region.length)
 
     # Get section information from binary
     try:
@@ -108,7 +110,8 @@ def main() -> None:
                 section_name = sl[0].decode('cp437')
                 section_size = sl[1].decode('cp437')
                 section_addr = sl[2].decode('cp437')
-                sections.append(Section(section_name, section_size, section_addr))
+                sections.append(
+                    Section(section_name, section_size, section_addr))
         except (UnicodeDecodeError, IndexError) as e:
             print(f"Error parsing section line: {e}", file=sys.stderr)
             continue
@@ -134,12 +137,14 @@ def main() -> None:
                 size = int(section.size)
                 region_usage[region.name].used += size
             except ValueError:
-                print(f"Warning: Could not parse section size '{section.size}' for section '{section.name}'", file=sys.stderr)
+                print(
+                    f"Warning: Could not parse section size '{section.size}' for section '{section.name}'", file=sys.stderr)
 
     # Create print records only for regions that exist
     print_records: List[PrintRecord] = []
     for usage in region_usage.values():
-        print_records.append(PrintRecord(usage.name, usage.used, usage.size, 0))
+        print_records.append(PrintRecord(
+            usage.name, usage.used, usage.size, 0))
 
     if not print_records:
         print("No memory regions found", file=sys.stderr)

@@ -166,7 +166,8 @@ def get_memory_regions(linker_script_path):
             length_str = match.group(3)
 
             # Parse origin
-            origin = int(origin_str, 16) if origin_str.startswith('0x') else int(origin_str)
+            origin = int(origin_str, 16) if origin_str.startswith(
+                '0x') else int(origin_str)
 
             # Parse length
             length = parse_size(length_str)

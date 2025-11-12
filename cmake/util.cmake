@@ -35,7 +35,8 @@ function(print_size target linker_file)
         COMMAND
             ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
             ${kvasir_cmake_dir}/tools/pretty_size.py "${CMAKE_SIZE}" "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
-            "${TARGET_FLASH_SIZE}" "${TARGET_RAM_SIZE}" "${TARGET_EEPROM_SIZE}" "${linker_file}")
+            "${TARGET_FLASH_SIZE}" "${TARGET_RAM_SIZE}" "${TARGET_EEPROM_SIZE}" "${linker_file}"
+        COMMENT "Print memory usage for ${target}")
 endfunction()
 
 function(check_undefined_refs target)
@@ -108,14 +109,20 @@ endfunction()
 
 function(generate_lst target)
     list(TRANSFORM TARGET_EXTRA_FLASH_SECTIONS PREPEND "--section=" OUTPUT_VARIABLE extra_flash_sections)
+
     add_custom_command(
         TARGET ${target}
         POST_BUILD
         COMMAND
             ${CMAKE_OBJDUMP} --section=.vectors --section=.text --section=.data ${extra_flash_sections} --disassemble
             --demangle --all-headers "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf" >
+            "${CMAKE_CURRENT_BINARY_DIR}/${target}_raw.lst"
+        COMMAND
+            ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
+            ${kvasir_cmake_dir}/tools/beautify_lst.py "${CMAKE_CURRENT_BINARY_DIR}/${target}_raw.lst"
             "${CMAKE_CURRENT_BINARY_DIR}/${target}.lst"
-        BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${target}.lst)
+        BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${target}_raw.lst ${CMAKE_CURRENT_BINARY_DIR}/${target}.lst
+        VERBATIM)
 endfunction()
 
 function(add_bootloader_app_data target application)
@@ -128,7 +135,8 @@ function(add_bootloader_app_data target application)
             ${kvasir_cmake_dir}/tools/gen_app_data_for_bootloader.py ${app_bin_dir}/${application}_flash.bin
             ${CMAKE_CURRENT_BINARY_DIR}/generated/${target}/bootloader/app_data.inl DEPENDS
             ${kvasir_cmake_dir}/tools/gen_app_data_for_bootloader.py
-        BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/generated/${target}/bootloader/app_data.inl)
+        BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/generated/${target}/bootloader/app_data.inl
+        COMMENT "Generating bootloader app data for ${target}")
 
     add_dependencies(${target} ${application})
 endfunction()
