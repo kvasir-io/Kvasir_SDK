@@ -28,6 +28,12 @@ struct StaticString {
         assign(std::string_view{str, NN - 1});
     }
 
+    template<std::size_t NN>
+    constexpr StaticString(StaticString<NN> const& other) {
+        static_assert(N >= NN, "Buffer to small");
+        assign(std::string_view{other});
+    }
+
     constexpr StaticString(std::string_view sv) { assign(sv); }
 
     template<std::size_t NN>

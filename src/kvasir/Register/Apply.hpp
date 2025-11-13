@@ -547,6 +547,7 @@ namespace Kvasir { namespace Register {
             void filterReturns(...) {}
 
             template<typename... T>
+            [[gnu::always_inline]]
             ReturnType operator()(T... args) {
                 ReturnType       ret{{}};   // default constructed return
                 std::array const a{0U,
@@ -568,6 +569,7 @@ namespace Kvasir { namespace Register {
         template<typename... TActions, typename... TInputIndexes>
         struct NoReadApply<brigand::list<TActions...>, brigand::list<TInputIndexes...>> {
             template<typename... T>
+            [[gnu::always_inline]]
             void operator()(T... args) {
                 std::array const a{
                   0U,
@@ -579,6 +581,7 @@ namespace Kvasir { namespace Register {
 
         // no read no runtime write apply
         template<typename... TActions>
+        [[gnu::always_inline]]
         void noReadNoRuntimeWriteApply(brigand::list<TActions...>*) {
             std::array const a{0U, ExecuteSeam<TActions, ::Kvasir::Tag::User>{}(0U)...};
             ignore(a);
@@ -610,10 +613,10 @@ namespace Kvasir { namespace Register {
 
     // if apply contains reads return a FieldTuple
     template<typename... Args>
+    [[gnu::always_inline]]
     inline typename std::enable_if<(brigand::size<Detail::GetReadsT<brigand::list<Args...>>>::value
                                     != 0),
-                                   Detail::GetReturnType<Args...>>::type
-    apply(Args... args) {
+                                   Detail::GetReturnType<Args...>>::type apply(Args... args) {
         static_assert(Detail::ArgsToApplyArePlausible<Args...>::value,
                       "one of the supplied arguments is not supported");
         using IndexedActions   = brigand::transform<brigand::list<Args...>,
@@ -634,6 +637,7 @@ namespace Kvasir { namespace Register {
 
     // if apply does not contain reads return is void
     template<typename... Args>
+    [[gnu::always_inline]]
     typename std::enable_if<Detail::NoReadsRuntimeWrites<Args...>::value>::type
     apply(Args... args) {
         static_assert(Detail::ArgsToApplyArePlausible<Args...>::value,
@@ -653,7 +657,8 @@ namespace Kvasir { namespace Register {
 
     // if apply does not contain reads or runtime writes we can speed things up
     template<typename... Args>
-    typename std::enable_if<Detail::AllCompileTime<Args...>::value>::type apply(Args...) {
+    [[gnu::always_inline]] typename std::enable_if<Detail::AllCompileTime<Args...>::value>::type
+    apply(Args...) {
         static_assert(Detail::ArgsToApplyArePlausible<Args...>::value,
                       "one of the supplied arguments is not supported");
         // using IndexedActions = brigand::transform<brigand::list<Args...>,

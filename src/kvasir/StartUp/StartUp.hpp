@@ -19,10 +19,12 @@ using InitFunc = void (*)();
 extern InitFunc _LINKER_init_array_start_;
 extern InitFunc _LINKER_init_array_end_;
 
-extern std::uint32_t _LINKER_data_start_flash_;
-extern std::uint32_t _LINKER_data_end_flash_;
-extern std::uint32_t _LINKER_data_start_;
-extern std::uint32_t _LINKER_bss_end_;
+extern std::uintptr_t _LINKER_data_start_flash_;
+extern std::uintptr_t _LINKER_data_start_;
+extern std::size_t    _LINKER_data_size_;
+
+extern std::uintptr_t _LINKER_bss_start_;
+extern std::size_t    _LINKER_bss_size_;
 }
 
 namespace Kvasir { namespace Startup {
@@ -281,46 +283,37 @@ namespace Kvasir { namespace Startup {
     }
 
     [[gnu::always_inline]] inline void initMemory() {
-        auto datarobegin = std::addressof(_LINKER_data_start_flash_);
-        asm("" : "+l"(datarobegin)::);
-        auto dataroend = std::addressof(_LINKER_data_end_flash_);
-        asm("" : "+l"(dataroend)::);
-        auto databegin = std::addressof(_LINKER_data_start_);
-        asm("" : "+l"(databegin)::);
+        auto data_start = std::addressof(_LINKER_data_start_);
+        asm("" : "+l"(data_start)::);
 
-        while(datarobegin != dataroend) {
-            dataroend = static_cast<decltype(dataroend)>(
-              __builtin_assume_aligned(dataroend, alignof(decltype(*dataroend))));
-            databegin = static_cast<decltype(databegin)>(
-              __builtin_assume_aligned(databegin, alignof(decltype(*databegin))));
-            *databegin = *datarobegin;
-            ++databegin;
-            ++datarobegin;
-        }
+        auto data_start_flash = std::addressof(_LINKER_data_start_flash_);
+        asm("" : "+l"(data_start_flash)::);
 
-        auto bssstart = databegin;
-        auto bssend   = std::addressof(_LINKER_bss_end_);
-        asm("" : "+l"(bssend)::);
+        auto data_size = reinterpret_cast<std::size_t>(std::addressof(_LINKER_data_size_));
+        asm("" : "+l"(data_size)::);
 
-        while(bssstart != bssend) {
-            bssend = static_cast<decltype(bssend)>(
-              __builtin_assume_aligned(bssend, alignof(decltype(*bssend))));
-            bssstart = static_cast<decltype(bssstart)>(
-              __builtin_assume_aligned(bssstart, alignof(decltype(*bssstart))));
-            *bssstart = 0U;
-            ++bssstart;
-        }
+        std::memcpy(data_start, data_start_flash, data_size);
+
+        auto bss_start = std::addressof(_LINKER_bss_start_);
+        asm("" : "+l"(bss_start)::);
+
+        auto bss_size = reinterpret_cast<std::size_t>(std::addressof(_LINKER_bss_size_));
+        asm("" : "+l"(bss_size)::);
+
+        std::memset(bss_start, 0, bss_size);
     }
 
     [[gnu::always_inline]] inline void callGlobalConstructors() {
-        // auto IBegin = std::addressof(_LINKER_init_array_start_);
-        // asm("" : "+l"(IBegin)::);
-        // auto IEnd = std::addressof(_LINKER_init_array_end_);
-        // asm("" : "+l"(IEnd)::);
-        // while(IBegin < IEnd) {
-        //    (*IBegin)();
-        //    ++IBegin;
-        //}
+        auto init_begin = std::addressof(_LINKER_init_array_start_);
+        asm("" : "+l"(init_begin)::);
+
+        auto init_end = std::addressof(_LINKER_init_array_end_);
+        asm("" : "+l"(init_end)::);
+
+        while(init_begin < init_end) {
+            (*init_begin)();
+            ++init_begin;
+        }
     }
 
     template<typename ClockSettings, typename... Peripherals>

@@ -195,14 +195,23 @@ ASSERT( !DEFINED(_LINKER_INTERN_noInitLowRam_end_) || 0xffff > _LINKER_INTERN_no
 
 _LINKER_heap_start_       = _LINKER_INTERN_heap_start_;
 _LINKER_heap_end_         = _LINKER_INTERN_heap_end_;
+
 _LINKER_stack_start_      = _LINKER_INTERN_stack_start_;
 _LINKER_stack_end_        = _LINKER_INTERN_stack_end_;
+
 _LINKER_init_array_start_ = _LINKER_INTERN_init_array_start_;
 _LINKER_init_array_end_   = _LINKER_INTERN_init_array_end_;
+
 _LINKER_data_start_flash_ = _LINKER_INTERN_data_start_flash_;
 _LINKER_data_end_flash_   = _LINKER_INTERN_data_end_flash_;
+_LINKER_data_size_        = _LINKER_INTERN_data_end_flash_ - _LINKER_INTERN_data_start_flash_;
+
 _LINKER_data_start_       = _LINKER_INTERN_data_start_;
+_LINKER_data_end_         = _LINKER_INTERN_data_end_;
+
+_LINKER_bss_start_        = _LINKER_INTERN_bss_start_;
 _LINKER_bss_end_          = _LINKER_INTERN_bss_end_;
+_LINKER_bss_size_         = _LINKER_INTERN_bss_end_ - _LINKER_INTERN_bss_start_;
 
 /* llvm libc heap support */
 __llvm_libc_heap_limit  = _LINKER_INTERN_heap_end_;
