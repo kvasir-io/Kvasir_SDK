@@ -34,7 +34,7 @@ namespace Kvasir { namespace Register {
                 }
                 i |= SetMask | oneIsNoChangeMask | in;
 
-                GetAddress<TLocation>::write(i);
+                Address::write(i);
                 return i;
             }
         };
@@ -61,7 +61,7 @@ namespace Kvasir { namespace Register {
                 }
                 i |= oneIsNoChangeMask;
                 i ^= XorMask | in;
-                GetAddress<TLocation>::write(i);
+                Address::write(i);
                 return i;
             }
         };

@@ -126,11 +126,6 @@ namespace Kvasir { namespace Register {
         static constexpr auto Mask = TMask;
     };
 
-    template<typename T, typename U>
-    struct FieldLocationPair {
-        using type = FieldLocationPair<T, U>;
-    };
-
     namespace Detail {
         using namespace MPL;
 
