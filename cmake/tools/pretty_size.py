@@ -118,8 +118,14 @@ def main() -> None:
 
     # For each section, determine which memory region it belongs to
     # Skip .stack and .heap as they're allocated space, not "used"
+    # Skip debug sections and other non-loadable sections
     for section in sections:
         if section.name in [".stack", ".heap"]:
+            continue
+
+        # Skip debug sections, comments, and attributes
+        if (section.name.startswith(".debug_") or
+                section.name in [".ARM.attributes", ".comment", ".stab", ".stabstr"]):
             continue
 
         # Parse section address
@@ -129,16 +135,21 @@ def main() -> None:
             # Skip sections without valid addresses
             continue
 
+        # Skip sections with size 0
+        try:
+            size = int(section.size)
+            if size == 0:
+                continue
+        except ValueError:
+            print(
+                f"Warning: Could not parse section size '{section.size}' for section '{section.name}'", file=sys.stderr)
+            continue
+
         # Find which memory region contains this section
         region = find_region_for_address(memory_regions, addr)
 
         if region and region.name in region_usage:
-            try:
-                size = int(section.size)
-                region_usage[region.name].used += size
-            except ValueError:
-                print(
-                    f"Warning: Could not parse section size '{section.size}' for section '{section.name}'", file=sys.stderr)
+            region_usage[region.name].used += size
 
     # Create print records only for regions that exist
     print_records: List[PrintRecord] = []
