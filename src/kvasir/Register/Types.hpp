@@ -188,7 +188,7 @@ namespace Kvasir { namespace Register {
 
         template<typename T>
         auto operator[](T) const -> decltype(get<Detail::GetFieldLocationIndex<FieldTuple,
-                                                                         T>::value>()) {
+                                                                               T>::value>()) {
             return get<Detail::GetFieldLocationIndex<FieldTuple, T>::value>();
         }
 
