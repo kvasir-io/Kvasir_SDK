@@ -184,14 +184,12 @@ jobs:
                             repo: 'chip_rp2350',
                             workflow: 'rp2350-docker-build.yml',
                             name: 'RP2350'
+                        },
+                        {
+                             repo: 'chip_rp2040',
+                             workflow: 'rp2040-docker-build.yml',
+                             name: 'RP2040'
                         }
-                        // Add more chip repositories here as needed
-                        // Example:
-                        // {
-                        //     repo: 'chip_rp2040',
-                        //     workflow: 'rp2040-docker-build.yml',
-                        //     name: 'RP2040'
-                        // }
                     ];
 
                     // Trigger each chip repository
