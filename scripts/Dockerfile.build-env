@@ -2,7 +2,7 @@ FROM archlinux AS build_env
 
 RUN pacman --disable-download-timeout --noconfirm -Syyu && \
     pacman --disable-download-timeout --noconfirm --needed -S \
-        base-devel fish llvm cmake lld git make clang python python-intelhex \
+        base-devel fish llvm cmake lld git make clang python \
         fmt nlohmann-json pugixml cli11 boost inja arm-none-eabi-gdb lldb && \
     groupadd -r -g 5000 aur_user && \
     useradd aur_user -u 5000 -g 5000 --create-home && \
