@@ -1,6 +1,10 @@
 # J-Link Flash and Debug Configuration Provides functions to configure J-Link debugging and flashing capabilities
 # Generates J-Link command files and CMake targets for embedded development
 
+set(KVASIR_ENABLE_JLINK
+    true
+    CACHE BOOL "Enable J-Link flash and debug support")
+
 function(target_add_flash_jlink target)
     if(POLICY CMP0174)
         cmake_policy(SET CMP0174 NEW)
@@ -26,6 +30,10 @@ function(target_add_flash_jlink target)
 
     if(NOT PARSED_ARGS_AUXILIARY_TARGETS_PREFIX)
         set(PARSED_ARGS_AUXILIARY_TARGETS_PREFIX "")
+    endif()
+
+    if(NOT KVASIR_ENABLE_JLINK)
+        return()
     endif()
 
     if(NOT PARSED_ARGS_JLINK_IP OR "${PARSED_ARGS_JLINK_IP}" STREQUAL "")
