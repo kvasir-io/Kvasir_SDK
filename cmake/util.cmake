@@ -84,6 +84,19 @@ function(generate_object target suffix type)
             TARGET ${target}
             POST_BUILD
             COMMAND
+                ${CMAKE_OBJCOPY} --only-section=.vectors --only-section=.text --only-section=.data
+                ${extra_flash_sections} "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
+                "${CMAKE_CURRENT_BINARY_DIR}/${target}_flash.elf"
+            COMMAND
+                ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
+                ${kvasir_cmake_dir}/tools/strip_empty_segments.py "${CMAKE_CURRENT_BINARY_DIR}/${target}_flash.elf"
+                "${CMAKE_CURRENT_BINARY_DIR}/${target}_flash.elf"
+            BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${target}_flash.elf)
+
+        add_custom_command(
+            TARGET ${target}
+            POST_BUILD
+            COMMAND
                 ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
                 ${kvasir_cmake_dir}/tools/ihex_to_uf2.py "${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom${suffix}"
                 "${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom.uf2" ${TARGET_UF2_CODE}
