@@ -74,7 +74,8 @@ namespace Register {
 
     template<typename T>
     constexpr Io::Detail::MakeActionIfPinLocationT<Io::Action::Output<Io::OutputType::PushPull,
-                                                                      Io::OutputSpeed::Low>,
+                                                                      Io::OutputSpeed::Low,
+                                                                      Io::OutputInit::Low>,
                                                    T>
     makeOutput(T) {
         return {};
@@ -88,6 +89,15 @@ namespace Register {
                                  makeOutput(Ts{})...)) makeOutput(T,
                                                                   U,
                                                                   Ts...) {
+        return {};
+    }
+
+    template<typename T>
+    constexpr Io::Detail::MakeActionIfPinLocationT<Io::Action::Output<Io::OutputType::PushPull,
+                                                                      Io::OutputSpeed::Low,
+                                                                      Io::OutputInit::High>,
+                                                   T>
+    makeOutputInitHigh(T) {
         return {};
     }
 

@@ -5,14 +5,14 @@ namespace Kvasir {
 namespace Io {
     enum class PullConfiguration { PullNone, PullUp, PullDown };
     enum class OutputType { PushPull, OpenDrain };
-
+    enum class OutputInit { Low, High };
     enum class OutputSpeed { Low, Medium, High, VeryHigh };
 
     namespace Action {
         template<PullConfiguration PC>
         struct Input {};
 
-        template<OutputType OT, OutputSpeed OS>
+        template<OutputType OT, OutputSpeed OS, OutputInit OI>
         struct Output {};
 
         struct Set {};
@@ -28,21 +28,23 @@ namespace Io {
         template<int               I,
                  OutputType        OT = OutputType::PushPull,
                  OutputSpeed       OS = OutputSpeed::Low,
+                 OutputInit        OI = OutputInit::Low,
                  PullConfiguration PC = PullConfiguration::PullNone>
         struct PinFunction {
             static constexpr int value = I;
         };
 
-        static constexpr Input<PullConfiguration::PullNone>              input{};
-        static constexpr Input<PullConfiguration::PullNone>              inputPN{};
-        static constexpr Input<PullConfiguration::PullUp>                inputPU{};
-        static constexpr Input<PullConfiguration::PullDown>              inputPD{};
-        static constexpr Output<OutputType::PushPull, OutputSpeed::Low>  output{};
-        static constexpr Output<OutputType::PushPull, OutputSpeed::Low>  outputPP{};
-        static constexpr Output<OutputType::OpenDrain, OutputSpeed::Low> outputOD{};
-        static constexpr Set                                             set{};
-        static constexpr Clear                                           clear{};
-        static constexpr Toggle                                          toggle{};
+        static constexpr Input<PullConfiguration::PullNone>                              input{};
+        static constexpr Input<PullConfiguration::PullNone>                              inputPN{};
+        static constexpr Input<PullConfiguration::PullUp>                                inputPU{};
+        static constexpr Input<PullConfiguration::PullDown>                              inputPD{};
+        static constexpr Output<OutputType::PushPull, OutputSpeed::Low, OutputInit::Low> output{};
+        static constexpr Output<OutputType::PushPull, OutputSpeed::Low, OutputInit::Low> outputPP{};
+        static constexpr Output<OutputType::OpenDrain, OutputSpeed::Low, OutputInit::Low>
+                                outputOD{};
+        static constexpr Set    set{};
+        static constexpr Clear  clear{};
+        static constexpr Toggle toggle{};
     }   // namespace Action
 
     template<int I>
