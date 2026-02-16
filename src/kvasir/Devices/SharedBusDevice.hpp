@@ -33,7 +33,7 @@ struct SharedBusDevice {
         release();
     }
 
-    void incementErrorCount() { ++error_count; }
+    void incrementErrorCount() { ++error_count; }
 
     void resetErrorCount() {
         error_count = 0;

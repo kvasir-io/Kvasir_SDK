@@ -16,7 +16,7 @@ struct I2CDeviceBase : SharedBusDevice<I2C> {
     using SharedBusDevice<I2C>::acquire;
     using SharedBusDevice<I2C>::release;
     using SharedBusDevice<I2C>::isOwner;
-    using SharedBusDevice<I2C>::incementErrorCount;
+    using SharedBusDevice<I2C>::incrementErrorCount;
     using SharedBusDevice<I2C>::resetErrorCount;
     using SharedBusDevice<I2C>::resetHandler;
     using OS = typename I2C::OperationState;
@@ -89,23 +89,33 @@ struct I2CDeviceBase : SharedBusDevice<I2C> {
           [&](SendWait const& state) -> typename Derived::sv {
               assert(isOwner());
               switch(I2C::operationState(currentTime)) {
-              case OS::ongoing: return state;
+              case OS::ongoing:
+                  {
+                      return state;
+                  }
               case OS::succeeded:
-                  state.processor();
-                  release();
-                  resetErrorCount();
-                  return self.makeSendIdle(currentTime);
+                  {
+                      state.processor();
+                      release();
+                      resetErrorCount();
+                      return self.makeSendIdle(currentTime);
+                  }
               case OS::failed:
-                  release();
-                  incementErrorCount();
-                  return self.makeIdle(currentTime + Derived::fail_retry_time);
+                  {
+                      release();
+                      incrementErrorCount();
+                      return self.makeIdle(currentTime + Derived::fail_retry_time);
+                  }
               }
               return state;
           },
           [&](ReadWait const& state) -> typename Derived::sv {
               assert(isOwner());
               switch(I2C::operationState(currentTime)) {
-              case OS::ongoing: return state;
+              case OS::ongoing:
+                  {
+                      return state;
+                  }
               case OS::succeeded:
                   {
                       state.processor();
@@ -114,9 +124,11 @@ struct I2CDeviceBase : SharedBusDevice<I2C> {
                       return self.makeReadIdle(currentTime);
                   }
               case OS::failed:
-                  release();
-                  incementErrorCount();
-                  return self.makeReadFailIdle(currentTime);
+                  {
+                      release();
+                      incrementErrorCount();
+                      return self.makeReadFailIdle(currentTime);
+                  }
               }
               return state;
           });
