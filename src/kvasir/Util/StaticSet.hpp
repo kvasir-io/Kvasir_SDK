@@ -2,6 +2,7 @@
 
 #include "StaticVector.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <utility>
 
@@ -144,10 +145,7 @@ constexpr bool operator==(StaticSet<Key,
                           StaticSet<Key,
                                     Capacity> const& b) noexcept {
     if(a.size() != b.size()) { return false; }
-    for(auto const& key : a) {
-        if(!b.contains(key)) { return false; }
-    }
-    return true;
+    return std::all_of(a.begin(), a.end(), [&b](auto const& key) { return b.contains(key); });
 }
 
 template<typename Key,

@@ -29,7 +29,7 @@ public:
     constexpr StaticString() = default;
 
     template<std::size_t NN>
-    constexpr StaticString(char const (&str)[NN]) {
+    explicit constexpr StaticString(char const (&str)[NN]) {
         static_assert(N >= NN - 1, "Buffer too small");
         assign(std::string_view{str, NN - 1});
     }
@@ -40,7 +40,7 @@ public:
         assign(std::string_view{other});
     }
 
-    constexpr StaticString(std::string_view sv) { assign(sv); }
+    explicit constexpr StaticString(std::string_view sv) { assign(sv); }
 
     template<std::size_t NN>
     constexpr StaticString& operator=(char const (&str)[NN]) {
@@ -159,7 +159,7 @@ public:
     StaticString operator+(std::string_view sv) const {
         auto newS = *this;
         assert(N >= sv.size() + newS.size());
-        for(char c : sv) { newS.push_back(c); }
+        std::copy(sv.begin(), sv.end(), std::back_inserter(newS));
         return newS;
     }
 
@@ -190,7 +190,7 @@ private:
     constexpr void assign(std::string_view sv) {
         assert(N >= sv.size());
         data_.clear();
-        for(char c : sv) { data_.push_back(c); }
+        std::copy(sv.begin(), sv.end(), std::back_inserter(data_));
     }
 };
 
