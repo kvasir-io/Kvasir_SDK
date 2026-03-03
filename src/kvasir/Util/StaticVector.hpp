@@ -232,7 +232,7 @@ namespace sv_detail {
             /// removing elements (unsafe).
             ///
             /// The size of an empty storage can only be changed to 0.
-            static constexpr void unsafe_set_size(size_t new_size) noexcept {
+            static constexpr void unsafe_set_size(size_t new_size [[maybe_unused]]) noexcept {
                 assert(new_size == 0 && "tried to change size of empty storage to non-zero value");
             }
 
@@ -263,7 +263,7 @@ namespace sv_detail {
             template<typename U,
                      SV_REQUIRES_(Convertible<U,
                                               T>)>
-            constexpr zero_sized(std::initializer_list<U> il) noexcept {
+            constexpr zero_sized(std::initializer_list<U> il [[maybe_unused]]) noexcept {
                 assert(il.size() == 0
                        && "tried to construct storage::empty from a non-empty initializer list");
             }
@@ -642,7 +642,7 @@ private:
     ///@{
 
     template<typename It>
-    constexpr void assert_iterator_in_range(It it) noexcept {
+    constexpr void assert_iterator_in_range(It it [[maybe_unused]]) noexcept {
         static_assert(sv_detail::Pointer<It>);
         assert(begin() <= it && "iterator not in range");
         assert(it <= end() && "iterator not in range");
@@ -650,8 +650,8 @@ private:
 
     template<typename It0,
              typename It1>
-    constexpr void assert_valid_iterator_pair(It0 first,
-                                              It1 last) noexcept {
+    constexpr void assert_valid_iterator_pair(It0 first [[maybe_unused]],
+                                              It1 last [[maybe_unused]]) noexcept {
         static_assert(sv_detail::Pointer<It0>);
         static_assert(sv_detail::Pointer<It1>);
         assert(first <= last && "invalid iterator pair");
