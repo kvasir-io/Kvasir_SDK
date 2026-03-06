@@ -46,7 +46,7 @@ struct I2CDeviceBase : SharedBusDevice<I2C> {
                    State const& fallback,
                    Data const&  data,
                    F&&          onSuccess) {
-        using sv = typename Derived::sv;
+        using sv = typename Derived::StateVariant;
         if(!acquire()) { return sv{fallback}; }
         I2C::send(currentTime, i2caddress, data);
         return sv{SendWait{std::forward<F>(onSuccess)}};
@@ -60,7 +60,7 @@ struct I2CDeviceBase : SharedBusDevice<I2C> {
                    State const& fallback,
                    Data const&  data,
                    F&&          onSuccess) {
-        using sv = typename Derived::sv;
+        using sv = typename Derived::StateVariant;
         if(!acquire()) { return sv{fallback}; }
         I2C::send_receive(currentTime, i2caddress, data, ReadLen);
         return sv{ReadWait{[f = std::forward<F>(onSuccess)] {
@@ -80,13 +80,13 @@ struct I2CDeviceBase : SharedBusDevice<I2C> {
 
         self.st_ = Kvasir::SM::match(
           self.st_,
-          [&](Init const& state) -> typename Derived::sv {
+          [&](Init const& state) -> typename Derived::StateVariant {
               if(currentTime > state.timeout) { return self.makeIdle(currentTime); }
               return state;
           },
           [&](typename Derived::Idle const& state) ->
-          typename Derived::sv { return self.idleHandler(currentTime, state); },
-          [&](SendWait const& state) -> typename Derived::sv {
+          typename Derived::StateVariant { return self.idleHandler(currentTime, state); },
+          [&](SendWait const& state) -> typename Derived::StateVariant {
               assert(isOwner());
               switch(I2C::operationState(currentTime)) {
               case OS::ongoing:
@@ -109,7 +109,7 @@ struct I2CDeviceBase : SharedBusDevice<I2C> {
               }
               return state;
           },
-          [&](ReadWait const& state) -> typename Derived::sv {
+          [&](ReadWait const& state) -> typename Derived::StateVariant {
               assert(isOwner());
               switch(I2C::operationState(currentTime)) {
               case OS::ongoing:
