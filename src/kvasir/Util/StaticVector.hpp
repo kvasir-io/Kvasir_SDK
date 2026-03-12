@@ -129,7 +129,7 @@ namespace sv_detail {
     constexpr decltype(auto) index(Rng&&   rng,
                                    Index&& i) noexcept {
         assert(static_cast<ptrdiff_t>(i) < (std::end(rng) - std::begin(rng)));
-        return std::begin(std::forward<Rng>(rng))[std::forward<Index>(i)];
+        return std::begin(std::forward<Rng>(rng))[static_cast<ptrdiff_t>(i)];
     }
 
     /// \name Workarounds
@@ -386,7 +386,9 @@ namespace sv_detail {
                   il.size() <= capacity()
                   && "trying to construct storage from an initializer_list whose size exceeds the storage capacity");
                 std::array<std::remove_const_t<T>, Capacity> d_{};
-                for(size_t i = 0, e = il.size(); i < e; ++i) { index(d_, i) = index(il, i); }
+                for(size_t i = 0, e = il.size(); i < e; ++i) {
+                    index(d_, i) = static_cast<std::remove_const_t<T>>(index(il, i));
+                }
                 return d_;
             }
 
