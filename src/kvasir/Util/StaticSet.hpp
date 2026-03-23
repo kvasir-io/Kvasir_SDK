@@ -104,6 +104,16 @@ public:
         return {end() - 1, true};
     }
 
+    /// Insert element without checking for duplicates.
+    /// Precondition: key is not already present in the set; set is not full.
+    /// Caller is responsible for ensuring both invariants hold.
+    /// O(1) — skips the linear find() in paths where keys are guaranteed unique.
+    template<typename K2>
+    constexpr void insert_unchecked(K2&& key) noexcept {
+        assert(!full() && "StaticSet is full");
+        data_.push_back(std::forward<K2>(key));
+    }
+
     /// Erase element at iterator position. Returns iterator to next element.
     constexpr iterator erase(const_iterator pos) noexcept { return data_.erase(pos); }
 

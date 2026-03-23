@@ -143,6 +143,18 @@ public:
         return data_.back().second;
     }
 
+    /// Insert key-value pair without checking for duplicate keys.
+    /// Preconditions: key is not already present in the map; map is not full.
+    /// Caller is responsible for ensuring both invariants hold.
+    /// O(1) — skips the linear find() in paths where keys are guaranteed unique.
+    template<typename K2,
+             typename V2>
+    constexpr void insert_unchecked(K2&& key,
+                                    V2&& value) noexcept {
+        assert(!full() && "StaticMap is full");
+        data_.emplace_back(std::forward<K2>(key), std::forward<V2>(value));
+    }
+
     /// Erase element at iterator position. Returns iterator to next element.
     constexpr iterator erase(const_iterator pos) noexcept { return data_.erase(pos); }
 
