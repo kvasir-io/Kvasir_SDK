@@ -5,6 +5,10 @@ set(USE_TIDY
     false
     CACHE BOOL "clang tidy")
 
+if(NOT DEFINED TIDY_HEADER_FILTER)
+    set(TIDY_HEADER_FILTER ".hpp")
+endif()
+
 if(USE_TIDY)
     find_program(
         CLANG_TIDY_EXE
@@ -94,12 +98,12 @@ if(USE_TIDY)
         list(JOIN common_clang_tidy ";" clang_tidy)
         set(DO_CLANG_TIDY_CXX
             ${clang_tidy}
-            -header-filter=.hpp
+            -header-filter=${TIDY_HEADER_FILTER}
             -checks=-*,${enabled_clang_tidy_checks_},${common_clang_tidy_disabled_checks_},${cxx_clang_tidy_disabled_checks_}
         )
         set(DO_CLANG_TIDY_C
             ${clang_tidy}
-            -header-filter=.h
+            -header-filter=${TIDY_HEADER_FILTER}
             -checks=-*,${enabled_clang_tidy_checks_},${common_clang_tidy_disabled_checks_},${c_clang_tidy_disabled_checks_}
         )
     endif()
