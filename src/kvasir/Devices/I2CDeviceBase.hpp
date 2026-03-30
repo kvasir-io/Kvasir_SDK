@@ -70,6 +70,13 @@ struct I2CDeviceBase : SharedBusDevice<I2C> {
         }}};
     }
 
+    tp nextActionTime() const {
+        auto const& d = static_cast<Derived const&>(*this);
+        if(auto const* s = std::get_if<Init>(&d.st_)) { return s->timeout; }
+        if(auto const* s = std::get_if<typename Derived::Idle>(&d.st_)) { return s->timeout; }
+        return {};   // SendWait / ReadWait: epoch — always immediately due
+    }
+
     void handler() {
         auto&      self        = static_cast<Derived&>(*this);
         auto const currentTime = Clock::now();

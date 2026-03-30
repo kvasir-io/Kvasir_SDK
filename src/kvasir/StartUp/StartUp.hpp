@@ -393,6 +393,15 @@ __stack_chk_fail() {
 }
 }
 
+[[noreturn]] inline void Kvasir::Nvic::DefaultIsrs::onIsr() {
+    UC_LOG_C("unhandled interrupt fired, IRQ={}", []() {
+        std::uint32_t ipsr_val{};
+        asm volatile("mrs %0, ipsr" : "=r"(ipsr_val));
+        return static_cast<std::int32_t>(ipsr_val) - 16;
+    }());
+    while(true) { asm volatile("bkpt 7" : : :); }
+}
+
     #define KVASIR_START(Startup)                        \
         [[KVASIR_RESETISR_ATTRIBUTES]] void ResetISR() { \
             (void)Startup::nvicIsrVectors.data[1];       \

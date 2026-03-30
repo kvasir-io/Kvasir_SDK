@@ -27,8 +27,7 @@
     template<int SV_CONCEPT_PP_CAT(_concept_requires_, __LINE__) = 42,                         \
              typename ::std::enable_if<(SV_CONCEPT_PP_CAT(_concept_requires_, __LINE__) == 43) \
                                          || (__VA_ARGS__),                                     \
-                                       int>::type                                              \
-             = 0> /**/
+                                       int>::type                = 0> /**/
 
 namespace Kvasir {
 // Private utilities
@@ -529,8 +528,7 @@ namespace sv_detail {
             constexpr non_trivial(non_trivial&&) noexcept(std::is_nothrow_move_constructible_v<T>)
               = default;
             constexpr non_trivial&
-            operator=(non_trivial&&) noexcept(std::is_nothrow_move_assignable_v<T>)
-              = default;
+            operator=(non_trivial&&) noexcept(std::is_nothrow_move_assignable_v<T>) = default;
 
             ~non_trivial() noexcept(std::is_nothrow_destructible_v<T>) { unsafe_destroy_all(); }
 

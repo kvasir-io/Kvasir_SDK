@@ -149,7 +149,7 @@ namespace Kvasir { namespace Nvic {
 
     class DefaultIsrs {
     public:
-        [[noreturn]] static void onIsr() { assert(false); }
+        [[noreturn]] static void onIsr();
     };
 
     using UnusedIsr = Isr<std::addressof(DefaultIsrs::onIsr), Index<0>>;

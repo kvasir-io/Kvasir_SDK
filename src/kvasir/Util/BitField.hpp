@@ -34,7 +34,7 @@ template<std::size_t                  High,
                                           & Kvasir::Register::maskFromRange(High - Low, 0),
          BitFieldValueType<High, Low> Max = std::numeric_limits<BitFieldValueType<High, Low>>::max()
                                           & Kvasir::Register::maskFromRange(High - Low, 0),
-         typename assignType = BitFieldValueType<High, Low>>
+         typename assignType              = BitFieldValueType<High, Low>>
 struct BitField {
     static_assert(32 >= High - Low);
     static_assert(High >= Low);
