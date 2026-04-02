@@ -302,4 +302,14 @@ extern "C" {
                                                                            success_memorder,
                                                                            failure_memorder);
 }
+
+[[gnu::used]] inline unsigned long long __atomic_fetch_add_8(void volatile*       ptr,
+                                                             unsigned long long   val,
+                                                             [[maybe_unused]] int memorder) {
+    Kvasir::Nvic::InterruptGuard<Kvasir::Nvic::Global> guard;
+    auto&                    ref = *reinterpret_cast<unsigned long long volatile*>(ptr);
+    unsigned long long const old = ref;
+    ref                          = old + val;
+    return old;
+}
 }

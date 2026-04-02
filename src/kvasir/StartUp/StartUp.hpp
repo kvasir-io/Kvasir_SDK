@@ -5,6 +5,7 @@
 #include "kvasir/Mpl/Algorithm.hpp"
 #include "kvasir/Mpl/Utility.hpp"
 #include "kvasir/Register/Register.hpp"
+#include "kvasir/StartUp/IsrProfiler.hpp"
 #include "kvasir/Util/attributes.hpp"
 #include "kvasir/Util/ubsan.hpp"
 
@@ -316,6 +317,68 @@ namespace Kvasir { namespace Startup {
         }
     }
 
+    namespace Detail {
+
+        struct NoOpStartupHook {
+            [[gnu::always_inline]] void operator()() const noexcept {}
+        };
+
+        // Shared ResetISR body. Hook is called immediately after FirstInitStep,
+        // before any ISR fires — used by StartupWithProfiling to enable the
+        // DWT cycle counter; NoOpStartupHook for plain Startup.
+        template<typename ClockSettings, typename... Peripherals>
+        struct StartupImpl {
+            template<typename Hook = NoOpStartupHook>
+            [[noreturn,
+              gnu::always_inline]] static void
+            ResetISR() {
+                FirstInitStep<Kvasir::Tag::User>{}();
+                Hook{}();
+
+                Kvasir::Register::apply(GetEarlyInitT<Peripherals...>{});
+
+                ClockSettings::coreClockInit();
+
+                initMemory();
+
+                callGlobalConstructors();
+
+                ClockSettings::peripheryClockInit();
+
+                Kvasir::Register::apply(GetPowerClockInitT<Peripherals...>{});
+                Kvasir::Register::apply(GetPinInitT<Peripherals...>{});
+                Kvasir::Register::apply(GetPeripheryInitT<Peripherals...>{});
+                Kvasir::Register::apply(GetInterruptInitT<Peripherals...>{});
+                callPreEnableRuntimeInits<Peripherals...>();
+                Kvasir::Nvic::enable_all();
+                Kvasir::Register::apply(GetPeripheryEnableInitT<Peripherals...>{});
+                callRuntimeInits<Peripherals...>();
+
+                main();
+                assert(false);
+            }
+        };
+
+    }   // namespace Detail
+
+    // ISR pointer builder with profiling transformation applied to the
+    // peripheral ISR list before it reaches CompileIsrPointerList.
+    // Stack-end and ResetISR seed entries bypass transformation.
+    template<typename Policy, typename TimeSource, typename... Ts>
+    struct GetIsrPointersWithProfiling
+      : Detail::CompileIsrPointerList<
+          Nvic::InterruptOffsetTraits<void>::begin,
+          brigand::list<Nvic::Isr<std::addressof(_LINKER_stack_end_), Nvic::Index<0>>,
+                        Nvic::Isr<ResetISR, Nvic::Index<0>>>,
+          typename TransformIsrList<
+            Policy,
+            TimeSource,
+            brigand::flatten<brigand::list<typename Detail::ExtractIsr<Ts>::type...>>>::type> {};
+
+    template<typename Policy, typename TimeSource, typename... Ts>
+    using GetIsrPointersWithProfilingT =
+      typename GetIsrPointersWithProfiling<Policy, TimeSource, Ts...>::type;
+
     template<typename ClockSettings, typename... Peripherals>
     struct Startup {
         [[gnu::used, gnu::section(".core_vectors")]] static constexpr Kvasir::Startup::
@@ -324,29 +387,53 @@ namespace Kvasir { namespace Startup {
         [[noreturn,
           gnu::always_inline]] static void
         ResetISR() {
-            FirstInitStep<Kvasir::Tag::User>{}();
+            Detail::StartupImpl<ClockSettings, Peripherals...>::ResetISR();
+        }
+    };
 
-            Kvasir::Register::apply(Kvasir::Startup::GetEarlyInitT<Peripherals...>{});
+    template<typename TimeSource>
+    struct EnableTimeSourceHook {
+        [[gnu::always_inline]] void operator()() const noexcept { TimeSource::enable(); }
+    };
 
-            ClockSettings::coreClockInit();
+    template<typename ClockSettings,
+             typename ProfilePolicy = ProfileNonePolicy,
+             typename TimeSource    = DwtTimeSource,
+             typename... Peripherals>
+    struct StartupWithProfiling {
+        [[gnu::used, gnu::section(".core_vectors")]] static constexpr Kvasir::Startup::
+          NvicVectorTable<GetIsrPointersWithProfilingT<ProfilePolicy, TimeSource, Peripherals...>>
+            nvicIsrVectors{};
 
-            initMemory();
+        [[noreturn,
+          gnu::always_inline]] static void
+        ResetISR() {
+            Detail::StartupImpl<ClockSettings, Peripherals...>::template ResetISR<
+              EnableTimeSourceHook<TimeSource>>();
+        }
 
-            callGlobalConstructors();
+        // The full compiled ISR list (wrappers + plain Isr entries)
+        using IsrList = GetIsrPointersWithProfilingT<ProfilePolicy, TimeSource, Peripherals...>;
 
-            ClockSettings::peripheryClockInit();
+        // Only the IsrProfileWrapper entries
+        using ProfiledWrapperList = FilterWrappersT<IsrList>;
 
-            Kvasir::Register::apply(Kvasir::Startup::GetPowerClockInitT<Peripherals...>{});
-            Kvasir::Register::apply(Kvasir::Startup::GetPinInitT<Peripherals...>{});
-            Kvasir::Register::apply(Kvasir::Startup::GetPeripheryInitT<Peripherals...>{});
-            Kvasir::Register::apply(Kvasir::Startup::GetInterruptInitT<Peripherals...>{});
-            callPreEnableRuntimeInits<Peripherals...>();
-            Kvasir::Nvic::enable_all();
-            Kvasir::Register::apply(Kvasir::Startup::GetPeripheryEnableInitT<Peripherals...>{});
-            callRuntimeInits<Peripherals...>();
+        static constexpr std::size_t profiledCount = brigand::size<ProfiledWrapperList>::value;
 
-            main();
-            assert(false);
+        // Returns a fixed-size array of snapshots, one per profiled ISR.
+        // Size is known at compile time — no heap allocation.
+        static std::array<IsrProfileSnapshot,
+                          profiledCount>
+        getProfiles() noexcept {
+            return getProfilesImpl(ProfiledWrapperList{});
+        }
+
+    private:
+        template<typename... Wrappers>
+        static std::array<IsrProfileSnapshot,
+                          sizeof...(Wrappers)>
+        getProfilesImpl(brigand::list<Wrappers...>) noexcept {
+            return {IsrProfileStats<Wrappers::IType::value, TimeSource>::snapshot()...};
         }
     };
 
