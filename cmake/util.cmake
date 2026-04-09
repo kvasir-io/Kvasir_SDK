@@ -2,7 +2,7 @@
 # integration, size reporting, and target setup
 
 include(${KVASIR_ROOT_DIR}/cmake_git_version/CMakeLists.txt)
-
+add_subdirectory(${KVASIR_ROOT}/uc_log ${CMAKE_BINARY_DIR}/kvasir_uc_log)
 find_package(
     Python3
     COMPONENTS Interpreter
