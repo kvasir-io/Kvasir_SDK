@@ -8,6 +8,7 @@
 #include "kvasir/StartUp/IsrProfiler.hpp"
 #include "kvasir/Util/attributes.hpp"
 #include "kvasir/Util/ubsan.hpp"
+#include "uc_log/uc_log.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -396,11 +397,20 @@ namespace Kvasir { namespace Startup {
         [[gnu::always_inline]] void operator()() const noexcept { TimeSource::enable(); }
     };
 
-    template<typename ClockSettings,
+    // Primary template — only specialised for Startup<> below.
+    template<typename BaseStartup,
              typename ProfilePolicy = ProfileNonePolicy,
-             typename TimeSource    = DwtTimeSource,
-             typename... Peripherals>
-    struct StartupWithProfiling {
+             typename TimeSource    = DwtTimeSource>
+    struct StartupWithProfiling;
+
+    // Partial specialisation: unwraps Startup<ClockSettings, Peripherals...>
+    // so callers only need to pass their existing Startup alias plus the two
+    // profiling-specific arguments (policy and time source).
+    template<typename ClockSettings,
+             typename... Peripherals,
+             typename ProfilePolicy,
+             typename TimeSource>
+    struct StartupWithProfiling<Startup<ClockSettings, Peripherals...>, ProfilePolicy, TimeSource> {
         [[gnu::used, gnu::section(".core_vectors")]] static constexpr Kvasir::Startup::
           NvicVectorTable<GetIsrPointersWithProfilingT<ProfilePolicy, TimeSource, Peripherals...>>
             nvicIsrVectors{};
@@ -426,6 +436,21 @@ namespace Kvasir { namespace Startup {
                           profiledCount>
         getProfiles() noexcept {
             return getProfilesImpl(ProfiledWrapperList{});
+        }
+
+        static void printProfiles() {
+            UC_LOG_T("{:#^32}", " ISR profiles "_sc);
+            for(auto const& p : getProfiles()) {
+                UC_LOG_T("  isr[{:3}]  calls: {}", p.isrIndex, p.callCount);
+                UC_LOG_T("    interval  min:{:>10}  avg:{:>10}  max:{:>10}  cyc",
+                         p.minIntervalCycles,
+                         p.avgIntervalCycles,
+                         p.maxIntervalCycles);
+                UC_LOG_T("    duration  min:{:>10}  avg:{:>10}  max:{:>10}  cyc",
+                         p.minDurationCycles,
+                         p.avgDurationCycles,
+                         p.maxDurationCycles);
+            }
         }
 
     private:

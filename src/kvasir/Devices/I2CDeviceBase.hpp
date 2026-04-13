@@ -1,144 +1,98 @@
 #pragma once
 
-#include "kvasir/Devices/SharedBusDevice.hpp"
-#include "kvasir/Devices/utils.hpp"
-#include "kvasir/Util/StaticFunction.hpp"
-
-#include <array>
-#include <cassert>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <span>
+#include <type_traits>
 
 namespace Kvasir {
-template<typename I2C, typename Clock, typename Derived, std::size_t CallbackSize>
-struct I2CDeviceBase : SharedBusDevice<I2C> {
+
+template<typename I2C, typename Clock, typename Derived, std::size_t ErrorTreshold = 5>
+struct I2CDeviceBase {
     using tp = typename Clock::time_point;
-    using SharedBusDevice<I2C>::acquire;
-    using SharedBusDevice<I2C>::release;
-    using SharedBusDevice<I2C>::isOwner;
-    using SharedBusDevice<I2C>::incrementErrorCount;
-    using SharedBusDevice<I2C>::resetErrorCount;
-    using SharedBusDevice<I2C>::resetHandler;
-    using OS = typename I2C::OperationState;
 
-    struct Init {
-        explicit Init(tp t) : timeout{t} {}
+    constexpr I2CDeviceBase(std::uint8_t address) : i2caddress_{address} {}
 
-        tp timeout{};
-    };
-
-    struct SendWait {
-        Kvasir::StaticFunction<void(), CallbackSize> processor;
-    };
-
-    struct ReadWait {
-        Kvasir::StaticFunction<void(), CallbackSize> processor;
-    };
-
-    std::uint8_t const i2caddress;
-
-    constexpr I2CDeviceBase(std::uint8_t address) : i2caddress{address} {}
-
-    template<typename State,
-             typename Data,
-             typename F>
-    auto startSend(tp           currentTime,
-                   State const& fallback,
-                   Data const&  data,
-                   F&&          onSuccess) {
-        using sv = typename Derived::StateVariant;
-        if(!acquire()) { return sv{fallback}; }
-        I2C::send(currentTime, i2caddress, data);
-        return sv{SendWait{std::forward<F>(onSuccess)}};
+    template<typename F>
+    bool submitSend(std::span<std::byte const> sendData,
+                    F&&                        f) {
+        return submitQueued_(sendData, {}, std::forward<F>(f));
     }
 
-    template<std::size_t ReadLen,
-             typename State,
-             typename Data,
-             typename F>
-    auto startRead(tp           currentTime,
-                   State const& fallback,
-                   Data const&  data,
-                   F&&          onSuccess) {
-        using sv = typename Derived::StateVariant;
-        if(!acquire()) { return sv{fallback}; }
-        I2C::send_receive(currentTime, i2caddress, data, ReadLen);
-        return sv{ReadWait{[f = std::forward<F>(onSuccess)] {
-            std::array<std::byte, ReadLen> buffer{};
-            I2C::getReceivedBytes(buffer);
-            f(std::span<std::byte const>{buffer});
-        }}};
+    template<typename F>
+    bool submitRead(std::span<std::byte const> sendData,
+                    std::span<std::byte>       recvData,
+                    F&&                        f) {
+        return submitQueued_(sendData, recvData, std::forward<F>(f));
     }
 
-    tp nextActionTime() const {
-        auto const& d = static_cast<Derived const&>(*this);
-        if(auto const* s = std::get_if<Init>(&d.st_)) { return s->timeout; }
-        if(auto const* s = std::get_if<typename Derived::Idle>(&d.st_)) { return s->timeout; }
-        return {};   // SendWait / ReadWait: epoch — always immediately due
+    template<typename F>
+    bool submitReceive(std::span<std::byte> recvData,
+                       F&&                  f) {
+        return submitQueued_({}, recvData, std::forward<F>(f));
     }
+
+    void incrementErrorCount() { ++error_count_; }
+
+    void resetErrorCount() { error_count_ = 0; }
 
     void handler() {
-        auto&      self        = static_cast<Derived&>(*this);
-        auto const currentTime = Clock::now();
-
-        if(self.checkReset()) {
-            self.st_.template emplace<Init>(currentTime + Derived::startup_time);
+        if(inFlight_) {
+            if(Clock::now() - inFlightSince_ > kInFlightTimeout) {
+                UC_LOG_W("i2c device {:#04x} in-flight watchdog fired (>{}) -- forcing reset",
+                         i2caddress_,
+                         kInFlightTimeout);
+                inFlight_  = false;
+                auto& self = static_cast<Derived&>(*this);
+                self.resetLogic();
+                resetErrorCount();
+            }
+            return;
         }
 
-        self.st_ = Kvasir::SM::match(
-          self.st_,
-          [&](Init const& state) -> typename Derived::StateVariant {
-              if(currentTime > state.timeout) { return self.makeIdle(currentTime); }
-              return state;
-          },
-          [&](typename Derived::Idle const& state) ->
-          typename Derived::StateVariant { return self.idleHandler(currentTime, state); },
-          [&](SendWait const& state) -> typename Derived::StateVariant {
-              assert(isOwner());
-              switch(I2C::operationState(currentTime)) {
-              case OS::ongoing:
-                  {
-                      return state;
-                  }
-              case OS::succeeded:
-                  {
-                      state.processor();
-                      release();
-                      resetErrorCount();
-                      return self.makeSendIdle(currentTime);
-                  }
-              case OS::failed:
-                  {
-                      release();
-                      incrementErrorCount();
-                      return self.makeIdle(currentTime + Derived::fail_retry_time);
-                  }
-              }
-              return state;
-          },
-          [&](ReadWait const& state) -> typename Derived::StateVariant {
-              assert(isOwner());
-              switch(I2C::operationState(currentTime)) {
-              case OS::ongoing:
-                  {
-                      return state;
-                  }
-              case OS::succeeded:
-                  {
-                      state.processor();
-                      release();
-                      resetErrorCount();
-                      return self.makeReadIdle(currentTime);
-                  }
-              case OS::failed:
-                  {
-                      release();
-                      incrementErrorCount();
-                      return self.makeReadFailIdle(currentTime);
-                  }
-              }
-              return state;
-          });
+        auto& self = static_cast<Derived&>(*this);
+
+        if(error_count_ > ErrorTreshold) {
+            self.resetLogic();
+            resetErrorCount();
+        }
+
+        self.idleLogic();
+    }
+
+private:
+    std::uint8_t const i2caddress_;
+
+    static constexpr auto kInFlightTimeout = std::chrono::seconds{2};
+
+    std::atomic<bool>        inFlight_{false};
+    tp                       inFlightSince_{};
+    std::atomic<std::size_t> error_count_{};
+
+    template<typename F>
+    bool submitQueued_(std::span<std::byte const> sendData,
+                       std::span<std::byte>       recvData,
+                       F&&                        f) {
+        assert(!inFlight_);
+
+        typename I2C::Request req{};
+        req.address     = i2caddress_;
+        req.sendData    = sendData;
+        req.receiveData = recvData;
+        req.callback    = [this, func = std::forward<F>(f)](typename I2C::Result r) {
+            if(r == I2C::Result::failed || r == I2C::Result::notAcknowledged) {
+                incrementErrorCount();
+            }
+            inFlight_ = false;
+            func(r);
+        };
+
+        if(!I2C::submit(req)) { return false; }
+        inFlight_      = true;
+        inFlightSince_ = Clock::now();
+        return true;
     }
 };
+
 }   // namespace Kvasir
