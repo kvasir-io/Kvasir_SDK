@@ -100,12 +100,12 @@ if(USE_TIDY)
             ${clang_tidy}
             -header-filter=${TIDY_HEADER_FILTER}
             -checks=-*,${enabled_clang_tidy_checks_},${common_clang_tidy_disabled_checks_},${cxx_clang_tidy_disabled_checks_}
-        )
+            ${TIDY_EXTRA_ARGS})
         set(DO_CLANG_TIDY_C
             ${clang_tidy}
             -header-filter=${TIDY_HEADER_FILTER}
             -checks=-*,${enabled_clang_tidy_checks_},${common_clang_tidy_disabled_checks_},${c_clang_tidy_disabled_checks_}
-        )
+            ${TIDY_EXTRA_ARGS})
     endif()
 endif()
 
