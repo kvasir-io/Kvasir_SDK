@@ -440,7 +440,7 @@ namespace Kvasir { namespace Startup {
 
         static void printProfiles() {
             UC_LOG_T("{:#^32}", " ISR profiles "_sc);
-            for(auto const& p : getProfiles()) {
+            for([[maybe_unused]] auto const& p : getProfiles()) {
                 UC_LOG_T("  isr[{:3}]  calls: {}", p.isrIndex, p.callCount);
                 UC_LOG_T("    interval  min:{:>10}  avg:{:>10}  max:{:>10}  cyc",
                          p.minIntervalCycles,
