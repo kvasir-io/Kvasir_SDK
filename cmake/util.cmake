@@ -374,8 +374,6 @@ function(
             ${SWD_SPEED}
             JLINK_IP
             ${JLINK_IP}
-            CHANNELS
-            2
             MAP_FILE
             ${name}.map
             HEX_FILE
