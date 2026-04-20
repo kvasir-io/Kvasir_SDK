@@ -60,7 +60,7 @@ namespace sv_detail {
     static constexpr bool Convertible = std::is_convertible_v<From, To>;
 
     template<typename T>
-    static constexpr bool Trivial = std::is_trivial_v<T>;
+    static constexpr bool Trivial = std::is_trivially_copyable_v<T> && std::is_trivially_default_constructible_v<T>;
 
     template<typename T>
     static constexpr bool Const = std::is_const_v<T>;
