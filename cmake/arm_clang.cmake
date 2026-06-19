@@ -255,7 +255,15 @@ if("${CPPLIB}" STREQUAL "libc++")
         -D_LIBCPP_HAS_LOCALIZATION=0
         -D_LIBCPP_HAS_UNICODE=0
         -D_LIBCPP_HAS_WIDE_CHARACTERS=0
-        -D_LIBCPP_HARDENING_MODE_DEFAULT=_LIBCPP_HARDENING_MODE_FAST)
+        -D_LIBCPP_HARDENING_MODE_DEFAULT=_LIBCPP_HARDENING_MODE_FAST
+        # required since llvm 22: __configuration/hardening.h #errors if unset.
+        # HARDENING_DEPENDENT tracks the hardening mode (FAST -> quick_enforce/trap,
+        # DEBUG -> enforce/log+terminate).
+        -D_LIBCPP_ASSERTION_SEMANTIC_DEFAULT=_LIBCPP_ASSERTION_SEMANTIC_HARDENING_DEPENDENT
+        # explicit (each defaults to 0): keep chrono tzdb off and signal non-newlib/picolibc libc
+        -D_LIBCPP_HAS_TIME_ZONE_DATABASE=0
+        -D_LIBCPP_LIBC_NEWLIB=0
+        -D_LIBCPP_LIBC_PICOLIBC=0)
 endif()
 
 if("${CLIB}" STREQUAL "llvm")

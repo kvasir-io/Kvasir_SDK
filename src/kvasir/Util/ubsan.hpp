@@ -68,5 +68,7 @@ extern "C" {
 
 [[gnu::used]] inline void __ubsan_handle_invalid_builtin_minimal() { UBSAN_REPORT(); }
 
+[[gnu::used]] inline void __ubsan_handle_nullability_arg_minimal() { UBSAN_REPORT(); }
+
 #undef UBSAN_REPORT
 }
