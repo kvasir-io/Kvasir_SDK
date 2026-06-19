@@ -209,6 +209,22 @@ function(target_add_kvasir_lib target name sources)
     add_library("${name}-${target}" ${sources})
 endfunction()
 
+# Create (or reuse) a runtime library shared across all targets that have identical compile flags. The library name
+# encodes a full MD5 of the flags so that targets with different optimisation / sanitiser settings still get their own
+# copy.
+function(target_add_shared_kvasir_lib target name sources opt_flags san_flags)
+    string(MD5 _hash "${opt_flags}_${san_flags}")
+    set(_shared "${name}_${_hash}")
+
+    if(NOT TARGET "${_shared}")
+        add_library("${_shared}" ${sources})
+        target_compile_options("${_shared}" PUBLIC ${opt_flags} ${san_flags})
+        target_link_options("${_shared}" PUBLIC --whole-archive)
+    endif()
+
+    target_link_libraries(${target} "${_shared}")
+endfunction()
+
 function(
     target_kvasir_config_internal
     name
@@ -219,20 +235,43 @@ function(
     linker_file
     application
     bootloader)
-    set(libraries)
 
+    # Compute flags first so they are available for the shared-library key.
+    if(optimize STREQUAL size)
+        set(optimize_flags ${optimize_option_size})
+        set(used_specs ${optimize_specs_size})
+    elseif(optimize STREQUAL speed)
+        set(optimize_flags ${optimize_option_speed})
+        set(used_specs ${optimize_specs_speed})
+    elseif(optimize STREQUAL debug)
+        set(optimize_flags ${optimize_option_debug})
+        set(used_specs ${optimize_specs_debug})
+    else()
+        message(FATAL_ERROR "wrong OPTIMIZE option specified!!!!")
+    endif()
+
+    if(sanitize STREQUAL "TRUE")
+        set(sanitize_flags ${sanitize_option})
+    elseif(sanitize STREQUAL "FALSE")
+        set(sanitize_flags)
+    else()
+        message(FATAL_ERROR "wrong SANITIZE option specified!!!! ${sanitize}")
+    endif()
+
+    # Create or reuse shared runtime libraries keyed on the compile flags.
     if("${COMPILER_RT}" STREQUAL "clang")
-        target_add_kvasir_lib(${name} rt "${COMPILER_RT_SOURCE_FILES}")
+        target_add_shared_kvasir_lib(${name} rt "${COMPILER_RT_SOURCE_FILES}" "${optimize_flags}" "${sanitize_flags}")
     endif()
 
     if("${CPPLIB}" STREQUAL "libc++")
-        target_add_kvasir_lib(${name} cxx "${LIBCXX_SOURCE_FILES}")
+        target_add_shared_kvasir_lib(${name} cxx "${LIBCXX_SOURCE_FILES}" "${optimize_flags}" "${sanitize_flags}")
     endif()
 
     if("${CLIB}" STREQUAL "llvm")
-        target_add_kvasir_lib(${name} c "${LIBC_SOURCE_FILES}")
+        target_add_shared_kvasir_lib(${name} c "${LIBC_SOURCE_FILES}" "${optimize_flags}" "${sanitize_flags}")
         if(NOT heap_size EQUAL 0)
-            target_add_kvasir_lib(${name} c_malloc "${LIBC_MALLOC_SOURCE_FILES}")
+            target_add_shared_kvasir_lib(${name} c_malloc "${LIBC_MALLOC_SOURCE_FILES}" "${optimize_flags}"
+                                         "${sanitize_flags}")
         endif()
     endif()
 
@@ -295,39 +334,12 @@ function(
         add_clean_file(${name} ${CMAKE_CURRENT_BINARY_DIR}/${name}.map)
         add_clean_file(${name} ${CMAKE_CURRENT_BINARY_DIR}/${name}.step1)
 
-        if(optimize STREQUAL size)
-            set(optimize_flags ${optimize_option_size})
-            set(used_specs ${optimize_specs_size})
-        elseif(optimize STREQUAL speed)
-            set(optimize_flags ${optimize_option_speed})
-            set(used_specs ${optimize_specs_speed})
-        elseif(optimize STREQUAL debug)
-            set(optimize_flags ${optimize_option_debug})
-            set(used_specs ${optimize_specs_debug})
-        else()
-            message(FATAL_ERROR "wrong OPTIMIZE option specified!!!!")
-        endif()
-
-        if(sanitize STREQUAL "TRUE")
-            set(sanitize_flags ${sanitize_option})
-        elseif(sanitize STREQUAL "FALSE")
-            set(sanitize_flags)
-        else()
-            message(FATAL_ERROR "wrong SANITIZE option specified!!!! ${sanitize}")
-        endif()
-
         set_property(
             TARGET ${name}
             APPEND
             PROPERTY SOURCES ${CHIP_SOURCES})
 
         target_compile_options(${name} PUBLIC ${optimize_flags} ${sanitize_flags} ${CHIP_OPTIONS})
-
-        foreach(current_lib ${libraries})
-            target_compile_options(${current_lib} PUBLIC ${optimize_flags} ${sanitize_flags})
-            target_link_options(${current_lib} PUBLIC --whole-archive)
-            target_link_libraries(${name} ${current_lib})
-        endforeach(current_lib)
 
         foreach(current_linker_flag ${linker_flags})
             if(${used_specs} STREQUAL ${SPEC_REPLACEMENT_EMPTY_MARKER})
