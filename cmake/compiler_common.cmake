@@ -11,7 +11,7 @@ set(compiler_common_flags
     -Wno-unused-macros)
 
 set(compiler_common_cxx_flags
-    -std=c++23
+    -std=c++26
     -fno-exceptions
     -fno-unwind-tables
     -fno-use-cxa-atexit
