@@ -386,6 +386,8 @@ function(
             ${SWD_SPEED}
             JLINK_IP
             ${JLINK_IP}
+            DUPLEX_BASE_PORT
+            ${DUPLEX_BASE_PORT}
             MAP_FILE
             ${name}.map
             HEX_FILE

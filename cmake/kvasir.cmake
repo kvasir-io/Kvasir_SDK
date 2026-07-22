@@ -110,6 +110,10 @@ set(JLINK_IP
     ""
     CACHE STRING "Choose the ip address of jlink if not using USB")
 
+set(DUPLEX_BASE_PORT
+    ""
+    CACHE STRING "Choose the first tcp port for uc_log duplex channels, empty for default")
+
 if(COMPILE_TARGET STREQUAL arm_clang)
     set(CPPLIB
         libc++
