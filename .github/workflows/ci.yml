@@ -1,11 +1,15 @@
-name: Build and Push Docker Container
+name: CI
 
 on:
     schedule:
-        # Run on the 1st of every month at 02:00 UTC
+        # Run on the 1st of every month at 02:00 UTC (container refresh)
         - cron: '0 2 1 * *'
     push:
-        branches: [master]
+        branches:
+            - master
+    pull_request:
+        branches:
+            - master
     workflow_dispatch:
         inputs:
             rebuild_build_env:
@@ -15,7 +19,52 @@ on:
                 default: false
 
 jobs:
+    build-and-test:
+        runs-on: ubuntu-latest
+        container:
+            image: archlinux:latest
+        strategy:
+            fail-fast: false
+            matrix:
+                compiler:
+                    - {cc: gcc, cxx: g++}
+                    - {cc: gcc, cxx: g++, stdlib_debug: true, sanitizer: address}
+                    - {cc: gcc, cxx: g++, sanitizer: undefined}
+                    - {cc: clang, cxx: clang++}
+                    - {cc: clang, cxx: clang++, stdlib: libc++, stdlib_debug: true, sanitizer: address}
+                    - {cc: clang, cxx: clang++, stdlib: libc++, sanitizer: undefined}
+
+        steps:
+            - name: Set up C++ environment
+              run: |
+                pacman -Syu --noconfirm
+                pacman -S --noconfirm git cmake base-devel ${{ matrix.compiler.cc == 'clang' && 'clang' || '' }} ${{ matrix.compiler.stdlib == 'libc++' && 'libc++ lld' || '' }}
+
+            # the register tests only need the headers in src/, no submodules
+            - name: Checkout repository
+              uses: actions/checkout@v6
+
+            - name: Configure CMake
+              run: >
+                cmake -S tests -B build
+                ${{ matrix.compiler.sanitizer && format('-DUSE_SANITIZER={0}', matrix.compiler.sanitizer) || '' }}
+                ${{ matrix.compiler.stdlib && format('-DUSE_STD_LIB={0}', matrix.compiler.stdlib) || '' }}
+                ${{ matrix.compiler.stdlib_debug && '-DUSE_STDLIB_DEBUG=true' || '' }}
+              env:
+                CC: ${{ matrix.compiler.cc }}
+                CXX: ${{ matrix.compiler.cxx }}
+
+            - name: Build tests
+              run: cmake --build build -j"$(nproc)"
+
+            - name: Run tests
+              run: cd build && ctest --output-on-failure
+
+    # everything below only runs when the whole build-and-test matrix succeeded;
+    # pull requests never build or push containers
     check-build-needed:
+        needs: build-and-test
+        if: github.event_name != 'pull_request'
         runs-on: ubuntu-latest
         outputs:
             should-build: ${{ steps.check-build.outputs.should-build }}
@@ -38,7 +87,7 @@ jobs:
                   echo "Changed files: $CHANGED_FILES"
 
                   # Check if build environment files changed
-                  if echo "$CHANGED_FILES" | grep -E "(scripts/Dockerfile\.build-env|\.github/workflows/docker-build\.yml)" > /dev/null; then
+                  if echo "$CHANGED_FILES" | grep -E "(scripts/Dockerfile\.build-env|\.github/workflows/ci\.yml)" > /dev/null; then
                     echo "env-files-changed=true" >> $GITHUB_OUTPUT
                     echo "Build environment files changed"
                   else
@@ -143,7 +192,10 @@ jobs:
 
     kvasir-build-push:
         needs: [check-build-needed, docker-build-push]
-        if: always() && (needs.docker-build-push.result == 'success' || (needs.check-build-needed.outputs.env-files-changed == 'false' && github.event_name == 'push') || (github.event_name != 'push') || github.event_name == 'workflow_dispatch')
+        # check-build-needed must have run and succeeded (its needs already require the
+        # whole test matrix to be green; skipped on pull requests); docker-build-push
+        # only matters when the build environment actually changed
+        if: always() && needs.check-build-needed.result == 'success' && (needs.docker-build-push.result == 'success' || (needs.check-build-needed.outputs.env-files-changed == 'false' && github.event_name == 'push') || (github.event_name != 'push'))
         runs-on: ubuntu-latest
         steps:
             - name: Checkout repository
@@ -221,7 +273,9 @@ jobs:
     notify-status:
         runs-on: ubuntu-latest
         needs: [check-build-needed, docker-build-push, kvasir-build-push]
-        if: always()
+        # not on pull requests and not when the tests already failed (the CI failure
+        # itself is visible on the commit in that case)
+        if: always() && needs.check-build-needed.result == 'success'
         steps:
             - name: Set build status
               run: |

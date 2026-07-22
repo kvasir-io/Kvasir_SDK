@@ -68,6 +68,25 @@ namespace Kvasir { namespace Register {
         template<typename T>
         using GetInputs = typename GetInputsImpl<T>::type;
 
+        // secondary sort key: groups all actions of the same kind on the same register
+        // so that mergable writes are always adjacent after sorting (a read of the same
+        // register can no longer end up between two writes and prevent their merge).
+        // The merged list executes in reverse sort order, so higher ranks run first:
+        // within one step the per-register order is reads, then xors, then writes -
+        // reads always observe the pre-write value, read-after-write needs a
+        // sequencePoint.
+        template<typename T>
+        struct ActionExecRank : Int<1> {};   // any write kind
+
+        template<typename L>
+        struct ActionExecRank<Action<L, ReadAction>> : Int<3> {};
+
+        template<typename L, unsigned V>
+        struct ActionExecRank<Action<L, XorLiteralAction<V>>> : Int<2> {};
+
+        template<typename L>
+        struct ActionExecRank<Action<L, XorAction>> : Int<2> {};
+
         // predicate returning result of left < right for RegisterOptions
         template<typename TLeft, typename TRight>
         struct IndexedActionLess;
@@ -80,11 +99,17 @@ namespace Kvasir { namespace Register {
                  typename... TInputs2>
         struct IndexedActionLess<IndexedAction<Action<T1, U1>, TInputs1...>,
                                  IndexedAction<Action<T2, U2>, TInputs2...>>
-          : Bool<(GetAddress<T1>::value < GetAddress<T2>::value)> {};
+          : Bool<(GetAddress<T1>::value < GetAddress<T2>::value)
+                 || (GetAddress<T1>::value == GetAddress<T2>::value
+                     && ActionExecRank<Action<T1, U1>>::value
+                          < ActionExecRank<Action<T2, U2>>::value)> {};
 
         template<typename T1, typename U1, typename T2, typename U2>
         struct IndexedActionLess<Action<T1, U1>, Action<T2, U2>>
-          : Bool<(GetAddress<T1>::value < GetAddress<T2>::value)> {};
+          : Bool<(GetAddress<T1>::value < GetAddress<T2>::value)
+                 || (GetAddress<T1>::value == GetAddress<T2>::value
+                     && ActionExecRank<Action<T1, U1>>::value
+                          < ActionExecRank<Action<T2, U2>>::value)> {};
 
         template<typename TRegisters, typename TRet = brigand::list<>>   // default
         struct MergeRegisterActions;
@@ -621,7 +646,7 @@ namespace Kvasir { namespace Register {
         // no read no runtime write apply
         template<typename... TActions>
         [[gnu::always_inline]]
-        void noReadNoRuntimeWriteApply(brigand::list<TActions...>*) {
+        inline void noReadNoRuntimeWriteApply(brigand::list<TActions...>*) {
             std::array const a{0U, ExecuteSeam<TActions, ::Kvasir::Tag::User>{}(0U)...};
             ignore(a);
         }
@@ -677,7 +702,7 @@ namespace Kvasir { namespace Register {
     // if apply does not contain reads return is void
     template<typename... Args>
     [[gnu::always_inline]]
-    typename std::enable_if<Detail::NoReadsRuntimeWrites<Args...>::value>::type
+    inline typename std::enable_if<Detail::NoReadsRuntimeWrites<Args...>::value>::type
     apply(Args... args) {
         static_assert(Detail::ArgsToApplyArePlausible<Args...>::value,
                       "one of the supplied arguments is not supported");
@@ -696,8 +721,9 @@ namespace Kvasir { namespace Register {
 
     // if apply does not contain reads or runtime writes we can speed things up
     template<typename... Args>
-    [[gnu::always_inline]] typename std::enable_if<Detail::AllCompileTime<Args...>::value>::type
-    apply(Args...) {
+    [[gnu::always_inline]] inline
+      typename std::enable_if<Detail::AllCompileTime<Args...>::value>::type
+      apply(Args...) {
         static_assert(Detail::ArgsToApplyArePlausible<Args...>::value,
                       "one of the supplied arguments is not supported");
         // using IndexedActions = brigand::transform<brigand::list<Args...>,

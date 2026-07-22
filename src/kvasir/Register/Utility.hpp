@@ -3,6 +3,21 @@
 
 #include <limits>
 
+#ifdef KVASIR_REGISTER_MOCK
+// Test seam: with KVASIR_REGISTER_MOCK defined all register accesses are routed through
+// these functions instead of raw volatile memory access. A test provides the definitions
+// (see tests/kvasir_test.hpp).
+namespace Kvasir { namespace Test {
+    template<typename TRegType,
+             unsigned Address>
+    TRegType read();
+
+    template<typename TRegType,
+             unsigned Address>
+    void write(TRegType);
+}}   // namespace Kvasir::Test
+#endif
+
 namespace Kvasir { namespace Register {
     constexpr unsigned maskFromRange(unsigned high,
                                      unsigned low) {
@@ -128,13 +143,21 @@ namespace Kvasir { namespace Register {
             static constexpr unsigned allBitsSetMask         = std::numeric_limits<TRegType>::max();
 
             static TRegType read() {
+#ifdef KVASIR_REGISTER_MOCK
+                return ::Kvasir::Test::read<TRegType, A>();
+#else
                 TRegType volatile& reg = *reinterpret_cast<TRegType volatile*>(value);
                 return reg;
+#endif
             }
 
             static void write(TRegType i) {
+#ifdef KVASIR_REGISTER_MOCK
+                ::Kvasir::Test::write<TRegType, A>(i);
+#else
                 TRegType volatile& reg = *reinterpret_cast<TRegType volatile*>(value);
                 reg                    = i;
+#endif
             }
 
             using type = brigand::uint32_t<A>;

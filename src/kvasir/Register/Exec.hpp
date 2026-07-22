@@ -43,22 +43,18 @@ namespace Kvasir { namespace Register {
         struct GenericReadMaskXorWrite {
             unsigned operator()(unsigned in = 0) {
                 using Address = GetAddress<TLocation>;
-                static constexpr auto clearOrZeroIsNoChangeMask
-                  = ClearMask | Address::writeIgnoredIfZeroMask;
+                // The target bits (ClearMask) must be written back with their current
+                // value xor-ed with the mask: on one-to-toggle hardware the resulting
+                // bit value is old ^ written, so writing (old ^ XorMask) forces the
+                // field to XorMask. A xor of 0 therefore clears the field (this is what
+                // Register::clear on oneToToggle bits relies on). The read is always
+                // required because the written value depends on the current bit value.
+                static constexpr auto zeroIsNoChangeMask
+                  = Address::writeIgnoredIfZeroMask & ~ClearMask;
                 static constexpr auto oneIsNoChangeMask
-                  = (Address::writeIgnoredIfOneMask
-                     & ~ClearMask);   // remove the bits we are working on
-                static constexpr auto bitsWithFixedValues
-                  = oneIsNoChangeMask | clearOrZeroIsNoChangeMask;
-                static constexpr auto     allBitsSetMask = Address::allBitsSetMask;
-                decltype(Address::read()) i              = 0;
-                if constexpr(
-                  bitsWithFixedValues
-                  != allBitsSetMask)   // no sense reading if we are going to clear the whole thing any way
-                {
-                    i = Address::read();
-                    i &= ~(clearOrZeroIsNoChangeMask);
-                }
+                  = Address::writeIgnoredIfOneMask & ~ClearMask;
+                decltype(Address::read()) i = Address::read();
+                i &= ~zeroIsNoChangeMask;
                 i |= oneIsNoChangeMask;
                 i ^= XorMask | in;
                 Address::write(i);
