@@ -241,6 +241,11 @@ jobs:
                              repo: 'chip_rp2040',
                              workflow: 'rp2040-docker-build.yml',
                              name: 'RP2040'
+                        },
+                        {
+                             repo: 'chip_atsamd21',
+                             workflow: 'atsamd21-docker-build.yml',
+                             name: 'ATSAMD21'
                         }
                     ];
 
