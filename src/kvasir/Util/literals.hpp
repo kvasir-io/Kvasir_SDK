@@ -1,7 +1,10 @@
 #pragma once
 #include "detail/constant_parser.hpp"
 
+#include <cstddef>
+#include <cstdint>
 #include <limits>
+#include <string>
 #include <type_traits>
 
 namespace Kvasir { namespace literals {

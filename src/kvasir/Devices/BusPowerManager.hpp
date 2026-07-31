@@ -1,4 +1,8 @@
 #pragma once
+// required: the qualified Register::set/clear/makeOutput calls below are looked up here
+#include "kvasir/Io/PinFactories.hpp"
+#include "kvasir/Register/Register.hpp"
+
 #include <chrono>
 #include <tuple>
 
@@ -69,6 +73,8 @@ struct BusPowerManager {
     }
 
     void handler() {
+        using namespace std::chrono_literals;
+
         auto const currentTime = Clock::now();
         switch(st_) {
         case State::reset:

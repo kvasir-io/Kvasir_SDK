@@ -1,11 +1,11 @@
 #pragma once
-#include "Mpl/Utility.hpp"
 #include "PinFactories.hpp"
+#include "kvasir/Mpl/Utility.hpp"
 
 namespace Kvasir { namespace Io {
     template<typename T,
              typename... Ts>
-    constexpr MPL::EnableIfT<Detail::IsPinLoaction<T>::value,
+    constexpr MPL::EnableIfT<Detail::IsPinLocation<T>::value,
                              Port<PortAccess::defaultMode,
                                   T,
                                   Ts...>>
@@ -16,8 +16,8 @@ namespace Kvasir { namespace Io {
 
     template<typename T,
              typename... Ts>
-    constexpr MPL::DisableIfT<Detail::IsPinLoaction<T>::value,
-                              Port<T::Value,
+    constexpr MPL::DisableIfT<Detail::IsPinLocation<T>::value,
+                              Port<T::value,
                                    Ts...>>
     makePort(T,
              Ts...) {

@@ -2,16 +2,35 @@
 #include <array>
 #include <cassert>
 #include <cstddef>
+#include <cstring>
 #include <functional>
 #include <memory>
+#include <type_traits>
+#include <utility>
 
 namespace Kvasir {
 
 template<typename, std::size_t>
 struct StaticFunction;
 
+namespace Detail {
+    // keeps the greedy StaticFunction(F&&) constructor from hijacking copy/move construction
+    template<typename T>
+    struct IsStaticFunction : std::false_type {};
+
+    template<typename Signature, std::size_t Size>
+    struct IsStaticFunction<StaticFunction<Signature, Size>> : std::true_type {};
+
+    template<typename T>
+    constexpr bool IsStaticFunctionV = IsStaticFunction<std::remove_cvref_t<T>>::value;
+}   // namespace Detail
+
 template<typename R, typename... Args, std::size_t Size>
 struct StaticFunction<R(Args...), Size> {
+    // lets the converting constructor reach a differently sized StaticFunction's storage
+    template<typename, std::size_t>
+    friend struct StaticFunction;
+
     constexpr StaticFunction() = default;
 
     constexpr StaticFunction(StaticFunction const& other)            = default;
@@ -23,10 +42,11 @@ struct StaticFunction<R(Args...), Size> {
     constexpr ~StaticFunction() = default;
 
     template<typename F>
+        requires(!Detail::IsStaticFunctionV<F>)
     constexpr StaticFunction(F&& f)
-      : invoke_ptr{[](Storage_t const& s,
+      : invoke_ptr{[](std::byte const* s,
                       Args... args) -> R {
-          return (*reinterpret_cast<std::remove_cvref_t<F> const*>(s.data()))(args...);
+          return (*reinterpret_cast<std::remove_cvref_t<F> const*>(s))(args...);
       }} {
         using FF = std::remove_cvref_t<F>;
         static_assert(std::is_trivially_destructible_v<FF>,
@@ -40,6 +60,7 @@ struct StaticFunction<R(Args...), Size> {
     }
 
     template<typename F>
+        requires(!Detail::IsStaticFunctionV<F>)
     constexpr StaticFunction& operator=(F&& f) {
         new(this) StaticFunction{std::forward<F>(f)};
         return *this;
@@ -67,15 +88,17 @@ struct StaticFunction<R(Args...), Size> {
     template<typename... AArgs>
     constexpr R operator()(AArgs&&... args) const {
         assert(invoke_ptr != nullptr);
-        return std::invoke(invoke_ptr, storage, std::forward<AArgs>(args)...);
+        return std::invoke(invoke_ptr, storage.data(), std::forward<AArgs>(args)...);
     }
 
 private:
-    using Storage_t    = std::array<std::byte, Size>;
-    using Invoke_ptr_t = R (*)(Storage_t const&,
+    using Storage_t = std::array<std::byte, Size>;
+    // a plain pointer rather than Storage_t const&, so the invoker stays valid when
+    // converted to a larger StaticFunction
+    using Invoke_ptr_t = R (*)(std::byte const*,
                                Args...);
 
-    Storage_t    storage;
+    Storage_t    storage{};
     Invoke_ptr_t invoke_ptr{};
 };
 

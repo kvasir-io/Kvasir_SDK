@@ -141,6 +141,10 @@ namespace sv_detail {
     constexpr void slow_rotate(ForwardIt first,
                                ForwardIt n_first,
                                ForwardIt last) {
+        // an empty range makes this a no-op; without the n_first == last guard the loop
+        // below runs off the end, since it only tests next against last after incrementing
+        if(first == n_first || n_first == last) { return; }
+
         ForwardIt next = n_first;
         while(first != next) {
             using std::swap;
@@ -178,6 +182,24 @@ namespace sv_detail {
             if(!pred(*first1, *first2)) { return false; }
         }
         return first1 == last1 && first2 == last2;
+    }
+
+    // WORKAROUND: std::lexicographical_compare is not constexpr
+    // cmp() above cannot express this: it asks whether *every* pair satisfies a predicate,
+    // which is right for equality but is not even a strict weak ordering.
+    template<class InputIterator1,
+             class InputIterator2,
+             SV_REQUIRES_(InputIterator<InputIterator1>&& InputIterator<InputIterator2>)>
+    constexpr bool lexicographical_less(InputIterator1 first1,
+                                        InputIterator1 last1,
+                                        InputIterator2 first2,
+                                        InputIterator2 last2) {
+        for(; first1 != last1 && first2 != last2; ++first1, (void)++first2) {
+            if(*first1 < *first2) { return true; }
+            if(*first2 < *first1) { return false; }
+        }
+        // a common prefix: the shorter range compares less
+        return first1 == last1 && first2 != last2;
     }
 
     ///@}  // Workarounds
@@ -424,10 +446,9 @@ namespace sv_detail {
             /// Number of elements allocated in the embedded storage:
             size_type size_ = 0;
 
-            using data_t = std::conditional_t<!Const<T>,
-                                              std::array<T, Capacity>,
-                                              std::array<std::remove_const_t<T>, Capacity> const>;
-            alignas(alignof(T)) data_t data_{};
+            // Raw storage, deliberately not an array of T: lifetimes are managed by hand
+            // here, so live T objects would be constructed and destroyed twice per slot.
+            alignas(alignof(T)) std::byte data_[sizeof(T) * Capacity];
             // FIXME: ^ this won't work for types with "broken" alignof
             // like SIMD types (one would also need to provide an
             // overload of operator new to make heap allocations of this
@@ -437,14 +458,12 @@ namespace sv_detail {
             /// Direct access to the underlying storage.
             ///
             /// Complexity: O(1) in time and space.
-            const_pointer data() const noexcept {
-                return reinterpret_cast<const_pointer>(data_.data());
-            }
+            const_pointer data() const noexcept { return reinterpret_cast<const_pointer>(data_); }
 
             /// Direct access to the underlying storage.
             ///
             /// Complexity: O(1) in time and space.
-            pointer data() noexcept { return reinterpret_cast<pointer>(data_.data()); }
+            pointer data() noexcept { return reinterpret_cast<pointer>(data_); }
 
             /// Pointer to one-past-the-end.
             const_pointer end() const noexcept { return data() + size(); }
@@ -523,13 +542,43 @@ namespace sv_detail {
                 unsafe_destroy(data(), end());
             }
 
-            constexpr non_trivial()                              = default;
-            constexpr non_trivial(non_trivial const&)            = default;
-            constexpr non_trivial& operator=(non_trivial const&) = default;
-            constexpr non_trivial(non_trivial&&) noexcept(std::is_nothrow_move_constructible_v<T>)
-              = default;
-            constexpr non_trivial&
-            operator=(non_trivial&&) noexcept(std::is_nothrow_move_assignable_v<T>) = default;
+            // the storage is raw, so the special members cannot be defaulted: each has to
+            // construct or destroy exactly [0, size()). The default constructor is user
+            // provided so that `non_trivial const x;` stays well-formed.
+            constexpr non_trivial() noexcept {}
+
+            non_trivial(non_trivial const& other) noexcept(
+              std::is_nothrow_copy_constructible_v<T>) {
+                for(size_type i = 0; i != other.size(); ++i) { emplace_back(other.data()[i]); }
+            }
+
+            non_trivial(non_trivial&& other) noexcept(std::is_nothrow_move_constructible_v<T>) {
+                for(size_type i = 0; i != other.size(); ++i) {
+                    emplace_back(std::move(other.data()[i]));
+                }
+            }
+
+            non_trivial& operator=(non_trivial const& other) noexcept(
+              std::is_nothrow_copy_constructible_v<T> && std::is_nothrow_destructible_v<T>) {
+                if(this != std::addressof(other)) {
+                    unsafe_destroy_all();
+                    unsafe_set_size(0);
+                    for(size_type i = 0; i != other.size(); ++i) { emplace_back(other.data()[i]); }
+                }
+                return *this;
+            }
+
+            non_trivial& operator=(non_trivial&& other) noexcept(
+              std::is_nothrow_move_constructible_v<T> && std::is_nothrow_destructible_v<T>) {
+                if(this != std::addressof(other)) {
+                    unsafe_destroy_all();
+                    unsafe_set_size(0);
+                    for(size_type i = 0; i != other.size(); ++i) {
+                        emplace_back(std::move(other.data()[i]));
+                    }
+                }
+                return *this;
+            }
 
             ~non_trivial() noexcept(std::is_nothrow_destructible_v<T>) { unsafe_destroy_all(); }
 
@@ -539,9 +588,8 @@ namespace sv_detail {
             template<typename U,
                      SV_REQUIRES_(Convertible<U,
                                               T>)>
-            constexpr non_trivial(std::initializer_list<U> il) noexcept(
-              noexcept(emplace_back(index(il,
-                                          0)))) {
+            non_trivial(std::initializer_list<U> il) noexcept(noexcept(emplace_back(index(il,
+                                                                                          0)))) {
                 assert(
                   il.size() <= capacity()
                   && "trying to construct storage from an initializer_list whose size exceeds the storage capacity");
@@ -817,9 +865,10 @@ public:
 
     template<class InputIt,
              SV_REQUIRES_(sv_detail::InputIterator<InputIt>)>
-    constexpr iterator move_insert(const_iterator position,
-                                   InputIt        first,
-                                   InputIt last) noexcept(noexcept(emplace_back(move(*first)))) {
+    constexpr iterator
+    move_insert(const_iterator position,
+                InputIt        first,
+                InputIt        last) noexcept(noexcept(emplace_back(std::move(*first)))) {
         assert_iterator_in_range(position);
         assert_valid_iterator_pair(first, last);
         if constexpr(sv_detail::RandomAccessIterator<InputIt>) {
@@ -829,7 +878,7 @@ public:
         iterator b = end();
 
         // we insert at the end and then just rotate:
-        for(; first != last; ++first) { emplace_back(move(*first)); }
+        for(; first != last; ++first) { emplace_back(std::move(*first)); }
         auto writable_position = begin() + (position - begin());
         sv_detail::slow_rotate<iterator>(writable_position, b, end());
         return writable_position;
@@ -870,9 +919,9 @@ public:
                                       T&&>)
 
     constexpr void swap(StaticVector& other) noexcept(std::is_nothrow_swappable_v<T>) {
-        StaticVector tmp = move(other);
-        other            = move(*this);
-        (*this)          = move(tmp);
+        StaticVector tmp = std::move(other);
+        other            = std::move(*this);
+        (*this)          = std::move(tmp);
     }
 
     /// Resizes the container to contain \p sz elements. If elements
@@ -1017,8 +1066,8 @@ public:
     template<typename U,
              SV_REQUIRES_(sv_detail::Convertible<U,
                                                  value_type>)>
-    constexpr StaticVector(std::initializer_list<U> il) noexcept(noexcept(base_t(move(il))))
-      : base_t(move(il)) {   // assert happens in base_t constructor
+    constexpr StaticVector(std::initializer_list<U> il) noexcept(noexcept(base_t(std::move(il))))
+      : base_t(std::move(il)) {   // assert happens in base_t constructor
     }
 
     template<class InputIt,
@@ -1079,7 +1128,7 @@ constexpr bool operator<(StaticVector<T,
                                       Capacity> const& a,
                          StaticVector<T,
                                       Capacity> const& b) noexcept {
-    return sv_detail::cmp(a.begin(), a.end(), b.begin(), b.end(), std::less<>{});
+    return sv_detail::lexicographical_less(a.begin(), a.end(), b.begin(), b.end());
 }
 
 template<typename T,
@@ -1097,7 +1146,7 @@ constexpr bool operator<=(StaticVector<T,
                                        Capacity> const& a,
                           StaticVector<T,
                                        Capacity> const& b) noexcept {
-    return sv_detail::cmp(a.begin(), a.end(), b.begin(), b.end(), std::less_equal<>{});
+    return not sv_detail::lexicographical_less(b.begin(), b.end(), a.begin(), a.end());
 }
 
 template<typename T,
@@ -1106,7 +1155,7 @@ constexpr bool operator>(StaticVector<T,
                                       Capacity> const& a,
                          StaticVector<T,
                                       Capacity> const& b) noexcept {
-    return sv_detail::cmp(a.begin(), a.end(), b.begin(), b.end(), std::greater<>{});
+    return sv_detail::lexicographical_less(b.begin(), b.end(), a.begin(), a.end());
 }
 
 template<typename T,
@@ -1115,7 +1164,7 @@ constexpr bool operator>=(StaticVector<T,
                                        Capacity> const& a,
                           StaticVector<T,
                                        Capacity> const& b) noexcept {
-    return sv_detail::cmp(a.begin(), a.end(), b.begin(), b.end(), std::greater_equal<>{});
+    return not sv_detail::lexicographical_less(a.begin(), a.end(), b.begin(), b.end());
 }
 
 }   // namespace Kvasir

@@ -1,5 +1,12 @@
 #pragma once
 
+#include "kvasir/Register/Utility.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <utility>
 
 namespace Kvasir {
@@ -54,9 +61,9 @@ struct BitField {
         return static_cast<assignType>(v);
     }
 
-    value_Type asValue() const { return v; }
+    constexpr value_Type asValue() const { return v; }
 
-    value_Type asAssign() const { return static_cast<assignType>(v); }
+    constexpr value_Type asAssign() const { return static_cast<assignType>(v); }
 
     template<std::size_t N>
     constexpr explicit BitField(std::array<std::byte,
@@ -80,23 +87,20 @@ struct BitField {
         static_assert(N * 8 > High);
 
         unrollCombine(a);
-        /*for(std::size_t n = Start; n < End + 1; ++n) {
-            a[n] &= ~std::byte(Masks[n - Start]);
-            value_Type lshift = n == Start ? FrontMaskOffset : 0;
-            value_Type rshift = n == End ? End == Start ? 0 : (End - Start) * 8 - (FrontMaskOffset + BackMaskOffset) :
-        0; a[n] |= std::byte(((v << lshift) >> rshift) & Masks[n - Start]);
-        }*/
     }
 
     constexpr bool operator==(BitField const& rhs) const { return v == rhs.v; }
 
 private:
-    constexpr void doTheCombine(value_Type lshift,
-                                value_Type rshift,
-                                value_Type Mask,
-                                std::byte* vv) const {
+    // shifting v up by FrontMaskOffset aligns it with the field, so byte ByteIndex of the
+    // field is just the next 8 bits of that. doTheExtract undoes the same shift.
+    constexpr void doTheCombine(std::size_t ByteIndex,
+                                value_Type  Mask,
+                                std::byte*  vv) const {
+        auto const shifted
+          = (static_cast<std::uint64_t>(v) << unsigned(FrontMaskOffset)) >> (ByteIndex * 8);
         *vv &= ~std::byte(Mask);
-        *vv |= std::byte(((unsigned(v) << unsigned(lshift)) >> unsigned(rshift)) & unsigned(Mask));
+        *vv |= std::byte(shifted & static_cast<std::uint64_t>(Mask));
     }
 
     template<std::size_t N,
@@ -104,19 +108,7 @@ private:
     constexpr void unrollCombineImpl(std::array<std::byte,
                                                 N>& a,
                                      std::index_sequence<Is...>) const {
-        constexpr auto EndShift = []() {
-            if constexpr(End == Start) {
-                return 0;
-            } else {
-                return (End - Start) * 8 - (FrontMaskOffset + BackMaskOffset);
-            }
-        }();
-
-        ((doTheCombine(Is == 0 ? FrontMaskOffset : 0,
-                       Start + Is == End ? EndShift : 0,
-                       Masks[Is],
-                       std::addressof(a[Start + Is]))),
-         ...);
+        ((doTheCombine(Is, Masks[Is], std::addressof(a[Start + Is]))), ...);
     }
 
     template<std::size_t N>
@@ -216,7 +208,6 @@ private:
 
     static constexpr auto Masks           = generateMask();
     static constexpr auto FrontMaskOffset = Kvasir::Register::Detail::maskStartsAt(Masks.front());
-    static constexpr auto BackMaskOffset  = Kvasir::Register::Detail::maskStartsAt(Masks.back());
 };
 
 }   // namespace Kvasir

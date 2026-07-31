@@ -267,10 +267,11 @@ namespace Kvasir { namespace MPL {
                       "implausible parameters");
     };
 
+    // D is wrapped in Return so it need not carry a nested ::type of its own
     template<template<typename...> class Pred, typename D, typename... Ts>
     struct Get<brigand::list<Ts...>, Template<Pred>, D>
       : ConditionalT<(FindT<brigand::list<Ts...>, Template<Pred>>::value == -1),
-                     D,
+                     Return<D>,
                      At<brigand::list<Ts...>, FindT<brigand::list<Ts...>, Template<Pred>>>> {};
 
     template<typename TList, typename TPred, typename TDefault = void>
