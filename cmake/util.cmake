@@ -398,7 +398,7 @@ endfunction()
 
 function(kvasir_executable_variants base_name)
     cmake_parse_arguments(
-        PARSE_ARGV 1 PARSED_ARGS "" "OPTIMIZATION"
+        PARSE_ARGV 1 PARSED_ARGS "" "OPTIMIZATION;MIN_STACK_SIZE"
         "SOURCES;LIBRARIES;ADDITIONAL_FLAGS;ADDITIONAL_DEBUG_FLAGS;ADDITIONAL_RELEASE_FLAGS;ADDITIONAL_SANITIZE_FLAGS")
 
     if(PARSED_ARGS_UNPARSED_ARGUMENTS)
@@ -411,6 +411,13 @@ function(kvasir_executable_variants base_name)
 
     if(NOT PARSED_ARGS_OPTIMIZATION)
         set(PARSED_ARGS_OPTIMIZATION size)
+    endif()
+
+    # Forwarded to every variant. Left empty when unset so target_configure_kvasir keeps applying its own default -
+    # passing MIN_STACK_SIZE here is opt-in.
+    set(_min_stack "")
+    if(PARSED_ARGS_MIN_STACK_SIZE)
+        set(_min_stack MIN_STACK_SIZE ${PARSED_ARGS_MIN_STACK_SIZE})
     endif()
 
     # Handle empty base_name
@@ -428,15 +435,21 @@ function(kvasir_executable_variants base_name)
 
     # Debug variant - with logging, debug optimization
     add_executable(${debug_target} ${PARSED_ARGS_SOURCES})
-    target_configure_kvasir(${debug_target} OPTIMIZATION_STRATEGY debug USE_LOG ${PARSED_ARGS_ADDITIONAL_FLAGS}
-                            ${PARSED_ARGS_ADDITIONAL_DEBUG_FLAGS})
+    target_configure_kvasir(
+        ${debug_target}
+        OPTIMIZATION_STRATEGY
+        debug
+        USE_LOG
+        ${_min_stack}
+        ${PARSED_ARGS_ADDITIONAL_FLAGS}
+        ${PARSED_ARGS_ADDITIONAL_DEBUG_FLAGS})
     if(PARSED_ARGS_LIBRARIES)
         target_link_libraries(${debug_target} ${PARSED_ARGS_LIBRARIES})
     endif()
 
     # Release variant - no logging, no sanitizer, configurable optimization
     add_executable(${release_target} ${PARSED_ARGS_SOURCES})
-    target_configure_kvasir(${release_target} OPTIMIZATION_STRATEGY ${PARSED_ARGS_OPTIMIZATION}
+    target_configure_kvasir(${release_target} OPTIMIZATION_STRATEGY ${PARSED_ARGS_OPTIMIZATION} ${_min_stack}
                             ${PARSED_ARGS_ADDITIONAL_FLAGS} ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
     if(PARSED_ARGS_LIBRARIES)
         target_link_libraries(${release_target} ${PARSED_ARGS_LIBRARIES})
@@ -444,8 +457,14 @@ function(kvasir_executable_variants base_name)
 
     # Release with log variant - with logging, no sanitizer, configurable optimization
     add_executable(${release_log_target} ${PARSED_ARGS_SOURCES})
-    target_configure_kvasir(${release_log_target} OPTIMIZATION_STRATEGY ${PARSED_ARGS_OPTIMIZATION} USE_LOG
-                            ${PARSED_ARGS_ADDITIONAL_FLAGS} ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
+    target_configure_kvasir(
+        ${release_log_target}
+        OPTIMIZATION_STRATEGY
+        ${PARSED_ARGS_OPTIMIZATION}
+        USE_LOG
+        ${_min_stack}
+        ${PARSED_ARGS_ADDITIONAL_FLAGS}
+        ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
     if(PARSED_ARGS_LIBRARIES)
         target_link_libraries(${release_log_target} ${PARSED_ARGS_LIBRARIES})
     endif()
@@ -458,6 +477,7 @@ function(kvasir_executable_variants base_name)
         ${PARSED_ARGS_OPTIMIZATION}
         USE_SANITIZER
         USE_LOG
+        ${_min_stack}
         ${PARSED_ARGS_ADDITIONAL_FLAGS}
         ${PARSED_ARGS_ADDITIONAL_SANITIZE_FLAGS})
     if(PARSED_ARGS_LIBRARIES)
