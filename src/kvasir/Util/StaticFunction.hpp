@@ -59,10 +59,15 @@ struct StaticFunction<R(Args...), Size> {
         new(storage.data()) FF{std::forward<F>(f)};
     }
 
+    // Memberwise instead of placement-new over *this: a callback may reinstall
+    // itself from inside its own invocation, and reusing the storage of the
+    // object being invoked is not something to rely on.
     template<typename F>
         requires(!Detail::IsStaticFunctionV<F>)
     constexpr StaticFunction& operator=(F&& f) {
-        new(this) StaticFunction{std::forward<F>(f)};
+        StaticFunction const tmp{std::forward<F>(f)};
+        storage    = tmp.storage;
+        invoke_ptr = tmp.invoke_ptr;
         return *this;
     }
 
@@ -77,7 +82,9 @@ struct StaticFunction<R(Args...), Size> {
     template<std::size_t OtherSize>
     constexpr StaticFunction& operator=(StaticFunction<R(Args...),
                                                        OtherSize> const& other) {
-        new(this) StaticFunction{other};
+        StaticFunction const tmp{other};   // see operator=(F&&) above
+        storage    = tmp.storage;
+        invoke_ptr = tmp.invoke_ptr;
         return *this;
     }
 
