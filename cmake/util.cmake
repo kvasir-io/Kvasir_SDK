@@ -398,7 +398,8 @@ endfunction()
 
 function(kvasir_executable_variants base_name)
     cmake_parse_arguments(
-        PARSE_ARGV 1 PARSED_ARGS "" "OPTIMIZATION;MIN_STACK_SIZE"
+        PARSE_ARGV 1 PARSED_ARGS ""
+        "OPTIMIZATION;MIN_STACK_SIZE;MIN_LOG_LEVEL;MIN_LOG_LEVEL_DEBUG;MIN_LOG_LEVEL_RELEASE"
         "SOURCES;LIBRARIES;ADDITIONAL_FLAGS;ADDITIONAL_DEBUG_FLAGS;ADDITIONAL_RELEASE_FLAGS;ADDITIONAL_SANITIZE_FLAGS")
 
     if(PARSED_ARGS_UNPARSED_ARGUMENTS)
@@ -418,6 +419,21 @@ function(kvasir_executable_variants base_name)
     set(_min_stack "")
     if(PARSED_ARGS_MIN_STACK_SIZE)
         set(_min_stack MIN_STACK_SIZE ${PARSED_ARGS_MIN_STACK_SIZE})
+    endif()
+
+    # Log floor per variant: MIN_LOG_LEVEL applies to every logging variant, MIN_LOG_LEVEL_DEBUG overrides it for the
+    # debug variant, MIN_LOG_LEVEL_RELEASE for release_log and sanitize. Unset means uc_log's default (keep everything).
+    set(_min_log_debug "")
+    set(_min_log_release "")
+    if(PARSED_ARGS_MIN_LOG_LEVEL)
+        set(_min_log_debug MIN_LOG_LEVEL ${PARSED_ARGS_MIN_LOG_LEVEL})
+        set(_min_log_release MIN_LOG_LEVEL ${PARSED_ARGS_MIN_LOG_LEVEL})
+    endif()
+    if(PARSED_ARGS_MIN_LOG_LEVEL_DEBUG)
+        set(_min_log_debug MIN_LOG_LEVEL ${PARSED_ARGS_MIN_LOG_LEVEL_DEBUG})
+    endif()
+    if(PARSED_ARGS_MIN_LOG_LEVEL_RELEASE)
+        set(_min_log_release MIN_LOG_LEVEL ${PARSED_ARGS_MIN_LOG_LEVEL_RELEASE})
     endif()
 
     # Handle empty base_name
@@ -441,6 +457,7 @@ function(kvasir_executable_variants base_name)
         debug
         USE_LOG
         ${_min_stack}
+        ${_min_log_debug}
         ${PARSED_ARGS_ADDITIONAL_FLAGS}
         ${PARSED_ARGS_ADDITIONAL_DEBUG_FLAGS})
     if(PARSED_ARGS_LIBRARIES)
@@ -463,6 +480,7 @@ function(kvasir_executable_variants base_name)
         ${PARSED_ARGS_OPTIMIZATION}
         USE_LOG
         ${_min_stack}
+        ${_min_log_release}
         ${PARSED_ARGS_ADDITIONAL_FLAGS}
         ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
     if(PARSED_ARGS_LIBRARIES)
@@ -478,6 +496,7 @@ function(kvasir_executable_variants base_name)
         USE_SANITIZER
         USE_LOG
         ${_min_stack}
+        ${_min_log_release}
         ${PARSED_ARGS_ADDITIONAL_FLAGS}
         ${PARSED_ARGS_ADDITIONAL_SANITIZE_FLAGS})
     if(PARSED_ARGS_LIBRARIES)
@@ -492,7 +511,7 @@ function(target_configure_kvasir target)
         1
         PARSED_ARGS
         "USE_LOG;NOT_USE_ASSERT;ENABLE_SELF_OVERRIDE;USE_SANITIZER"
-        "LOG;MIN_STACK_SIZE;HEAP_SIZE;OPTIMIZATION_STRATEGY;LINKER_FILE;LINKER_FILE_TEMPLATE;APPLICATION;BOOTLOADER;BOOTLOADER_SIZE"
+        "LOG;MIN_LOG_LEVEL;MIN_STACK_SIZE;HEAP_SIZE;OPTIMIZATION_STRATEGY;LINKER_FILE;LINKER_FILE_TEMPLATE;APPLICATION;BOOTLOADER;BOOTLOADER_SIZE"
         "")
 
     if(PARSED_ARGS_UNPARSED_ARGUMENTS)
@@ -587,6 +606,15 @@ function(target_configure_kvasir target)
     endif()
 
     kvasir_set_target_property(${target} LOG ${PARSED_ARGS_USE_LOG})
+
+    # Compile-time floor for UC_LOG_*: call sites below it vanish entirely, catalog strings included. Passed through as
+    # a uc_log::LogLevel enumerator name (trace debug info warn error crit); the compiler rejects anything else.
+    if(DEFINED PARSED_ARGS_MIN_LOG_LEVEL)
+        if(NOT PARSED_ARGS_USE_LOG)
+            message(WARNING "${target}: MIN_LOG_LEVEL has no effect without USE_LOG")
+        endif()
+        target_compile_definitions(${target} PUBLIC UC_LOG_MIN_LEVEL=${PARSED_ARGS_MIN_LOG_LEVEL})
+    endif()
 
     if(PARSED_ARGS_NOT_USE_ASSERT)
         set(USE_ASSERT FALSE)
