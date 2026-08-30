@@ -171,6 +171,11 @@ SECTIONS {
     }
 }
 
+/* libgcc's unwinder names the bounds of the discarded unwind index. GNU ld defines them itself
+   when it sees .ARM.exidx input; lld does not. An empty index is the truthful value. */
+PROVIDE(__exidx_start = 0);
+PROVIDE(__exidx_end = 0);
+
 _LINKER_INTERN_min_stack_size_ = cmake_min_stack_size;
 
 /* ROM/Flash symbols defined in configuration-specific files */

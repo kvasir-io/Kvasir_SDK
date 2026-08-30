@@ -198,6 +198,8 @@ include(${kvasir_cmake_dir}/../lib/libc/libc.cmake)
 
 if("${CPPLIB}" STREQUAL "libstdc++")
     if("${CLIB}" STREQUAL "llvm")
+        # libstdc++'s headers are configured against newlib and reach for its internals (ctype table, wide-character
+        # API, errno values llvm-libc does not define)
         message(FATAL_ERROR "libstdc++ does not work with llvm libc")
     endif()
 endif()
@@ -219,10 +221,11 @@ function(target_add_shared_kvasir_lib target name sources opt_flags san_flags)
     if(NOT TARGET "${_shared}")
         add_library("${_shared}" ${sources})
         target_compile_options("${_shared}" PUBLIC ${opt_flags} ${san_flags})
-        target_link_options("${_shared}" PUBLIC --whole-archive)
     endif()
 
-    target_link_libraries(${target} "${_shared}")
+    # --whole-archive bracketed around this archive only: a bare --whole-archive link option stays in force for every
+    # archive after it (KVASIR_WHOLE_ARCHIVE is defined in the toolchain files)
+    target_link_libraries(${target} "$<LINK_LIBRARY:KVASIR_WHOLE_ARCHIVE,${_shared}>")
 endfunction()
 
 function(

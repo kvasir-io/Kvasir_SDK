@@ -12,12 +12,12 @@ if("${CPPLIB}" STREQUAL "libstdc++"
     mark_as_advanced(FORCE arm-none-eabi-gcc)
     # ugly way to get arm-none-eabi-gcc include and lib path
     execute_process(
-        COMMAND arm-none-eabi-gcc -print-sysroot
+        COMMAND ${arm-none-eabi-gcc} -print-sysroot
         OUTPUT_VARIABLE GCC_ARM_NONE_EABI_ROOT
         OUTPUT_STRIP_TRAILING_WHITESPACE)
 
     execute_process(
-        COMMAND arm-none-eabi-gcc -print-search-dirs
+        COMMAND ${arm-none-eabi-gcc} -print-search-dirs
         OUTPUT_VARIABLE GCC_ARM_NONE_EABI_LIB_DIR
         OUTPUT_STRIP_TRAILING_WHITESPACE)
     string(REGEX MATCH "^install: ([^\n\r ]*)" GCC_ARM_NONE_EABI_LIB_DIR ${GCC_ARM_NONE_EABI_LIB_DIR})
@@ -26,6 +26,11 @@ if("${CPPLIB}" STREQUAL "libstdc++"
     get_filename_component(GCC_ARM_NONE_EABI_ROOT "${GCC_ARM_NONE_EABI_ROOT}" REALPATH)
 
     file(GLOB_RECURSE GCC_ARM_NONE_EABI_INCLUDE "${GCC_ARM_NONE_EABI_ROOT}/include/c++/*/cstddef")
+    list(LENGTH GCC_ARM_NONE_EABI_INCLUDE _gcc_cxx_count)
+    if(NOT _gcc_cxx_count EQUAL 1)
+        message(FATAL_ERROR "expected exactly one include/c++/<version>/cstddef under "
+                            "${GCC_ARM_NONE_EABI_ROOT}, found ${_gcc_cxx_count}: ${GCC_ARM_NONE_EABI_INCLUDE}")
+    endif()
 
     get_filename_component(GCC_ARM_NONE_EABI_INCLUDE "${GCC_ARM_NONE_EABI_INCLUDE}" DIRECTORY)
 endif()
@@ -153,20 +158,29 @@ endif()
 
 set(system_includes)
 
+execute_process(
+    COMMAND ${CMAKE_C_COMPILER} -print-resource-dir
+    OUTPUT_VARIABLE _clang_resource_dir
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+
+# libc++ must precede whichever libc among the -isystem entries
 if("${CPPLIB}" STREQUAL "libstdc++")
     list(APPEND system_includes ${GCC_ARM_NONE_EABI_INCLUDE} ${GCC_ARM_NONE_EABI_INCLUDE}/arm-none-eabi
-         ${GCC_ARM_NONE_EABI_INCLUDE}/backward ${GCC_ARM_NONE_EABI_ROOT}/include)
+         ${GCC_ARM_NONE_EABI_INCLUDE}/backward)
 else()
     list(APPEND system_includes ${kvasir_cmake_dir}/../lib/libcxx/include)
     list(APPEND system_includes ${kvasir_cmake_dir}/../lib/libcxx/src)
-
-    if("${CLIB}" STREQUAL "newlib")
-        list(APPEND system_includes ${GCC_ARM_NONE_EABI_ROOT}/include)
-    else()
-        list(APPEND system_includes ${kvasir_cmake_dir}/../lib/libc/include)
-        list(APPEND system_includes ${kvasir_cmake_dir}/../lib/libc)
-    endif()
 endif()
+
+if("${CLIB}" STREQUAL "newlib")
+    # newlib, unlike llvm-libc, does not ship the compiler headers (stddef.h, ...) that -nostdinc hides
+    list(APPEND system_includes ${GCC_ARM_NONE_EABI_ROOT}/include ${_clang_resource_dir}/include)
+else()
+    list(APPEND system_includes ${kvasir_cmake_dir}/../lib/libc/include)
+    list(APPEND system_includes ${kvasir_cmake_dir}/../lib/libc)
+endif()
+# last, so a libc that ships its own stddef.h/stdint.h (llvm-libc does) wins
+list(APPEND system_includes ${_clang_resource_dir}/include)
 
 list(TRANSFORM system_includes PREPEND "-isystem")
 
@@ -175,20 +189,24 @@ set(linker_search_path)
 if("${CPPLIB}" STREQUAL "libstdc++"
    OR "${COMPILER_RT}" STREQUAL "gcc"
    OR "${CLIB}" STREQUAL "newlib")
-    if(TARGET_FLOAT_ABI MATCHES soft)
-        set(fp_folder nofp)
-        set(fp_postfix)
-    else()
-        set(fp_folder hard)
-        if(TARGET_FPU MATCHES sp)
-            set(fp_postfix +fp)
-        else()
-            set(fp_postfix +dp)
-        endif()
+    # ask the gcc driver where its multilib lives instead of assembling the directory name by hand
+    set(_multilib_flags -mcpu=${TARGET_CPU} -mfloat-abi=${TARGET_FLOAT_ABI} -m${TARGET_ARM_INSTRUCTION_MODE})
+    if(NOT TARGET_FPU MATCHES none)
+        list(APPEND _multilib_flags -mfpu=${TARGET_FPU})
     endif()
-    list(APPEND linker_search_path
-         ${GCC_ARM_NONE_EABI_LIB_DIR}${TARGET_ARM_INSTRUCTION_MODE}/${TARGET_ARCH}${fp_postfix}/${fp_folder}/
-         ${GCC_ARM_NONE_EABI_ROOT}/lib/${TARGET_ARM_INSTRUCTION_MODE}/${TARGET_ARCH}${fp_postfix}/${fp_folder}/)
+    foreach(_lib libc_nano.a libgcc.a)
+        execute_process(
+            COMMAND ${arm-none-eabi-gcc} ${_multilib_flags} -print-file-name=${_lib}
+            OUTPUT_VARIABLE _lib_path
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(NOT IS_ABSOLUTE "${_lib_path}")
+            message(FATAL_ERROR "arm-none-eabi-gcc has no ${_lib} for ${_multilib_flags}")
+        endif()
+        get_filename_component(_lib_dir "${_lib_path}" DIRECTORY)
+        get_filename_component(_lib_dir "${_lib_dir}" REALPATH)
+        list(APPEND linker_search_path "${_lib_dir}/")
+    endforeach()
+    list(REMOVE_DUPLICATES linker_search_path)
 endif()
 
 list(TRANSFORM linker_search_path PREPEND "--library-path=")
@@ -241,29 +259,24 @@ set(common_warning_flags
 
 set(profile_flags)
 
+# libstdc++ hides hosted headers under __STDC_HOSTED__=0 and clang, unlike gcc, refuses to redefine the macro, so
+# -ffreestanding has to go; -Wno-main because StartUp.hpp declares main() extern "C" and takes its address on purpose
+if("${CPPLIB}" STREQUAL "libstdc++")
+    list(REMOVE_ITEM arm_compiler_common_flags -ffreestanding)
+    list(APPEND common_warning_flags -Wno-main)
+endif()
+
 if("${CPPLIB}" STREQUAL "libc++")
-    list(
-        APPEND
-        profile_flags
-        -D_LIBCPP_ABI_VERSION=2
-        -D_LIBCPP_ABI_NAMESPACE=__2
-        -D_LIBCPP_HAS_MONOTONIC_CLOCK=1
-        -D_LIBCPP_HAS_THREADS=0
-        -D_LIBCPP_HAS_TERMINAL=0
-        -D_LIBCPP_HAS_FILESYSTEM=0
-        -D_LIBCPP_HAS_RANDOM_DEVICE=0
-        -D_LIBCPP_HAS_LOCALIZATION=0
-        -D_LIBCPP_HAS_UNICODE=0
-        -D_LIBCPP_HAS_WIDE_CHARACTERS=0
-        -D_LIBCPP_HARDENING_MODE_DEFAULT=_LIBCPP_HARDENING_MODE_FAST
-        -D_LIBCPP_ASSERTION_SEMANTIC_DEFAULT=_LIBCPP_ASSERTION_SEMANTIC_HARDENING_DEPENDENT
-        -D_LIBCPP_HAS_TIME_ZONE_DATABASE=0
-        -D_LIBCPP_LIBC_NEWLIB=0
-        -D_LIBCPP_LIBC_PICOLIBC=0)
+    list(APPEND profile_flags ${libcxx_profile_flags})
 endif()
 
 if("${CLIB}" STREQUAL "llvm")
     list(APPEND profile_flags -DLIBC_NAMESPACE=__llvm_libc)
+endif()
+
+if("${COMPILER_RT}" STREQUAL "gcc")
+    # tells StartUp.hpp to provide the AEABI memory helpers, which libgcc does not have
+    list(APPEND profile_flags -DKVASIR_COMPILER_RT_LIBGCC=1)
 endif()
 
 set(common_flags ${target_flags} ${common_warning_flags} ${profile_flags} ${system_includes} ${compiler_common_flags}
@@ -274,6 +287,13 @@ set(cxx_flags ${common_flags} ${compiler_common_cxx_flags} -nostdinc++)
 set(c_flags ${common_flags} ${compiler_common_c_flags} -nostdinc)
 
 set(asm_flags ${common_flags} ${compiler_common_asm_flags})
+
+# --whole-archive bracketed around one archive, for util.cmake's shared runtime archives
+set(CMAKE_C_LINK_LIBRARY_USING_KVASIR_WHOLE_ARCHIVE_SUPPORTED TRUE)
+set(CMAKE_C_LINK_LIBRARY_USING_KVASIR_WHOLE_ARCHIVE "${LINKER_PREFIX}--whole-archive" "<LINK_ITEM>"
+                                                    "${LINKER_PREFIX}--no-whole-archive")
+set(CMAKE_CXX_LINK_LIBRARY_USING_KVASIR_WHOLE_ARCHIVE_SUPPORTED TRUE)
+set(CMAKE_CXX_LINK_LIBRARY_USING_KVASIR_WHOLE_ARCHIVE ${CMAKE_C_LINK_LIBRARY_USING_KVASIR_WHOLE_ARCHIVE})
 
 set(linker_flags
     ${linker_common_flags}

@@ -1,5 +1,6 @@
 #pragma once
 #include "core/Fault.hpp"
+#include "kvasir/StartUp/LinkerSymbols.hpp"
 #include "uc_log/uc_log.hpp"
 
 #include <cassert>

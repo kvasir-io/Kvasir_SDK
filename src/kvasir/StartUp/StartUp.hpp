@@ -6,27 +6,18 @@
 #include "kvasir/Mpl/Utility.hpp"
 #include "kvasir/Register/Register.hpp"
 #include "kvasir/StartUp/IsrProfiler.hpp"
+#include "kvasir/StartUp/LinkerSymbols.hpp"
 #include "kvasir/Util/attributes.hpp"
 #include "kvasir/Util/ubsan.hpp"
 #include "uc_log/uc_log.hpp"
 
 #include <algorithm>
 #include <cassert>
+#include <cstring>
 
 extern "C" {
 [[KVASIR_RESETISR_ATTRIBUTES]] extern void ResetISR();
-extern void                                _LINKER_stack_end_();
 extern int                                 main();
-using InitFunc = void (*)();
-extern InitFunc _LINKER_init_array_start_;
-extern InitFunc _LINKER_init_array_end_;
-
-extern std::uintptr_t _LINKER_data_start_flash_;
-extern std::uintptr_t _LINKER_data_start_;
-extern std::size_t    _LINKER_data_size_;
-
-extern std::uintptr_t _LINKER_bss_start_;
-extern std::size_t    _LINKER_bss_size_;
 }
 
 namespace Kvasir { namespace Startup {
@@ -480,9 +471,13 @@ inline void log_assert() {
                   [](auto c) { return c; }));
 }
 
+    // llvm-libc's and libc++'s patched headers already declare log_assert (-Wredundant-decls);
+    // without any prototype clang's -Wmissing-prototypes objects instead
+    #if !defined(LIBC_NAMESPACE) && !defined(_LIBCPP_VERSION)
 void log_assert(int         line,
                 char const* filename,
                 char const* expr);
+    #endif
 
 void log_assert([[maybe_unused]] int         line,
                 [[maybe_unused]] char const* filename,
@@ -495,7 +490,144 @@ void log_assert([[maybe_unused]] int         line,
 
 }   // namespace uc_log
 
+    // newlib's assert() pulls stdio/_write/_sbrk and libstdc++'s __throw_* pull abort -> malloc;
+    // strong definitions here keep those archive members out. gnu::noreturn, not [[noreturn]]:
+    // the standard attribute must be on newlib's first declaration.
+    #if defined(__NEWLIB__)
 extern "C" {
+[[gnu::noreturn,
+  gnu::used]] void
+__assert_func(char const* file,
+              int         line,
+              char const* /*func*/,
+              char const* expr) {
+    uc_log::log_assert(line, file, expr);
+    while(true) { asm volatile("bkpt 5" : : :); }
+}
+
+[[gnu::noreturn,
+  gnu::used]] void
+abort() {
+    UC_LOG_C("abort() called (libstdc++ __throw_* or libc)");
+    while(true) { asm volatile("bkpt 5" : : :); }
+}
+
+void _exit(int);   // newlib declares it in <unistd.h>, which is not included here
+
+[[gnu::noreturn,
+  gnu::used]] void
+_exit(int) {
+    abort();
+}
+}
+    #endif
+    #if !defined(__clang__)
+// gcc has no [[clang::no_destroy]]; accept and ignore the atexit() registration of static
+// destructors - firmware never exits
+extern "C" {
+[[gnu::used]] int atexit(void (*)()) { return 0; }
+}
+    #endif
+    #if defined(__GLIBCXX__)
+// libstdc++'s _GLIBCXX_ASSERTIONS reporter (the sanitize variant turns those on)
+namespace std {
+[[gnu::noreturn,
+  gnu::used]] void
+__glibcxx_assert_fail(char const* file,
+                      int         line,
+                      char const* /*func*/,
+                      char const* cond) noexcept {
+    uc_log::log_assert(line, file, cond);
+    while(true) { asm volatile("bkpt 5" : : :); }
+}
+}   // namespace std
+    #endif
+
+    #if defined(__clang__) && defined(KVASIR_COMPILER_RT_LIBGCC) && defined(LIBC_NAMESPACE)
+// clang lowers struct copies and memset to the AEABI helpers, which neither libgcc nor llvm-libc
+// provides. Argument order matters: __aeabi_memset takes (dest, n, value), the reverse of memset.
+extern "C" {
+[[gnu::used]] inline void __aeabi_memcpy(void*       d,
+                                         void const* s,
+                                         std::size_t n) {
+    std::memcpy(d, s, n);
+}
+
+[[gnu::used]] inline void __aeabi_memcpy4(void*       d,
+                                          void const* s,
+                                          std::size_t n) {
+    std::memcpy(d, s, n);
+}
+
+[[gnu::used]] inline void __aeabi_memcpy8(void*       d,
+                                          void const* s,
+                                          std::size_t n) {
+    std::memcpy(d, s, n);
+}
+
+[[gnu::used]] inline void __aeabi_memmove(void*       d,
+                                          void const* s,
+                                          std::size_t n) {
+    std::memmove(d, s, n);
+}
+
+[[gnu::used]] inline void __aeabi_memmove4(void*       d,
+                                           void const* s,
+                                           std::size_t n) {
+    std::memmove(d, s, n);
+}
+
+[[gnu::used]] inline void __aeabi_memmove8(void*       d,
+                                           void const* s,
+                                           std::size_t n) {
+    std::memmove(d, s, n);
+}
+
+[[gnu::used]] inline void __aeabi_memset(void*       d,
+                                         std::size_t n,
+                                         int         v) {
+    std::memset(d, v, n);
+}
+
+[[gnu::used]] inline void __aeabi_memset4(void*       d,
+                                          std::size_t n,
+                                          int         v) {
+    std::memset(d, v, n);
+}
+
+[[gnu::used]] inline void __aeabi_memset8(void*       d,
+                                          std::size_t n,
+                                          int         v) {
+    std::memset(d, v, n);
+}
+
+[[gnu::used]] inline void __aeabi_memclr(void*       d,
+                                         std::size_t n) {
+    std::memset(d, 0, n);
+}
+
+[[gnu::used]] inline void __aeabi_memclr4(void*       d,
+                                          std::size_t n) {
+    std::memset(d, 0, n);
+}
+
+[[gnu::used]] inline void __aeabi_memclr8(void*       d,
+                                          std::size_t n) {
+    std::memset(d, 0, n);
+}
+}
+    #endif
+
+extern "C" {
+// EHABI personality routines. Nothing here unwinds, but the sanitizers make clang emit .ARM.exidx
+// entries whose personality reference would pull libgcc's whole unwinder out of the archive;
+// defining the routines keeps it out.
+[[gnu::used]] inline void __aeabi_unwind_cpp_pr0() {}
+
+[[gnu::used]] inline void __aeabi_unwind_cpp_pr1() {}
+
+[[gnu::used]] inline void __aeabi_unwind_cpp_pr2() {}
+
 [[gnu::used]] inline constexpr std::uint32_t __stack_chk_guard{0xdeadc0de};
 
 [[noreturn,
@@ -549,7 +681,7 @@ namespace std {
 //void terminate() noexcept { assert(false); }
 }   // namespace std
 
-void operator delete(void*) {}
+void operator delete(void*) noexcept {}
 
 void operator delete(void*,
-                     std::size_t) {}
+                     std::size_t) noexcept {}

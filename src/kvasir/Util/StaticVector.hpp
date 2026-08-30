@@ -458,12 +458,15 @@ namespace sv_detail {
             /// Direct access to the underlying storage.
             ///
             /// Complexity: O(1) in time and space.
-            const_pointer data() const noexcept { return reinterpret_cast<const_pointer>(data_); }
+            // Through void*: data_ is alignas(T), which gcc's -Wcast-align (strict on ARM) does not see.
+            const_pointer data() const noexcept {
+                return static_cast<const_pointer>(static_cast<void const*>(data_));
+            }
 
             /// Direct access to the underlying storage.
             ///
             /// Complexity: O(1) in time and space.
-            pointer data() noexcept { return reinterpret_cast<pointer>(data_); }
+            pointer data() noexcept { return static_cast<pointer>(static_cast<void*>(data_)); }
 
             /// Pointer to one-past-the-end.
             const_pointer end() const noexcept { return data() + size(); }

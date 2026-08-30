@@ -1,3 +1,7 @@
+# no C++20 modules here, and gcc's dependency scanner breaks the gcc + libc++ tree (it resolves headers through
+# libstdc++'s bits/stdc++.h)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+
 # Common Compiler Configuration Shared compiler flags and settings used across all compiler toolchains Defines
 # optimization, warning, and language standard settings
 
@@ -14,6 +18,8 @@ set(compiler_common_cxx_flags
     -std=c++26
     -fno-exceptions
     -fno-unwind-tables
+    # with UBSan on, clang still emits .ARM.exidx entries under -fno-unwind-tables alone
+    -fno-asynchronous-unwind-tables
     -fno-use-cxa-atexit
     -fno-rtti
     -fno-threadsafe-statics

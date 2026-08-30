@@ -49,6 +49,9 @@ def find_external_references(elf_path):
             name = name.strip()
 
             # Check for undefined (UND section) or absolute with value 0
+            # binutils records source file names as FILE symbols in ABS with value 0
+            if stype == 'FILE':
+                continue
             if ndx == 'UND' or (ndx == 'ABS' and value == '00000000'):
                 # Filter out linker-internal symbols
                 if not is_linker_internal_symbol(name):

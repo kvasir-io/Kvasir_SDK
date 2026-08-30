@@ -130,8 +130,17 @@ if(COMPILE_TARGET STREQUAL arm_clang)
         CACHE STRING "Choose compiler runtime to use, options are: clang gcc")
     set_property(CACHE COMPILER_RT PROPERTY STRINGS clang gcc)
 else()
-    set(CPPLIB libstdc++)
-    set(CLIB newlib)
+    # arm_gcc: same two library switches, defaulting to gcc's own; the runtime stays libgcc
+    set(CPPLIB
+        libstdc++
+        CACHE STRING "Choose the stdlib to use, options are: libc++ libstdc++")
+    set_property(CACHE CPPLIB PROPERTY STRINGS libc++ libstdc++)
+
+    set(CLIB
+        newlib
+        CACHE STRING "Choose libc to use, options are: llvm newlib")
+    set_property(CACHE CLIB PROPERTY STRINGS llvm newlib)
+
     set(COMPILER_RT gcc)
 endif()
 

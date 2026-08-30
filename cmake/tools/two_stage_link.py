@@ -14,7 +14,8 @@ linker_script = None
 for a in sys.argv:
     if a.startswith("-o"):
         ocnt = cnt+1
-    if a.startswith("--script="):
+    # with gcc every linker option arrives through the driver as "-Wl,--script=..."
+    if a.startswith("--script=") or a.startswith("-Wl,--script="):
         linker_script = a.split("=", 1)[1]
     if a == "-T":
         # Also support -T format
@@ -45,7 +46,9 @@ else:
 process = subprocess.Popen(sys.argv[2:])
 process.wait()
 if process.returncode != 0:
-    os.remove(name + ".step1")
+    # a failed link may not have produced the file at all (gcc's driver removes its output on error)
+    if os.path.exists(name + ".step1"):
+        os.remove(name + ".step1")
     exit(1)
 
 objdump_res = subprocess.check_output(

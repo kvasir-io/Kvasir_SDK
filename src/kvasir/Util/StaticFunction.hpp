@@ -46,7 +46,9 @@ struct StaticFunction<R(Args...), Size> {
     constexpr StaticFunction(F&& f)
       : invoke_ptr{[](std::byte const* s,
                       Args... args) -> R {
-          return (*reinterpret_cast<std::remove_cvref_t<F> const*>(s))(args...);
+          // via void*: storage is aligned for F (static_assert below), gcc -Wcast-align cannot tell
+          return (*static_cast<std::remove_cvref_t<F> const*>(static_cast<void const*>(s)))(
+            args...);
       }} {
         using FF = std::remove_cvref_t<F>;
         static_assert(std::is_trivially_destructible_v<FF>,
