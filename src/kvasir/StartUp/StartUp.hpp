@@ -15,10 +15,14 @@
 #include <cassert>
 #include <cstring>
 
+// declaring and calling main is ill-formed in ISO C++ but intended here; gcc diagnoses it under -Wpedantic
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
 extern "C" {
 [[KVASIR_RESETISR_ATTRIBUTES]] extern void ResetISR();
 extern int                                 main();
 }
+#pragma GCC diagnostic pop
 
 namespace Kvasir { namespace Startup {
     namespace Detail {
@@ -346,7 +350,10 @@ namespace Kvasir { namespace Startup {
                 Kvasir::Register::apply(GetPeripheryEnableInitT<Peripherals...>{});
                 callRuntimeInits<Peripherals...>();
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
                 main();
+#pragma GCC diagnostic pop
                 assert(false);
             }
         };

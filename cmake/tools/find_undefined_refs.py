@@ -52,6 +52,9 @@ def find_external_references(elf_path):
             # binutils records source file names as FILE symbols in ABS with value 0
             if stype == 'FILE':
                 continue
+            # weak undefined resolves to 0 by design (e.g. newlib-nano's __sf)
+            if bind == 'WEAK' and ndx == 'UND':
+                continue
             if ndx == 'UND' or (ndx == 'ABS' and value == '00000000'):
                 # Filter out linker-internal symbols
                 if not is_linker_internal_symbol(name):

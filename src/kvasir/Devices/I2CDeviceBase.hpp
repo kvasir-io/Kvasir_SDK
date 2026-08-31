@@ -9,7 +9,21 @@
 
 namespace Kvasir {
 
-template<typename I2C, typename Clock, typename Derived, std::size_t ErrorTreshold = 5>
+/// Watchdog tuning for I2CDeviceBase; override by passing a struct with the same members.
+struct I2CDeviceDefaults {
+    /// Time after which an in-flight transfer is treated as lost and the device is reset.
+    static constexpr auto inFlightTimeout = std::chrono::seconds{2};
+
+    /// Repeat the timeout warning every N consecutive timeouts; 0 logs only the first of
+    /// each episode.
+    static constexpr std::uint32_t timeoutLogInterval = 0;
+};
+
+template<typename I2C,
+         typename Clock,
+         typename Derived,
+         std::size_t ErrorTreshold = 5,
+         typename Config           = I2CDeviceDefaults>
 struct I2CDeviceBase {
     using tp = typename Clock::time_point;
 
@@ -40,11 +54,9 @@ struct I2CDeviceBase {
 
     void handler() {
         if(inFlight_) {
-            if(Clock::now() - inFlightSince_ > kInFlightTimeout) {
-                UC_LOG_W("i2c device {:#04x} in-flight watchdog fired (>{}) -- forcing reset",
-                         i2caddress_,
-                         kInFlightTimeout);
-                inFlight_  = false;
+            if(Clock::now() - inFlightSince_ > Config::inFlightTimeout) {
+                inFlight_ = false;
+                onInFlightTimeout_();
                 auto& self = static_cast<Derived&>(*this);
                 self.resetLogic();
                 resetErrorCount();
@@ -65,11 +77,24 @@ struct I2CDeviceBase {
 private:
     std::uint8_t const i2caddress_;
 
-    static constexpr auto kInFlightTimeout = std::chrono::seconds{2};
+    std::atomic<bool>          inFlight_{false};
+    tp                         inFlightSince_{};
+    std::atomic<std::size_t>   error_count_{};
+    std::atomic<std::uint32_t> consecutiveTimeouts_{};
 
-    std::atomic<bool>        inFlight_{false};
-    tp                       inFlightSince_{};
-    std::atomic<std::size_t> error_count_{};
+    /// A wedged device would otherwise warn every inFlightTimeout, so only the first
+    /// timeout of an episode is logged (plus every timeoutLogInterval-th, if enabled).
+    void onInFlightTimeout_() {
+        auto const consecutive = consecutiveTimeouts_.fetch_add(1) + 1;
+        bool const remind
+          = Config::timeoutLogInterval != 0 && consecutive % Config::timeoutLogInterval == 0;
+        if(consecutive == 1 || remind) {
+            UC_LOG_W("i2c device {:#04x} in-flight watchdog fired (>{}) -- reset, {} in a row",
+                     i2caddress_,
+                     Config::inFlightTimeout,
+                     consecutive);
+        }
+    }
 
     template<typename F>
     bool submitQueued_(std::span<std::byte const> sendData,
@@ -84,6 +109,12 @@ private:
         req.callback    = [this, func = std::forward<F>(f)](typename I2C::Result r) {
             if(r == I2C::Result::failed || r == I2C::Result::notAcknowledged) {
                 incrementErrorCount();
+            }
+            if(auto const timeouts = consecutiveTimeouts_.load(); timeouts != 0) {
+                UC_LOG_I("i2c device {:#04x} answering again after {} in-flight timeout(s)",
+                         i2caddress_,
+                         timeouts);
+                consecutiveTimeouts_ = 0;
             }
             inFlight_ = false;
             func(r);

@@ -53,8 +53,9 @@ set(optimize_specs_debug "nano")
 set(common_warning_flags
     -Wall
     -Wextra
-    -pedantic
-    # -pedantic-errors
+    # errors, matching arm_clang.cmake: the ISO-conformance issues this catches (the extern "C" main declaration, the
+    # __STDC_HOSTED__ redefine this flag was once disabled for) must fail the build, not scroll past as warnings
+    -pedantic-errors
     -Wdouble-promotion
     -Wcast-align
     -Wcast-qual
@@ -82,7 +83,11 @@ if("${CPPLIB}" STREQUAL "libc++")
     list(APPEND sanitize_option -fno-sanitize=null,nonnull-attribute,returns-nonnull-attribute)
 endif()
 
-set(profile_flags -U__STDC_HOSTED__ -D__STDC_HOSTED__=1)
+# libstdc++ needs __STDC_HOSTED__=1; drop -ffreestanding instead of redefining the built-in macro, which gcc diagnoses
+# with an un-silenceable warning (fatal under -Werror)
+list(REMOVE_ITEM arm_compiler_common_flags -ffreestanding)
+
+set(profile_flags)
 
 # vendored libc++ / llvm-libc on gcc: same configuration as arm_clang.cmake, the toolchain's own headers hidden with
 # -nostdinc++/-nostdinc; only libgcc still comes from the toolchain
