@@ -165,4 +165,49 @@ inline bool __atomic_compare_exchange_c(size_t         size,
                                            int            memorder) {
     ClangAtomic::atomic_store_nonblock<unsigned>(ptr, val, memorder);
 }
+
+// The fetch-and-op operations a core without exclusive accesses (the Cortex-M0+: no
+// ldrex/strex) cannot do inline: clang calls these for every std::atomic fetch_add,
+// fetch_sub, fetch_and, fetch_or and fetch_xor there (exchange, compare_exchange and the
+// 8-byte fetch_add are in arm_Common_atomic.hpp). On the M33 they are inline instructions
+// and these are never referenced. Each one runs under the shim's lock.
+#define KVASIR_ATOMIC_FETCH_OP(NAME, N, T, OP)                                           \
+    [[gnu::used]] inline T __atomic_fetch_##NAME##_##N(void volatile* ptr, T val, int) { \
+        CommonAtomic::ShimLock guard;                                                    \
+        auto* const            p   = reinterpret_cast<T volatile*>(ptr);                 \
+        T const                old = *p;                                                 \
+        *p                         = static_cast<T>(old OP val);                         \
+        return old;                                                                      \
+    }
+#define KVASIR_ATOMIC_FETCH_OPS(N, T)    \
+    KVASIR_ATOMIC_FETCH_OP(add, N, T, +) \
+    KVASIR_ATOMIC_FETCH_OP(sub, N, T, -) \
+    KVASIR_ATOMIC_FETCH_OP(and, N, T, &) \
+    KVASIR_ATOMIC_FETCH_OP(or, N, T, |)  \
+    KVASIR_ATOMIC_FETCH_OP(xor, N, T, ^)
+
+KVASIR_ATOMIC_FETCH_OPS(1,
+                        unsigned char)
+KVASIR_ATOMIC_FETCH_OPS(2,
+                        unsigned short)
+KVASIR_ATOMIC_FETCH_OPS(4,
+                        unsigned)
+KVASIR_ATOMIC_FETCH_OP(sub,
+                       8,
+                       unsigned long long,
+                       -)
+KVASIR_ATOMIC_FETCH_OP(and,
+                       8,
+                       unsigned long long,
+                         &)
+KVASIR_ATOMIC_FETCH_OP(or,
+                       8,
+                       unsigned long long,
+                       |)
+KVASIR_ATOMIC_FETCH_OP(xor,
+                       8,
+                       unsigned long long,
+                       ^)
+#undef KVASIR_ATOMIC_FETCH_OPS
+#undef KVASIR_ATOMIC_FETCH_OP
 }

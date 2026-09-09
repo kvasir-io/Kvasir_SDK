@@ -2,6 +2,7 @@
 #include "kvasir/Mpl/Algorithm.hpp"
 
 #include <bit>
+#include <cstddef>
 
 namespace Kvasir { namespace Register {
 
@@ -39,6 +40,8 @@ namespace Kvasir { namespace Register {
         using type    = Address<A, WriteIgnoredIfZeroMask, WriteIgnoredIfOneMask, TRegType, TMode>;
         using RegType = TRegType;
         static constexpr unsigned value = A;
+        static_assert(A % sizeof(TRegType) == 0,
+                      "register address is not aligned to the register's width");
     };
 
     // write a compile time known value
@@ -124,6 +127,11 @@ namespace Kvasir { namespace Register {
         using DataType             = TFieldType;
         using Access               = TAccess;
         static constexpr auto Mask = TMask;
+        static_assert(TMask != 0,
+                      "a FieldLocation needs at least one bit");
+        static_assert(static_cast<std::size_t>(std::bit_width(TMask))
+                        <= sizeof(typename TAddress::RegType) * 8,
+                      "the field's mask has bits beyond the register's width");
     };
 
     namespace Detail {
@@ -131,6 +139,17 @@ namespace Kvasir { namespace Register {
 
         constexpr unsigned positionOfFirstSetBit(unsigned in) {
             return unsigned(std::countr_zero(in));
+        }
+
+        // The two FieldLocation/Address sanity checks as predicates, for the tests.
+        constexpr bool maskFitsRegister(unsigned    mask,
+                                        std::size_t registerBytes) {
+            return mask != 0 && static_cast<std::size_t>(std::bit_width(mask)) <= registerBytes * 8;
+        }
+
+        constexpr bool addressAligned(unsigned    address,
+                                      std::size_t registerBytes) {
+            return address % registerBytes == 0;
         }
     }   // namespace Detail
 

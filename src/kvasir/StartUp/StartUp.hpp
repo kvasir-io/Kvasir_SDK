@@ -7,6 +7,8 @@
 #include "kvasir/Register/Register.hpp"
 #include "kvasir/StartUp/IsrProfiler.hpp"
 #include "kvasir/StartUp/LinkerSymbols.hpp"
+#include "kvasir/StartUp/ListRules.hpp"
+#include "kvasir/StartUp/Resources.hpp"
 #include "kvasir/Util/attributes.hpp"
 #include "kvasir/Util/ubsan.hpp"
 #include "uc_log/uc_log.hpp"
@@ -14,6 +16,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstring>
+#include <string_view>
 
 // declaring and calling main is ill-formed in ISO C++ but intended here; gcc diagnoses it under -Wpedantic
 #pragma GCC diagnostic push
@@ -131,6 +134,22 @@ namespace Kvasir { namespace Startup {
         template<typename T, typename = void, typename = void>
         struct ExtractIsr : br::list<> {};
 
+        // Two peripherals on one vector: CompileIsrPointerList takes the first match for
+        // an index, so the second ISR would silently never run. Two DmaBase instances
+        // without an interruptInstance each are the way to get here.
+        template<typename I,
+                 typename... Is>
+        constexpr int isrsOnIndex(br::list<Is...>) {
+            return (0 + ... + int{std::is_same_v<typename I::IType, typename Is::IType>});
+        }
+
+        template<typename List>
+        struct UniqueIsrIndexes;
+
+        template<typename... Is>
+        struct UniqueIsrIndexes<br::list<Is...>>
+          : Bool<((isrsOnIndex<Is>(br::list<Is...>{}) == 1) && ...)> {};
+
         template<typename T, typename U>
         struct ExtractIsr<T, U, VoidT<typename T::Isr>> : T::Isr {};
 
@@ -138,18 +157,235 @@ namespace Kvasir { namespace Startup {
         struct ExtractIsr<T, void, VoidT<decltype(T::isr)>>
           : std::remove_const_t<decltype(T::isr)> {};
 
+        template<typename List>
+        struct IsrsOf;
+
+        template<typename... Ts>
+        struct IsrsOf<br::list<Ts...>> {
+            using type = br::flatten<br::list<typename ExtractIsr<Ts>::type...>>;
+        };
+
+        // A vector installed in both cores' tables. Most interrupt lines are chip-wide and
+        // reach both NVICs: enable one on both cores and the ISR runs on both cores at
+        // once, each clearing the flag the other was about to look at. The lines that are
+        // legitimately per core (SIO FIFO and doorbells, IO_BANK0, the core exceptions) are
+        // the chip's `InterruptOffsetTraits::perCore`; a chip that lists none has none.
+        template<typename Traits = Nvic::InterruptOffsetTraits<void>>
+        constexpr bool isPerCoreVector(int index) {
+            if(index < 0) { return true; }
+            if constexpr(requires { Traits::perCore; }) {
+                for(auto const i : Traits::perCore) {
+                    if(i == index) { return true; }
+                }
+            }
+            return false;
+        }
+
+        template<typename I,
+                 typename... Is>
+        constexpr bool vectorAlsoIn(br::list<Is...>) {
+            return (false || ... || std::is_same_v<typename I::IType, typename Is::IType>);
+        }
+
+        template<typename A, typename B>
+        struct VectorsDisjoint;
+
+        template<typename... As, typename B>
+        struct VectorsDisjoint<br::list<As...>, B>
+          : Bool<((isPerCoreVector<>(As::IType::value) || !vectorAlsoIn<As>(B{})) && ...)> {};
+
     }   // namespace Detail
+
+    // The vector table for a given initial stack pointer and reset entry, followed by every
+    // ISR the peripherals claim. The boot core uses the linker's stack and ResetISR; a
+    // SecondaryCore its own stack and entry trampoline.
+    template<Nvic::IsrFunctionPointer StackEnd, Nvic::IsrFunctionPointer Reset, typename... Ts>
+    struct GetIsrPointersFor
+      : Detail::CompileIsrPointerList<
+          Nvic::InterruptOffsetTraits<void>::begin,
+          brigand::list<Nvic::Isr<StackEnd, Nvic::Index<0>>, Nvic::Isr<Reset, Nvic::Index<0>>>,
+          brigand::flatten<brigand::list<typename Detail::ExtractIsr<Ts>::type...>>> {
+        static_assert(
+          Detail::UniqueIsrIndexes<
+            brigand::flatten<brigand::list<typename Detail::ExtractIsr<Ts>::type...>>>::value,
+          "two peripherals in one Startup list claim the same interrupt vector: only the "
+          "first would ever run (two DmaBase instances need an interruptInstance each)");
+        static_assert(
+          ListRules::IsrIndexesValid<
+            Nvic::InterruptOffsetTraits<void>,
+            brigand::flatten<brigand::list<typename Detail::ExtractIsr<Ts>::type...>>>::value,
+          "a peripheral installs an Isr on an index the chip's vector table does not have "
+          "(outside InterruptOffsetTraits::begin..end, or a disabled index): it would be "
+          "silently absent from the table");
+    };
+
+    template<Nvic::IsrFunctionPointer StackEnd, Nvic::IsrFunctionPointer Reset, typename... Ts>
+    using GetIsrPointersForT = typename GetIsrPointersFor<StackEnd, Reset, Ts...>::type;
 
     template<typename... Ts>
     struct GetIsrPointers
-      : Detail::CompileIsrPointerList<
-          Nvic::InterruptOffsetTraits<void>::begin,
-          brigand::list<Nvic::Isr<std::addressof(_LINKER_stack_end_), Nvic::Index<0>>,
-                        Nvic::Isr<ResetISR, Nvic::Index<0>>>,
-          brigand::flatten<brigand::list<typename Detail::ExtractIsr<Ts>::type...>>> {};
+      : GetIsrPointersFor<std::addressof(_LINKER_stack_end_), ResetISR, Ts...> {};
 
     template<typename... Ts>
     using GetIsrPointersT = typename GetIsrPointers<Ts...>::type;
+
+    // Defined in SecondaryCore.hpp, included at the end of this file. Declared here so the
+    // guards in Startup can recognise one in a peripheral list.
+    template<void (*Main)(), typename... Peripherals>
+    struct SecondaryCore;
+
+    namespace Detail {
+        template<typename T>
+        struct IsSecondaryCore : std::false_type {};
+
+        template<void (*Main)(), typename... Ps>
+        struct IsSecondaryCore<SecondaryCore<Main, Ps...>> : std::true_type {};
+
+        template<typename T>
+        struct SecondaryPeripherals {
+            using type = brigand::list<>;
+        };
+
+        template<void (*Main)(), typename... Ps>
+        struct SecondaryPeripherals<SecondaryCore<Main, Ps...>> {
+            using type = brigand::list<Ps...>;
+        };
+
+        template<typename List, typename P>
+        struct Contains;
+
+        template<typename... Us, typename P>
+        struct Contains<brigand::list<Us...>, P> : Bool<(std::is_same_v<Us, P> || ...)> {};
+
+        template<typename Ps, typename All>
+        struct Disjoint;
+
+        template<typename... Ps, typename All>
+        struct Disjoint<brigand::list<Ps...>, All> : Bool<(!Contains<All, Ps>::value && ...)> {};
+
+        // A peripheral in a SecondaryCore's list must not also be in the primary list: its
+        // interrupt would be enabled on both cores, and its init steps run twice.
+        template<typename... Ts>
+        struct NoPeripheralOnBothCores
+          : Bool<(
+              (!IsSecondaryCore<Ts>::value
+               || Disjoint<typename SecondaryPeripherals<Ts>::type, brigand::list<Ts...>>::value)
+              && ...)> {};
+
+        // The per-core peripheral lists the resource check runs over, core 0's first and
+        // then one per SecondaryCore, in list order. The list index is the core number,
+        // which is what rule 5 (startupCore) compares against - so entries that are not a
+        // SecondaryCore contribute no list at all, rather than an empty one that would
+        // push core 1's list to some other index.
+        template<typename Out, typename... Ts>
+        struct CoreListsImpl;
+
+        template<typename... Os>
+        struct CoreListsImpl<brigand::list<Os...>> {
+            using type = brigand::list<Os...>;
+        };
+
+        template<typename... Os, typename T, typename... Ts>
+        struct CoreListsImpl<brigand::list<Os...>, T, Ts...>
+          : CoreListsImpl<
+              std::conditional_t<IsSecondaryCore<T>::value,
+                                 brigand::list<Os..., typename SecondaryPeripherals<T>::type>,
+                                 brigand::list<Os...>>,
+              Ts...> {};
+
+        template<typename Primary, typename... Ts>
+        using CoreLists = typename CoreListsImpl<brigand::list<Primary>, Ts...>::type;
+
+        template<typename Lists>
+        struct ResourceCheckOver;
+
+        template<typename... Ls>
+        struct ResourceCheckOver<brigand::list<Ls...>> {
+            using type = ResourceCheck<Ls...>;
+        };
+
+        // The interrupt rules' reports (Diagnostics::Report, Resources.hpp): each names the
+        // index in its instantiation. `Where` is the list's marker type, Startup or a
+        // SecondaryCore, so the trail also says which core.
+        struct VectorTwice {
+            static constexpr std::string_view message
+              = "two peripherals in one Startup list claim the same interrupt vector: only "
+                "the first would ever run (two DmaBase instances need an interruptInstance "
+                "each)";
+        };
+
+        struct VectorOnBothCores {
+            static constexpr std::string_view message
+              = "an interrupt is installed in both cores' vector tables: the ISR would run "
+                "on both cores at once (only the SIO, IO_BANK0 and core-exception vectors "
+                "are per core): list the peripheral on one core";
+        };
+
+        struct VectorOutOfTable {
+            static constexpr std::string_view message
+              = "a peripheral installs an Isr on an index the chip's vector table does not "
+                "have (outside InterruptOffsetTraits::begin..end, or a disabled index): it "
+                "would be silently absent from the table";
+        };
+
+        struct EnabledUnhandled {
+            static constexpr std::string_view message
+              = "an init step enables an interrupt line for which nothing in this core's "
+                "list installs an Isr: the line would fire into the unhandled-interrupt "
+                "handler at its first event (a driver whose Isr alias was dropped, or an "
+                "interruptEnable copied from another driver)";
+        };
+
+        template<typename Rule, typename Where, typename Indexes>
+        struct ReportIndexes;
+
+        template<typename Rule, typename Where, typename... Is>
+        struct ReportIndexes<Rule, Where, brigand::list<Is...>> {
+            static constexpr bool value
+              = ((sizeof(Diagnostics::Report<Rule, Where, Is>) > 0) && ...);
+        };
+
+        // The indexes core 0 and a SecondaryCore both install, chip-wide ones only.
+        template<typename Primary, typename Secondary>
+        struct SharedVectorIndexes;
+
+        template<typename... As, typename Secondary>
+        struct SharedVectorIndexes<brigand::list<As...>, Secondary> {
+            using type = brigand::flatten<brigand::list<ListRules::Detail::IndexIf<
+              (!isPerCoreVector<>(As::IType::value) && vectorAlsoIn<As>(Secondary{})),
+              As::IType::value>...>>;
+        };
+
+        // The list-level interrupt checks with their reports, for one core's list.
+        template<typename Where, typename List>
+        struct InterruptReports {
+            using Isrs    = typename IsrsOf<List>::type;
+            using Enabled = typename ListRules::EnabledInterruptsIn<List>::type;
+
+            static constexpr bool value
+              = ReportIndexes<VectorTwice,
+                              Where,
+                              typename ListRules::DuplicateIsrIndexes<Isrs>::type>::value
+             && ReportIndexes<
+                  VectorOutOfTable,
+                  Where,
+                  typename ListRules::InvalidIsrIndexes<Nvic::InterruptOffsetTraits<void>,
+                                                        Isrs>::type>::value
+             && ReportIndexes<EnabledUnhandled,
+                              Where,
+                              typename ListRules::UnhandledIndexes<Enabled, Isrs>::type>::value;
+        };
+
+        // Core 0's vectors against every SecondaryCore's.
+        template<typename Primary, typename... Ts>
+        struct NoVectorOnBothCores
+          : Bool<((!IsSecondaryCore<Ts>::value
+                   || VectorsDisjoint<
+                     typename IsrsOf<Primary>::type,
+                     typename IsrsOf<typename SecondaryPeripherals<Ts>::type>::type>::value)
+                  && ...)> {};
+
+    }   // namespace Detail
 
     template<typename... Ts>
     struct GetEarlyInit {
@@ -225,6 +461,19 @@ namespace Kvasir { namespace Startup {
         std::array<Kvasir::Nvic::IsrFunctionPointer, sizeof...(Ts)> data{Ts::value...};
     };
 
+    // A vector table with the alignment VTOR demands: the next power of two at or above the
+    // table's size. Used for a SecondaryCore's table, which lives at an arbitrary address;
+    // the boot core's sits at the start of flash and is aligned by construction.
+    namespace Detail {
+        constexpr std::size_t vectorTableAlignment(std::size_t entries) {
+            std::size_t alignment = 128;
+            while(alignment < entries * sizeof(Kvasir::Nvic::IsrFunctionPointer)) {
+                alignment *= 2;
+            }
+            return alignment;
+        }
+    }   // namespace Detail
+
     template<typename T>
     struct has_runtimeInit {
         template<typename U>
@@ -278,6 +527,22 @@ namespace Kvasir { namespace Startup {
     void callRuntimeInits() {
         (callRuntimeInit<Ts>(), ...);
     }
+
+    namespace Detail {
+        // runtimeInits run in list order and a SecondaryCore's launches the other core, so
+        // anything with a runtimeInit after it would run concurrently with that core's main.
+        template<typename... Ts>
+        constexpr bool noRuntimeInitAfterSecondaryCore() {
+            constexpr std::array<bool, sizeof...(Ts)> secondary{IsSecondaryCore<Ts>::value...};
+            constexpr std::array<bool, sizeof...(Ts)> runtime{has_runtimeInit<Ts>::value...};
+            bool                                      launched = false;
+            for(std::size_t i = 0; i < sizeof...(Ts); ++i) {
+                if(launched && runtime[i]) { return false; }
+                if(secondary[i]) { launched = true; }
+            }
+            return true;
+        }
+    }   // namespace Detail
 
     [[gnu::always_inline]] inline void initMemory() {
         auto data_start = std::addressof(_LINKER_data_start_);
@@ -372,14 +637,121 @@ namespace Kvasir { namespace Startup {
           typename TransformIsrList<
             Policy,
             TimeSource,
-            brigand::flatten<brigand::list<typename Detail::ExtractIsr<Ts>::type...>>>::type> {};
+            brigand::flatten<brigand::list<typename Detail::ExtractIsr<Ts>::type...>>>::type> {
+        static_assert(
+          Detail::UniqueIsrIndexes<
+            brigand::flatten<brigand::list<typename Detail::ExtractIsr<Ts>::type...>>>::value,
+          "two peripherals in one Startup list claim the same interrupt vector: only the "
+          "first would ever run (two DmaBase instances need an interruptInstance each)");
+        static_assert(
+          ListRules::IsrIndexesValid<
+            Nvic::InterruptOffsetTraits<void>,
+            brigand::flatten<brigand::list<typename Detail::ExtractIsr<Ts>::type...>>>::value,
+          "a peripheral installs an Isr on an index the chip's vector table does not have "
+          "(outside InterruptOffsetTraits::begin..end, or a disabled index): it would be "
+          "silently absent from the table");
+    };
 
     template<typename Policy, typename TimeSource, typename... Ts>
     using GetIsrPointersWithProfilingT =
       typename GetIsrPointersWithProfiling<Policy, TimeSource, Ts...>::type;
 
+    namespace Detail {
+        template<typename Primary, typename... Ts>
+        struct BothCoresReports {
+            static constexpr bool value
+              = ((!IsSecondaryCore<Ts>::value
+                  || ReportIndexes<
+                    VectorOnBothCores,
+                    Ts,
+                    typename SharedVectorIndexes<
+                      typename IsrsOf<Primary>::type,
+                      typename IsrsOf<typename SecondaryPeripherals<Ts>::type>::type>::type>::value)
+                 && ...);
+        };
+    }   // namespace Detail
+
     template<typename ClockSettings, typename... Peripherals>
     struct Startup {
+        // The list's shape (ListRules.hpp), before anything reads it.
+        static_assert(ListRules::NoDuplicateEntry<brigand::list<Peripherals...>>::value,
+                      "a peripheral is listed twice in one Startup list: its init steps would "
+                      "run twice");
+        static_assert(
+          ListRules::AllArePeripherals<Detail::IsSecondaryCore,
+                                       brigand::list<Peripherals...>>::value,
+          "a type in the Startup list is not a peripheral (no init step, Isr, runtime hook, "
+          "Provides/Claims or SecondaryCore): a driver's Config listed instead of the driver, "
+          "or a typo'd alias - it would contribute nothing");
+        static_assert(ListRules::AtMostOneSecondary<Detail::IsSecondaryCore,
+                                                    brigand::list<Peripherals...>>::value,
+                      "two SecondaryCores in one Startup list: the chip has one other core");
+        static_assert(ListRules::NoLaunchTimeoutIn<brigand::list<Peripherals...>>::value,
+                      "a LaunchTimeout in the primary Startup list is ignored: it belongs in the "
+                      "SecondaryCore's list whose launch it bounds");
+        static_assert(ListRules::NoClockSettingsIn<brigand::list<Peripherals...>>::value,
+                      "a ClockSettings among the peripherals: its clock init never runs there "
+                      "(Startup's first argument is the one that does)");
+
+        // Resources (Resources.hpp): what each peripheral provides and claims, checked over
+        // this list and every SecondaryCore's list together. ClockSettings is in core 0's
+        // list so it can provide the clock tree the drivers claim.
+        using Resources = typename Detail::ResourceCheckOver<
+          Detail::CoreLists<brigand::list<ClockSettings, Peripherals...>, Peripherals...>>::type;
+        // The resource rules, reported per (peripheral, resource) - Diagnostics in
+        // Resources.hpp; the plain asserts after it only fire if no report did.
+        static_assert(Diagnostics::Diagnose<Resources>::value);
+        static_assert(Resources::dependenciesListed,
+                      "a peripheral needs another one listed (on core N, or in its own list) "
+                      "that is not: ClockSync needs its Reference in core 0's list and its "
+                      "Target in its own, LaunchTimeout its clock in core 0's");
+        static_assert(
+          ListRules::DependenciesPrecedeLaunch<Detail::IsSecondaryCore,
+                                               Detail::SecondaryPeripherals,
+                                               brigand::list<Peripherals...>>::value,
+          "a SecondaryCore's peripheral needs a core 0 peripheral whose init has not run by "
+          "the launch: list it before the SecondaryCore (ClockSync's Reference, "
+          "LaunchTimeout's clock)");
+        static_assert(Resources::noDoubleClaim,
+                      "a hardware resource is claimed by two peripherals (see the Report above)");
+        static_assert(Resources::noDoubleProvide,
+                      "a hardware resource is provided by two peripherals (see the Report above)");
+        static_assert(Resources::claimsProvided,
+                      "a peripheral claims a hardware resource nothing provides (see the Report "
+                      "above)");
+        static_assert(Resources::claimsLocal,
+                      "a peripheral claims a hardware resource the other core's list provides "
+                      "(see the Report above)");
+        static_assert(Resources::coreAffinityHonoured,
+                      "a peripheral that belongs to one core (its startupCore) is listed for "
+                      "the other (see the Report above)");
+
+        // The interrupt rules, reported per index (Detail::InterruptReports): a failure
+        // names the index and the list in the instantiation trail. The plain asserts after
+        // them are the same rules and only fire if a report did not.
+        static_assert(Detail::InterruptReports<Startup,
+                                               brigand::list<Peripherals...>>::value);
+        static_assert(
+          ListRules::EnabledLinesHandled<
+            typename ListRules::EnabledInterruptsIn<brigand::list<Peripherals...>>::type,
+            typename Detail::IsrsOf<brigand::list<Peripherals...>>::type>::value,
+          "an init step enables an interrupt line for which nothing in this core's Startup "
+          "list installs an Isr (see the Report above for the index)");
+
+        static_assert(
+          Detail::NoPeripheralOnBothCores<Peripherals...>::value,
+          "a peripheral is listed for both cores: it belongs in exactly one Startup list");
+        static_assert(Detail::noRuntimeInitAfterSecondaryCore<Peripherals...>(),
+                      "nothing with a runtimeInit may follow a SecondaryCore: it would run "
+                      "concurrently with the other core's main - list the SecondaryCore last");
+
+        static_assert(Detail::BothCoresReports<brigand::list<Peripherals...>,
+                                               Peripherals...>::value);
+        static_assert(Detail::NoVectorOnBothCores<brigand::list<Peripherals...>,
+                                                  Peripherals...>::value,
+                      "an interrupt is installed in both cores' vector tables (see the Report "
+                      "above for the index): list the peripheral on one core");
+
         [[gnu::used, gnu::section(".core_vectors")]] static constexpr Kvasir::Startup::
           NvicVectorTable<Kvasir::Startup::GetIsrPointersT<Peripherals...>> nvicIsrVectors{};
 
@@ -692,3 +1064,5 @@ void operator delete(void*) noexcept {}
 
 void operator delete(void*,
                      std::size_t) noexcept {}
+
+#include "kvasir/StartUp/SecondaryCore.hpp"

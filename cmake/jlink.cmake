@@ -9,8 +9,8 @@ function(target_add_flash_jlink target)
     if(POLICY CMP0174)
         cmake_policy(SET CMP0174 NEW)
     endif()
-    cmake_parse_arguments(PARSE_ARGV 1 PARSED_ARGS "" "TARGET_MPU;SWD_SPEED;JLINK_IP;SUFFIX;AUXILIARY_TARGETS_PREFIX"
-                          "DEPENDS")
+    cmake_parse_arguments(PARSE_ARGV 1 PARSED_ARGS ""
+                          "TARGET_MPU;SWD_SPEED;JLINK_IP;JLINK_PROBE;SUFFIX;AUXILIARY_TARGETS_PREFIX" "DEPENDS")
 
     if(PARSED_ARGS_UNPARSED_ARGUMENTS)
         message(FATAL_ERROR "unknown argument ${PARSED_ARGS_UNPARSED_ARGUMENTS}")
@@ -36,8 +36,16 @@ function(target_add_flash_jlink target)
         return()
     endif()
 
+    # Which J-Link on USB. The commander's USB command takes a serial number or a nickname (it resolves the nickname
+    # itself; quoted, or a nickname with a space is cut at the space and the connect fails); a bare USB with two probes
+    # on the bus fails to connect, and -USB on the command line clashes with the USB line in the script, so the name
+    # goes into the script.
     if(NOT PARSED_ARGS_JLINK_IP OR "${PARSED_ARGS_JLINK_IP}" STREQUAL "")
-        set(jlink_connect_command "USB\nconnect\nr\nh\n")
+        if(PARSED_ARGS_JLINK_PROBE AND NOT PARSED_ARGS_JLINK_PROBE STREQUAL "")
+            set(jlink_connect_command "USB \"${PARSED_ARGS_JLINK_PROBE}\"\nconnect\nr\nh\n")
+        else()
+            set(jlink_connect_command "USB\nconnect\nr\nh\n")
+        endif()
     else()
         set(jlink_connect_command "IP ${PARSED_ARGS_JLINK_IP}\nconnect\nr\nh\n")
     endif()

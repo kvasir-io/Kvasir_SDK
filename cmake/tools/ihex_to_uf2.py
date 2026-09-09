@@ -31,49 +31,44 @@ class IntelHexParser:
                 elif record_type == 0x04:  # Extended Linear Address
                     extended_addr = int(line[9:13], 16) << 16
 
-    def segments(self):
-        """Return list of (start, end) tuples for contiguous memory regions (end is exclusive)."""
-        if not self.data:
-            return []
-        addresses = sorted(self.data.keys())
-        segments = []
-        seg_start = addresses[0]
-        seg_end = seg_start
-        for addr in addresses[1:]:
-            if addr == seg_end + 1:
-                seg_end = addr
-            else:
-                segments.append((seg_start, seg_end + 1))
-                seg_start = addr
-                seg_end = addr
-        segments.append((seg_start, seg_end + 1))
-        return segments
 
-    def tobinarray(self, start, end):
-        """Return bytes for address range [start, end) (end exclusive)."""
-        return bytes(self.data[a] for a in range(start, end))
+PAGE_SIZE = 256
 
 
-def convert_to_uf2(start, data, familyid):
+def pages_of(data):
+    """Group address -> byte onto a 256-byte page grid.
+
+    Returns a sorted list of (page_address, 256 bytes). Bytes the input does not
+    cover are 0x00, so a gap between two sections (the linker's alignment padding
+    between .vectors and .text, for instance) is filled rather than left to start a
+    second, unaligned block run. Both picotool and the RP2 bootrom require every
+    block's target address to be page aligned and reject or drop the rest.
+    """
+    pages = {}
+    for addr, byte in data.items():
+        page = addr & ~(PAGE_SIZE - 1)
+        buf = pages.get(page)
+        if buf is None:
+            buf = pages[page] = bytearray(PAGE_SIZE)
+        buf[addr - page] = byte
+    return sorted(pages.items())
+
+
+def convert_to_uf2(pages, familyid):
     UF2_MAGIC_START0 = 0x0A324655
     UF2_MAGIC_START1 = 0x9E5D5157
     UF2_MAGIC_END = 0x0AB16F30
+    FLAG_FAMILY_ID_PRESENT = 0x2000
 
-    datapadding = b""
-    while len(datapadding) < 512 - 256 - 32 - 4:
-        datapadding += b"\x00\x00\x00\x00"
-    numblocks = (len(data) + 255) // 256
+    datapadding = b"\x00" * (512 - PAGE_SIZE - 32 - 4)
+    numblocks = len(pages)
     outp = []
-    for blockno in range(numblocks):
-        ptr = 256 * blockno
-        chunk = data[ptr:ptr + 256]
-        flags = 0x2000
+    for blockno, (page, chunk) in enumerate(pages):
         hd = struct.pack(b"<IIIIIIII",
                          UF2_MAGIC_START0, UF2_MAGIC_START1,
-                         flags, ptr + start, 256, blockno, numblocks, familyid)
-        while len(chunk) < 256:
-            chunk += b"\x00"
-        block = hd + chunk + datapadding + struct.pack(b"<I", UF2_MAGIC_END)
+                         FLAG_FAMILY_ID_PRESENT, page, PAGE_SIZE, blockno, numblocks, familyid)
+        block = hd + bytes(chunk) + datapadding + \
+            struct.pack(b"<I", UF2_MAGIC_END)
         assert len(block) == 512
         outp.append(block)
     return b"".join(outp)
@@ -86,6 +81,4 @@ familyid = int(sys.argv[3], base=0)
 ih = IntelHexParser(in_filename)
 
 with open(out_filename, "wb") as f:
-    for s in ih.segments():
-        f.write(convert_to_uf2(s[0], bytearray(
-            ih.tobinarray(start=s[0], end=s[1])), familyid))
+    f.write(convert_to_uf2(pages_of(ih.data), familyid))

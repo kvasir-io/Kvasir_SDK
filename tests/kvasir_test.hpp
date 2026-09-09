@@ -1,21 +1,22 @@
-// Shared test infrastructure for the Kvasir register tests.
+// Register mock test infrastructure.
 //
 // Provides the Kvasir::Test::read/write mock (enabled via KVASIR_REGISTER_MOCK, see
-// src/kvasir/Register/Utility.hpp), a Recorder that captures every register access and
-// injects read values, and a small CHECK based test harness in the style of uc_log/tests.
+// src/kvasir/Register/Utility.hpp) and a Recorder that captures every register access and
+// injects read values. The CHECK based harness itself lives in test_harness.hpp; including
+// this header additionally routes failure output through the recorded action log.
 #pragma once
 
 #ifndef KVASIR_REGISTER_MOCK
     #error "the Kvasir register tests must be compiled with KVASIR_REGISTER_MOCK defined"
 #endif
 
+#include "test_harness.hpp"
+
 #include <cstdint>
 #include <deque>
 #include <map>
 #include <print>
 #include <source_location>
-#include <string_view>
-#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -92,9 +93,6 @@ namespace Kvasir { namespace Test {
         recorder.write<TRegType, Address>(v);
     }
 
-    inline int              failures = 0;
-    inline std::string_view currentTest{};
-
     inline void printAction(Recorder::Action const& action) {
         if(auto const* r = std::get_if<Recorder::Read>(&action)) {
             std::print("    Read  0x{:02X} -> 0x{:X}\n", r->address, r->value);
@@ -109,27 +107,13 @@ namespace Kvasir { namespace Test {
         for(auto const& action : recorder.actions) { printAction(action); }
     }
 
-    inline void fail(std::string_view     msg,
-                     std::source_location loc) {
-        ++failures;
-        std::print("FAIL [{}] {} ({}:{})\n", currentTest, msg, loc.file_name(), loc.line());
-        printRecordedActions();
-    }
-
-    // begin a new test case: names failure output and clears the recorder
-    inline void test(std::string_view name) {
-        currentTest = name;
-        recorder.reset();
-    }
-
-    template<typename T>
-    constexpr unsigned long long asUnsigned(T v) {
-        if constexpr(std::is_enum_v<T>) {
-            return static_cast<unsigned long long>(std::to_underlying(v));
-        } else {
-            return static_cast<unsigned long long>(v);
-        }
-    }
+    // route harness failures through the recorded action log and clear the recorder for
+    // every new test case
+    inline bool const registerMockHooksInstalled = [] {
+        failureContextPrinter = &printRecordedActions;
+        testResetHook         = [] { recorder.reset(); };
+        return true;
+    }();
 
     // launder a value through a volatile so the compiler cannot constant fold it and
     // the runtime (indexed) apply path is exercised
@@ -222,31 +206,6 @@ namespace Kvasir { namespace Test {
     }
 
 }}   // namespace Kvasir::Test
-
-#define CHECK(...)                                                               \
-    do {                                                                         \
-        if(!(__VA_ARGS__)) {                                                     \
-            ::Kvasir::Test::fail(#__VA_ARGS__, std::source_location::current()); \
-        }                                                                        \
-    } while(false)
-
-#define CHECK_EQ(a_, b_)                                                 \
-    do {                                                                 \
-        auto const checkEqA_ = ::Kvasir::Test::asUnsigned(a_);           \
-        auto const checkEqB_ = ::Kvasir::Test::asUnsigned(b_);           \
-        if(checkEqA_ != checkEqB_) {                                     \
-            ++::Kvasir::Test::failures;                                  \
-            std::print("FAIL [{}] {} == {}: 0x{:X} != 0x{:X} ({}:{})\n", \
-                       ::Kvasir::Test::currentTest,                      \
-                       #a_,                                              \
-                       #b_,                                              \
-                       checkEqA_,                                        \
-                       checkEqB_,                                        \
-                       std::source_location::current().file_name(),      \
-                       std::source_location::current().line());          \
-            ::Kvasir::Test::printRecordedActions();                      \
-        }                                                                \
-    } while(false)
 
 #include "kvasir/Register/Register.hpp"
 #include "kvasir/Register/Types.hpp"

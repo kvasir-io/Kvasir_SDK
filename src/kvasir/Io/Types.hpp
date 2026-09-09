@@ -1,5 +1,6 @@
 #pragma once
 #include "kvasir/Mpl/Types.hpp"
+#include "kvasir/StartUp/Resources.hpp"
 
 namespace Kvasir {
 namespace Io {
@@ -97,4 +98,38 @@ namespace Register {
         using type = PinLocation<Port, Pin>;
     };
 }   // namespace Register
+
+namespace Io {
+    // A GPIO as a Startup resource (kvasir/StartUp/Resources.hpp). Provided by whoever
+    // configures the pad, which the chip layer derives from the peripheral's
+    // initStepPinConfig, so nothing declares it; claimed by a driver that drives or reads a
+    // pin it does not configure (a reset line, a chip select, an interrupt input), which is
+    // how "the pin is not in HW::PinConfig" becomes a build error. Several drivers may claim
+    // one pin (an interrupt and a poll of the same input), and the pad is chip-wide, so the
+    // provider may sit in either core's list.
+    struct PinTag {
+        static constexpr bool     sharedClaim = true;
+        static constexpr bool     coreLocal   = false;
+        static constexpr unsigned keyArity    = 2;
+    };
+
+    template<int Port, int Pin>
+    using PinResource = Startup::Resource<PinTag, Port, Pin>;
+
+    namespace Detail {
+        template<typename T>
+        struct PinClaimOf {
+            using type = brigand::list<>;   // NotUsed<>, or any other non-pin: nothing
+        };
+
+        template<int Port, int Pin>
+        struct PinClaimOf<Register::PinLocation<Port, Pin>> {
+            using type = brigand::list<PinResource<Port, Pin>>;
+        };
+    }   // namespace Detail
+
+    // `using Claims = Kvasir::Io::PinClaims<CsPin, RstPin>;` in a driver that is handed pins.
+    template<typename... Pins>
+    using PinClaims = brigand::flatten<brigand::list<typename Detail::PinClaimOf<Pins>::type...>>;
+}   // namespace Io
 }   // namespace Kvasir

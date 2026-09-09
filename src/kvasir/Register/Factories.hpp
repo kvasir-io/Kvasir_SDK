@@ -19,7 +19,17 @@ namespace Kvasir { namespace Register {
                  unsigned Value>
         struct Write<FieldLocation<TAddress, Mask, Access, TFieldType>, Value>
           : Action<FieldLocation<TAddress, Mask, Access, TFieldType>,
-                   WriteLiteralAction<(Value << positionOfFirstSetBit(Mask))>> {};
+                   WriteLiteralAction<(Value << positionOfFirstSetBit(Mask))>> {
+            static_assert(IsWritable<FieldLocation<TAddress,
+                                                   Mask,
+                                                   Access,
+                                                   TFieldType>>::value,
+                          "Access violation: the FieldLocation provided is not marked as writable");
+            static_assert(literalFits(Mask,
+                                      Value),
+                          "literal does not fit the field: bits above the field's width would be "
+                          "shifted out and silently lost");
+        };
 
         template<typename TLocation, unsigned Value>
         using WriteT = typename Write<TLocation, Value>::type;
@@ -34,6 +44,11 @@ namespace Kvasir { namespace Register {
               onlyOneBitSet(Mask),
               "Register::set only works on single bits. Use Register::write to write values to "
               "wider bit fields");
+            static_assert(IsWritable<FieldLocation<TAddress,
+                                                   Mask,
+                                                   Access,
+                                                   TFieldType>>::value,
+                          "Access violation: the FieldLocation provided is not marked as writable");
         };
 
         template<typename TLocation>
@@ -49,6 +64,11 @@ namespace Kvasir { namespace Register {
               onlyOneBitSet(Mask),
               "Register::clear only works on single bits. Use Register::write to write values to "
               "wider bit fields");
+            static_assert(IsWritable<FieldLocation<TAddress,
+                                                   Mask,
+                                                   Access,
+                                                   TFieldType>>::value,
+                          "Access violation: the FieldLocation provided is not marked as writable");
         };
 
         // special case for clearing toggle bits. Writing the value back will clear these, therefore using a xor of 0
@@ -66,7 +86,10 @@ namespace Kvasir { namespace Register {
                                  Mask,
                                  Access<AT, RAT, ModifiedWriteValueType::oneToToggle>,
                                  TFieldType>,
-                   XorLiteralAction<0>> {};
+                   XorLiteralAction<0>> {
+            static_assert(accessWritable(AT),
+                          "Access violation: the FieldLocation provided is not marked as writable");
+        };
 
         template<typename TLocation>
         using ClearT = typename Clear<TLocation>::type;
@@ -81,6 +104,11 @@ namespace Kvasir { namespace Register {
             static_assert(
               onlyOneBitSet(Mask),
               "Register::reset only works on single bits that are marked as set to clear");
+            static_assert(IsWritable<FieldLocation<TAddress,
+                                                   Mask,
+                                                   Access,
+                                                   TFieldType>>::value,
+                          "Access violation: the FieldLocation provided is not marked as writable");
             static_assert(Detail::IsSetToClear<FieldLocation<TAddress,
                                                              Mask,
                                                              Access,
@@ -99,6 +127,8 @@ namespace Kvasir { namespace Register {
                                     Action<T,
                                            ReadAction>>
     read(T) {
+        static_assert(Detail::IsReadable<T>::value,
+                      "Access violation: the FieldLocation provided is not marked as readable");
         return {};
     }
 

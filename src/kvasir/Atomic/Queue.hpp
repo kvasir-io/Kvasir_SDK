@@ -18,6 +18,36 @@ namespace Kvasir { namespace Atomic {
         void operator()() {}
     };
 
+    // How a Queue orders its commit against the data it commits.
+    //
+    // SyncSignal is the original: relaxed index accesses and a compiler-only fence. Exact
+    // for one core (the producer and consumer are the same core's thread and ISR, and a
+    // core never reorders its own memory accesses against an interrupt). Free.
+    //
+    // SyncThread makes the commit a release and the peek an acquire, one dmb each on
+    // Armv8-M, so a consumer on the other core sees the data the index promises.
+    struct SyncSignal {
+        static constexpr auto load_memory_order{std::memory_order_relaxed};
+        static constexpr auto store_memory_order{std::memory_order_relaxed};
+
+        static void fence() { std::atomic_signal_fence(std::memory_order_release); }
+    };
+
+    struct SyncThread {
+        static constexpr auto load_memory_order{std::memory_order_acquire};
+        static constexpr auto store_memory_order{std::memory_order_release};
+
+        static void fence() { std::atomic_signal_fence(std::memory_order_release); }
+    };
+
+    // A multicore build (CORE1_STACK_SIZE set, KVASIR_MULTICORE defined) gets cross-core
+    // correct queues by default; a single-core build keeps its exact old code.
+#if defined(KVASIR_MULTICORE) && KVASIR_MULTICORE
+    using DefaultSync = SyncThread;
+#else
+    using DefaultSync = SyncSignal;
+#endif
+
     namespace Detail {
         using namespace MPL;
 
@@ -41,14 +71,16 @@ namespace Kvasir { namespace Atomic {
 
     }   // namespace Detail
 
-    template<typename TDataType, std::size_t Size, typename TOverflowPolicy = OverFlowPolicyAssert>
+    template<typename TDataType,
+             std::size_t Size,
+             typename TOverflowPolicy = OverFlowPolicyAssert,
+             typename TSync           = DefaultSync>
     struct Queue {
         using IndexType = Detail::GetIndexTypeT<Size>;
         static_assert(std::numeric_limits<IndexType>::max() > Size,
                       "Size to big");
-        static constexpr auto       load_memory_order{std::memory_order_relaxed};
-        static constexpr auto       store_memory_order{std::memory_order_relaxed};
-        static constexpr auto       fence_memory_order{std::memory_order_release};
+        static constexpr auto       load_memory_order{TSync::load_memory_order};
+        static constexpr auto       store_memory_order{TSync::store_memory_order};
         std::atomic<IndexType>      head_{};
         std::atomic<IndexType>      tail_{};
         std::array<TDataType, Size> data_{};
@@ -68,7 +100,7 @@ namespace Kvasir { namespace Atomic {
             auto       nextTail = next(tail);
             if(head != nextTail) {
                 data_[tail] = in;   //NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                std::atomic_signal_fence(fence_memory_order);
+                TSync::fence();
                 tail_.store(nextTail, store_memory_order);   // commit
             } else {
                 TOverflowPolicy{}();
@@ -90,7 +122,7 @@ namespace Kvasir { namespace Atomic {
                       = *begin++;   //NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
                     tail = next(tail);
                 }
-                std::atomic_signal_fence(fence_memory_order);
+                TSync::fence();
                 tail_.store(tail, store_memory_order);   // commit
             } else {
                 TOverflowPolicy{}();
@@ -102,7 +134,7 @@ namespace Kvasir { namespace Atomic {
             auto const head = head_.load(load_memory_order);
             if(head == tail) { return false; }
             out = data_[head];   //NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-            std::atomic_signal_fence(fence_memory_order);
+            TSync::fence();
             head_.store(next(head), store_memory_order);   // commit
             return true;
         }
@@ -123,7 +155,7 @@ namespace Kvasir { namespace Atomic {
                   = data_[head];   //NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
                 head = next(head);
             }
-            std::atomic_signal_fence(fence_memory_order);
+            TSync::fence();
             head_.store(head, store_memory_order);   // commit
             return true;
         }
@@ -151,6 +183,8 @@ namespace Kvasir { namespace Atomic {
 
         constexpr std::size_t max_size() const { return Size - 1; }
 
+        // Drop everything. Not concurrency-safe: for a producer or consumer that is provably
+        // stopped (a SecondaryCore's primaryPrepare()), never while both are live.
         void clear() {
             head_.store(0, store_memory_order);
             tail_.store(0, store_memory_order);

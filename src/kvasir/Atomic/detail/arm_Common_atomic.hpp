@@ -1,7 +1,19 @@
 #pragma once
 #include "core/Nvic.hpp"
 
+#if defined(KVASIR_MULTICORE) && KVASIR_MULTICORE && !defined(__ARM_ARCH_8M_MAIN__)
+    // A core without exclusive accesses cannot build the shim's cross-core lock itself: the
+    // chip provides Kvasir::Atomic::CrossCoreLock (acquire / release) on a hardware primitive.
+    #if __has_include("chip/CrossCoreLock.hpp")
+        #include "chip/CrossCoreLock.hpp"
+    #else
+        #error                                                                                    \
+          "KVASIR_MULTICORE on a core without exclusives needs the chip's chip/CrossCoreLock.hpp"
+    #endif
+#endif
+
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <type_traits>
@@ -119,11 +131,83 @@ namespace Kvasir { namespace Nvic {
 }}   // namespace Kvasir::Nvic
 
 namespace CommonAtomic {
+
+// The lock the out-of-line atomics run under. On one core, masking interrupts is all it
+// takes and is exactly what it always was. On a multicore build (KVASIR_MULTICORE, set by
+// CMake when CORE1_STACK_SIZE is given) masking interrupts says nothing to the other core,
+// so a spinlock on the exclusive accesses is added underneath: interrupts off first, then
+// the lock, so no ISR can spin on a lock its own thread holds. Written in assembly rather
+// than on std::atomic_flag to make it visible that nothing here can call back into the
+// shim: the 1-byte exchange is inline ldaexb/strexb, never a library call. A core without
+// exclusives (the Cortex-M0+) takes the chip's hardware lock instead, see below.
+#if defined(KVASIR_MULTICORE) && KVASIR_MULTICORE && defined(__ARM_ARCH_8M_MAIN__)
+struct ShimLock {
+    static inline std::uint8_t word{};
+
+    Kvasir::Nvic::InterruptGuard<Kvasir::Nvic::Global> irq{};
+
+    ShimLock() {
+        std::uint32_t seen{};
+        std::uint32_t failed{};
+        asm volatile(
+          "1:\n"
+          "ldaexb %0, [%2]\n"
+          "cmp %0, #0\n"
+          "bne 1b\n"
+          "movs %1, #1\n"
+          "strexb %0, %1, [%2]\n"
+          "cmp %0, #0\n"
+          "bne 1b\n"
+          : "=&r"(seen), "=&r"(failed)
+          : "r"(std::addressof(word))
+          : "memory", "cc");
+    }
+
+    ~ShimLock() {
+        std::uint32_t const zero{};
+        asm volatile("stlb %0, [%1]" : : "r"(zero), "r"(std::addressof(word)) : "memory");
+    }
+
+    ShimLock(ShimLock const&)            = delete;
+    ShimLock& operator=(ShimLock const&) = delete;
+
+    // For a secondary core reset, and nothing else: a core that was reset while inside a
+    // shim call still holds the word, and the next 8-byte atomic or CAS on the surviving
+    // core would spin on it forever. Called from SecondaryCore::reset(), when the other
+    // core is provably stopped and this core cannot be inside a shim call (the lock is
+    // only ever held with interrupts masked, never across a call to reset()).
+    static void forceRelease() {
+        std::uint32_t const zero{};
+        asm volatile("stlb %0, [%1]" : : "r"(zero), "r"(std::addressof(word)) : "memory");
+    }
+};
+#elif defined(KVASIR_MULTICORE) && KVASIR_MULTICORE
+// No exclusives (the Cortex-M0+): the chip's hardware lock does what ldaexb/strexb do
+// above, under the same interrupt mask. On the RP2040 that is an SIO spinlock, and every
+// std::atomic read-modify-write comes through here, since the core cannot do one inline.
+struct ShimLock {
+    Kvasir::Nvic::InterruptGuard<Kvasir::Nvic::Global> irq{};
+
+    ShimLock() { Kvasir::Atomic::CrossCoreLock::acquire(); }
+
+    ~ShimLock() { Kvasir::Atomic::CrossCoreLock::release(); }
+
+    ShimLock(ShimLock const&)            = delete;
+    ShimLock& operator=(ShimLock const&) = delete;
+
+    static void forceRelease() { Kvasir::Atomic::CrossCoreLock::release(); }
+};
+#else
+struct ShimLock : Kvasir::Nvic::InterruptGuard<Kvasir::Nvic::Global> {
+    static void forceRelease() {}
+};
+#endif
+
 template<typename T>
 T atomic_load_block(void const volatile* ptr,
                     [[maybe_unused]] int memorder) {
-    Kvasir::Nvic::InterruptGuard<Kvasir::Nvic::Global> guard;
-    T v = *reinterpret_cast<T const volatile*>(ptr);
+    ShimLock guard;
+    T        v = *reinterpret_cast<T const volatile*>(ptr);
     return v;
 }
 
@@ -131,7 +215,7 @@ template<typename T>
 void atomic_store_block(void volatile*       ptr,
                         T                    val,
                         [[maybe_unused]] int memorder) {
-    Kvasir::Nvic::InterruptGuard<Kvasir::Nvic::Global> guard;
+    ShimLock guard;
     *reinterpret_cast<T volatile*>(ptr) = val;
 }
 
@@ -139,9 +223,9 @@ template<typename T>
 T atomic_exchange_block(void volatile*       ptr,
                         T                    val,
                         [[maybe_unused]] int memorder) {
-    Kvasir::Nvic::InterruptGuard<Kvasir::Nvic::Global> guard;
-    T                                                  old = *reinterpret_cast<T volatile*>(ptr);
-    *reinterpret_cast<T volatile*>(ptr)                    = val;
+    ShimLock guard;
+    T        old                        = *reinterpret_cast<T volatile*>(ptr);
+    *reinterpret_cast<T volatile*>(ptr) = val;
     return old;
 }
 
@@ -152,8 +236,8 @@ bool atomic_compare_exchange_block(void volatile*        ptr,
                                    [[maybe_unused]] bool weak,
                                    [[maybe_unused]] int  success_memorder,
                                    [[maybe_unused]] int  failure_memorder) {
-    Kvasir::Nvic::InterruptGuard<Kvasir::Nvic::Global> guard;
-    bool                                               ret{};
+    ShimLock guard;
+    bool     ret{};
     if(*reinterpret_cast<T volatile*>(ptr) == *reinterpret_cast<T*>(expected)) {
         *reinterpret_cast<T volatile*>(ptr) = desired;
         ret                                 = true;
@@ -168,7 +252,7 @@ inline void atomic_load_mem_block(std::size_t          size,
                                   void const volatile* src,
                                   void*                dest,
                                   [[maybe_unused]] int memorder) {
-    Kvasir::Nvic::InterruptGuard<Kvasir::Nvic::Global> guard;
+    ShimLock guard;
     std::memcpy(dest, const_cast<void const*>(src), size);
 }
 
@@ -176,7 +260,7 @@ inline void atomic_store_mem_block(std::size_t          size,
                                    void volatile*       dest,
                                    void const*          src,
                                    [[maybe_unused]] int memorder) {
-    Kvasir::Nvic::InterruptGuard<Kvasir::Nvic::Global> guard;
+    ShimLock guard;
     std::memcpy(const_cast<void*>(dest), src, size);
 }
 
@@ -185,7 +269,7 @@ inline void atomic_exchange_mem_block(std::size_t          size,
                                       void const*          val,
                                       void*                ret,
                                       [[maybe_unused]] int memorder) {
-    Kvasir::Nvic::InterruptGuard<Kvasir::Nvic::Global> guard;
+    ShimLock guard;
     std::memcpy(ret, const_cast<void const*>(ptr), size);
     std::memcpy(const_cast<void*>(ptr), val, size);
 }
@@ -197,8 +281,8 @@ inline bool atomic_compare_exchange_mem_block(std::size_t           size,
                                               [[maybe_unused]] bool weak,
                                               [[maybe_unused]] int  success_memorder,
                                               [[maybe_unused]] int  failure_memorder) {
-    Kvasir::Nvic::InterruptGuard<Kvasir::Nvic::Global> guard;
-    bool                                               ret{};
+    ShimLock guard;
+    bool     ret{};
     if(std::memcmp(const_cast<void const*>(ptr), expected, size) == 0) {
         std::memcpy(const_cast<void*>(ptr), desired, size);
         ret = true;
@@ -306,10 +390,16 @@ extern "C" {
 [[gnu::used]] inline unsigned long long __atomic_fetch_add_8(void volatile*       ptr,
                                                              unsigned long long   val,
                                                              [[maybe_unused]] int memorder) {
-    Kvasir::Nvic::InterruptGuard<Kvasir::Nvic::Global> guard;
+    CommonAtomic::ShimLock   guard;
     auto&                    ref = *reinterpret_cast<unsigned long long volatile*>(ptr);
     unsigned long long const old = ref;
     ref                          = old + val;
     return old;
 }
 }
+
+namespace Kvasir::Atomic {
+// What a SecondaryCore reset has to do for the atomic shim: release the lock the dead core
+// may have been holding. A no-op on a single-core build.
+inline void onSecondaryCoreReset() { CommonAtomic::ShimLock::forceRelease(); }
+}   // namespace Kvasir::Atomic

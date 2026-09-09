@@ -1,0 +1,3 @@
+# Build directories (any depth, any suffix, e.g. build/, build_tsan/, build-debug/)
+[Bb]uild*/
+justfile

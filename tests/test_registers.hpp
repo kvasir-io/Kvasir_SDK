@@ -12,13 +12,13 @@ struct SimpleTestReg {
 
     static constexpr Kvasir::Register::FieldLocation<Addr,
                                                      Kvasir::Register::maskFromRange(9, 9),
-                                                     Kvasir::Register::WriteOnlyAccess,
+                                                     Kvasir::Register::ReadWriteAccess,
                                                      std::uint32_t>
       stop{};
 
     static constexpr Kvasir::Register::FieldLocation<Addr,
                                                      Kvasir::Register::maskFromRange(8, 8),
-                                                     Kvasir::Register::WriteOnlyAccess,
+                                                     Kvasir::Register::ReadWriteAccess,
                                                      std::uint32_t>
       cmd{};
 
@@ -39,6 +39,43 @@ struct SimpleTestReg {
     }
 };
 
+// One field per access kind, for the access traits the factories assert.
+struct AccessTestReg {
+    using Addr = Kvasir::Register::Address<0x80, 0x00000000, 0x00000000, std::uint32_t>;
+
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(0, 0),
+                                                     Kvasir::Register::ReadOnlyAccess,
+                                                     std::uint32_t>
+      ro{};
+
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(1, 1),
+                                                     Kvasir::Register::WriteOnlyAccess,
+                                                     std::uint32_t>
+      wo{};
+
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(2, 2),
+                                                     Kvasir::Register::ReadWriteAccess,
+                                                     std::uint32_t>
+      rw{};
+
+    static constexpr Kvasir::Register::FieldLocation<
+      Addr,
+      Kvasir::Register::maskFromRange(3, 3),
+      Kvasir::Register::Access<Kvasir::Register::AccessType::writeOnce>,
+      std::uint32_t>
+      wonce{};
+
+    static constexpr Kvasir::Register::FieldLocation<
+      Addr,
+      Kvasir::Register::maskFromRange(4, 4),
+      Kvasir::Register::Access<Kvasir::Register::AccessType::readWriteOnce>,
+      std::uint32_t>
+      rwonce{};
+};
+
 // Same layout as SimpleTestReg but with enum class typed fields and FieldValue constants.
 struct ComplexTestReg {
     using Addr = Kvasir::Register::Address<0x10, 0xFFFFFC00, 0x00000000, std::uint32_t>;
@@ -50,7 +87,7 @@ struct ComplexTestReg {
 
     static constexpr Kvasir::Register::FieldLocation<Addr,
                                                      Kvasir::Register::maskFromRange(9, 9),
-                                                     Kvasir::Register::WriteOnlyAccess,
+                                                     Kvasir::Register::ReadWriteAccess,
                                                      STOPVal>
       stop{};
 
@@ -70,7 +107,7 @@ struct ComplexTestReg {
 
     static constexpr Kvasir::Register::FieldLocation<Addr,
                                                      Kvasir::Register::maskFromRange(8, 8),
-                                                     Kvasir::Register::WriteOnlyAccess,
+                                                     Kvasir::Register::ReadWriteAccess,
                                                      CMDVal>
       cmd{};
 

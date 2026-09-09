@@ -31,6 +31,10 @@ SECTIONS {
         INCLUDE common_stack_body.inc.ld
     } > ram
 
+    .stack1 (NOLOAD) : AT(.) {
+        INCLUDE common_stack1_body.inc.ld
+    } > ram
+
     .heap (NOLOAD) : AT(.) {
         INCLUDE common_heap_body.inc.ld
     } > ram

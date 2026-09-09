@@ -193,6 +193,11 @@ ASSERT( _LINKER_INTERN_data_start_flash_ == 0 || _LINKER_INTERN_data_end_flash_ 
      == _LINKER_INTERN_data_end_ - _LINKER_INTERN_data_start_,"ERROR: corrupted linker file - data in RAM smaller than in flash");
 
 ASSERT( _LINKER_INTERN_min_stack_size_ <= _LINKER_INTERN_stack_size_ - _LINKER_INTERN_stackProtector_size_,"ERROR: not enough space for stack");
+
+/* A secondary core's vector table in the image means a SecondaryCore is in use; it needs a
+   stack, and a zero-sized one would overflow on the first push. */
+ASSERT( _LINKER_INTERN_core1_vectors_end_ == _LINKER_INTERN_core1_vectors_start_ || cmake_core1_stack_size >= 1024,
+        "ERROR: a SecondaryCore is linked but CORE1_STACK_SIZE is not set (needs at least 1k)");
 /*ASSERT(_LINKER_INTERN_init_array_start_ ==  _LINKER_INTERN_init_array_end_,"ERROR: global init stuff not supported");*/
 
 /* Low RAM check (only if noInitLowRam section exists) */
@@ -203,6 +208,9 @@ _LINKER_heap_end_         = _LINKER_INTERN_heap_end_;
 
 _LINKER_stack_start_      = _LINKER_INTERN_stack_start_;
 _LINKER_stack_end_        = _LINKER_INTERN_stack_end_;
+
+_LINKER_stack1_start_     = _LINKER_INTERN_stack1_start_;
+_LINKER_stack1_end_       = _LINKER_INTERN_stack1_end_;
 
 _LINKER_init_array_start_ = _LINKER_INTERN_init_array_start_;
 _LINKER_init_array_end_   = _LINKER_INTERN_init_array_end_;

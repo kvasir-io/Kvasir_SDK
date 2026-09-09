@@ -110,6 +110,13 @@ set(JLINK_IP
     ""
     CACHE STRING "Choose the ip address of jlink if not using USB")
 
+set(JLINK_PROBE
+    ""
+    CACHE
+        STRING
+        "Which J-Link on USB: serial number or nickname (the USB line of the JLinkExe command files, uc_log_printer --probe). Empty takes the only one connected; with two connected the printer refuses to start and JLinkExe cannot connect"
+)
+
 set(DUPLEX_BASE_PORT
     ""
     CACHE STRING "Choose the first tcp port for uc_log duplex channels, empty for default")

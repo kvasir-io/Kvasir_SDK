@@ -9,6 +9,10 @@ SECTIONS {
         INCLUDE common_stack_body.inc.ld
     } > ram
 
+    .stack1 (NOLOAD) : AT(.) {
+        INCLUDE common_stack1_body.inc.ld
+    } > ram
+
     .data : AT(_LINKER_INTERN_data_start_flash_) {
         INCLUDE common_data_body.inc.ld
     } > ram

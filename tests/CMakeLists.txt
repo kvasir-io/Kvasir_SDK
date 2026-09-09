@@ -36,15 +36,39 @@ if(USE_SANITIZER)
     add_link_options(-fsanitize=${USE_SANITIZER})
 endif()
 
+# the plain Kvasir headers, for tests that do not touch hardware registers
+add_library(kvasir_headers INTERFACE)
+target_include_directories(kvasir_headers INTERFACE ${CMAKE_CURRENT_LIST_DIR}/../src)
+
 # the Kvasir headers with all register accesses routed through the test mock
 add_library(kvasir_mocked INTERFACE)
-target_include_directories(kvasir_mocked INTERFACE ${CMAKE_CURRENT_LIST_DIR}/../src)
+target_link_libraries(kvasir_mocked INTERFACE kvasir_headers)
 target_compile_definitions(kvasir_mocked INTERFACE KVASIR_REGISTER_MOCK)
 
+find_package(Threads REQUIRED)
+
+# a test that drives register accesses through the mock recorder
 function(kvasir_add_test name)
     add_executable(${name} ${ARGN})
     target_link_libraries(${name} PRIVATE kvasir_mocked)
-    target_compile_options(${name} PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(${name} PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
+# The cross-core primitives, exercised with two std::threads. KVASIR_MULTICORE selects the cross-core defaults (Queue's
+# SyncThread, the shim lock) the way CORE1_STACK_SIZE does for a target build; run these with -DUSE_SANITIZER=thread to
+# have TSan check the ordering.
+function(kvasir_add_multicore_test name)
+    kvasir_add_test(${name} ${ARGN})
+    target_link_libraries(${name} PRIVATE Threads::Threads)
+    target_compile_definitions(${name} PRIVATE KVASIR_MULTICORE=1)
+endfunction()
+
+# a pure host test with no register mock involved
+function(kvasir_add_host_test name)
+    add_executable(${name} ${ARGN})
+    target_link_libraries(${name} PRIVATE kvasir_headers)
+    target_compile_options(${name} PRIVATE -Wall -Wextra -Wpedantic -Werror)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
@@ -54,3 +78,72 @@ kvasir_add_test(kvasir_test_register_rmw rmw_tests.cpp)
 kvasir_add_test(kvasir_test_register_sequence_point sequence_point_tests.cpp)
 kvasir_add_test(kvasir_test_register_multi_register multi_register_tests.cpp)
 kvasir_add_test(kvasir_test_register_special_access special_access_tests.cpp)
+kvasir_add_test(kvasir_test_rate_limiter rate_limiter_tests.cpp)
+kvasir_add_test(kvasir_test_register_factories factories_tests.cpp)
+kvasir_add_test(kvasir_test_io io_tests.cpp)
+kvasir_add_test(kvasir_test_devices devices_tests.cpp)
+kvasir_add_test(kvasir_test_i2c_device_base i2c_device_base_tests.cpp)
+
+kvasir_add_multicore_test(kvasir_test_spinlock spinlock_tests.cpp)
+kvasir_add_multicore_test(kvasir_test_seqlock seqlock_tests.cpp)
+kvasir_add_multicore_test(kvasir_test_queue queue_tests.cpp)
+kvasir_add_multicore_test(kvasir_test_task_queue task_queue_tests.cpp)
+
+kvasir_add_host_test(kvasir_test_util_saturating_value util_saturating_value_tests.cpp)
+kvasir_add_host_test(kvasir_test_util_literals util_literals_tests.cpp)
+kvasir_add_host_test(kvasir_test_util_bitfield util_bitfield_tests.cpp)
+kvasir_add_host_test(kvasir_test_util_static_vector util_static_vector_tests.cpp)
+kvasir_add_host_test(kvasir_test_util_static_containers util_static_containers_tests.cpp)
+kvasir_add_host_test(kvasir_test_util_static_function util_static_function_tests.cpp)
+kvasir_add_host_test(kvasir_test_mpl mpl_tests.cpp)
+kvasir_add_host_test(kvasir_test_resources resources_tests.cpp)
+kvasir_add_host_test(kvasir_test_startup_list startup_list_tests.cpp)
+kvasir_add_host_test(kvasir_test_atomic_queue atomic_queue_tests.cpp)
+
+# ---------------------------------------------------------------------------
+# header self containment
+#
+# Every public header must compile on its own. Each header gets a generated translation unit that includes it twice (the
+# second include also checks that the include guard works).
+#
+# Headers that legitimately cannot be compiled standalone on the host are listed below together with the reason; they
+# need either a chip support file or the uc_log/remote_fmt stack, neither of which is available in this build.
+set(KVASIR_NON_SELF_CONTAINED_HEADERS
+    kvasir/Atomic/detail/arm_Common_atomic.hpp # needs core/Nvic.hpp from a chip file
+    kvasir/Atomic/detail/arm_Clang_atomic.hpp # needs core/Nvic.hpp from a chip file
+    kvasir/Atomic/detail/arm_GCC_atomic.hpp # needs core/Nvic.hpp from a chip file
+    kvasir/Util/FaultHandler.hpp # needs core/Fault.hpp from a chip file
+    kvasir/Util/StackProtector.hpp # needs uc_log
+    kvasir/Util/ubsan.hpp # needs the remote_fmt _sc literal
+    kvasir/StartUp/StartUp.hpp # needs uc_log and a chip file
+    kvasir/StartUp/SecondaryCore.hpp # includes StartUp.hpp, needs uc_log and a chip file
+    kvasir/Devices/BusPowerManager.hpp # uses UC_LOG_W without including uc_log
+    kvasir/Devices/I2CDeviceBase.hpp # uses UC_LOG_W without including uc_log
+)
+
+file(
+    GLOB_RECURSE KVASIR_ALL_HEADERS
+    RELATIVE ${CMAKE_CURRENT_LIST_DIR}/../src
+    ${CMAKE_CURRENT_LIST_DIR}/../src/kvasir/*.hpp)
+list(SORT KVASIR_ALL_HEADERS)
+
+set(KVASIR_SELF_CONTAINED_SOURCES "")
+foreach(header IN LISTS KVASIR_ALL_HEADERS)
+    if(header IN_LIST KVASIR_NON_SELF_CONTAINED_HEADERS)
+        continue()
+    endif()
+    string(REGEX REPLACE "[/.]" "_" mangled "${header}")
+    set(generated "${CMAKE_CURRENT_BINARY_DIR}/self_contained/${mangled}.cpp")
+    file(WRITE ${generated} "// generated by tests/CMakeLists.txt -- do not edit\n" "#include \"${header}\"\n"
+                            "#include \"${header}\"\n")
+    list(APPEND KVASIR_SELF_CONTAINED_SOURCES ${generated})
+endforeach()
+
+# brigand.hpp is a vendored third party header, do not hold it to -Wall -Wextra
+add_library(kvasir_self_contained_headers OBJECT ${KVASIR_SELF_CONTAINED_SOURCES})
+target_link_libraries(kvasir_self_contained_headers PRIVATE kvasir_mocked)
+target_compile_options(kvasir_self_contained_headers PRIVATE -Wall -Wextra -Werror)
+
+# make the check visible as a test as well so `ctest` reports on it
+add_test(NAME kvasir_test_header_self_containment COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target
+                                                          kvasir_self_contained_headers)

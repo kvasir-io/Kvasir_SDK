@@ -111,6 +111,19 @@ namespace Kvasir { namespace Register {
                      && ActionExecRank<Action<T1, U1>>::value
                           < ActionExecRank<Action<T2, U2>>::value)> {};
 
+        // Two literal writes merge by OR, which is only right where they agree: a set and a
+        // clear of one bit, or two writes of one field with different values, would otherwise
+        // merge into whichever has more ones. Same-value overlap is idempotent and stays legal,
+        // and so is a disagreement on bits the register ignores a zero on (the SIO's set,
+        // clear and xor aliases, write-one-to-clear flags): there the OR is exactly the
+        // hardware's own semantics, and two pins' set actions merge into one write on purpose.
+        template<unsigned Mask1,
+                 unsigned Value1,
+                 unsigned Mask2,
+                 unsigned Value2,
+                 unsigned IgnoredIfZero = 0>
+        constexpr bool literalsAgree = ((Value1 ^ Value2) & Mask1 & Mask2 & ~IgnoredIfZero) == 0;
+
         template<typename TRegisters, typename TRet = brigand::list<>>   // default
         struct MergeRegisterActions;
 
@@ -155,7 +168,16 @@ namespace Kvasir { namespace Register {
                                           TInputs1...,
                                           TInputs2...>,   // concatenate
                             Us...>                        // pass through rest
-              > {};
+              > {
+            static_assert(literalsAgree<Mask1,
+                                        Value1,
+                                        Mask2,
+                                        Value2,
+                                        GetAddress<TAddress>::writeIgnoredIfZeroMask>,
+                          "two actions in one step write different values to the same bits of "
+                          "one register: a set and a clear of one bit, or two writes of one "
+                          "field (separate them with a sequencePoint if both are meant)");
+        };
 
         // Indexed Read
         template<typename TAddress,
@@ -342,7 +364,16 @@ namespace Kvasir { namespace Register {
                                           TInputs1...,
                                           TInputs2...>,   // concatenate
                             Us...>                        // pass through rest
-              > {};
+              > {
+            static_assert(literalsAgree<Mask1,
+                                        Value1,
+                                        Mask2,
+                                        Value2,
+                                        GetAddress<TAddress>::writeIgnoredIfZeroMask>,
+                          "two actions in one step write different values to the same bits of "
+                          "one register: a set and a clear of one bit, or two writes of one "
+                          "field (separate them with a sequencePoint if both are meant)");
+        };
 
         // non indexed
         template<typename TAddress,
@@ -374,7 +405,16 @@ namespace Kvasir { namespace Register {
                                    // TODO implement register type here
                                    >,
                             Us...>   // pass through rest
-              > {};
+              > {
+            static_assert(literalsAgree<Mask1,
+                                        Value1,
+                                        Mask2,
+                                        Value2,
+                                        GetAddress<TAddress>::writeIgnoredIfZeroMask>,
+                          "two actions in one step write different values to the same bits of "
+                          "one register: a set and a clear of one bit, or two writes of one "
+                          "field (separate them with a sequencePoint if both are meant)");
+        };
 
         template<typename TNext,
                  typename TLast,

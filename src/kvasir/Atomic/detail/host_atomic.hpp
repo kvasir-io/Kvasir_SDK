@@ -1,20 +1,20 @@
 #pragma once
 
 namespace Kvasir::Nvic {
-[[nodiscard]] bool primask() {
+[[nodiscard]] inline bool primask() {
     unsigned result = 0;
     return result;
 }
 
-void disable_all() {}
+inline void disable_all() {}
 
-[[nodiscard]] bool disable_all_and_get_old_state() {
+[[nodiscard]] inline bool disable_all_and_get_old_state() {
     bool p = primask();
     disable_all();
     return !p;
 }
 
-void enable_all() {}
+inline void enable_all() {}
 
 struct InterruptGuard {
 private:
@@ -36,3 +36,7 @@ public:
 };
 
 }   // namespace Kvasir::Nvic
+
+namespace Kvasir::Atomic {
+inline void onSecondaryCoreReset() {}
+}   // namespace Kvasir::Atomic

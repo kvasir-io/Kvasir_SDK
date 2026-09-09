@@ -219,6 +219,27 @@ static void twoRuntimeWritesDifferentFieldsMerge() {
     CHECK_EQ((written >> 8) & 1U, v2);
 }
 
+// the same literal twice in one apply (two peripherals setting one bit, or a field written
+// with one value from two places) is idempotent and merges into a single write
+static void agreeingLiteralsMerge() {
+    test("agreeingLiteralsMerge");
+
+    using stopT = typename decltype(SimpleTestReg::stop)::DataType;
+    using cmdT  = typename decltype(SimpleTestReg::cmd)::DataType;
+
+    apply(set(SimpleTestReg::stop),
+          write(SimpleTestReg::dat, ctv<std::uint32_t, 0x5A>()),
+          clear(SimpleTestReg::cmd),
+          set(SimpleTestReg::stop),
+          write(SimpleTestReg::stop, ctv<stopT, 1>()),
+          write(SimpleTestReg::cmd, ctv<cmdT, 0>()),
+          write(SimpleTestReg::dat, ctv<std::uint32_t, 0x5A>()));
+
+    checkActions({
+      W{SimpleTestReg::Addr::value, 0x5AU | (1U << 9)}
+    });
+}
+
 int main() {
     simpleWrite<SimpleTestReg, true>();
     simpleWrite<SimpleTestReg, false>();
@@ -247,6 +268,7 @@ int main() {
     fieldValueWritesMerge();
     runtimeAndLiteralSameFieldMerge();
     twoRuntimeWritesDifferentFieldsMerge();
+    agreeingLiteralsMerge();
 
     if(Kvasir::Test::failures != 0) {
         std::print("{} checks failed\n", Kvasir::Test::failures);

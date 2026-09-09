@@ -89,27 +89,40 @@ namespace Kvasir { namespace Register {
           : std::true_type {};
 
         template<typename T>
+        struct AccessTypeOf;
+
+        template<AccessType AT, ReadActionType RAT, ModifiedWriteValueType MWV>
+        struct AccessTypeOf<Access<AT, RAT, MWV>> : std::integral_constant<AccessType, AT> {};
+
+        constexpr bool accessWritable(AccessType at) { return at != AccessType::readOnly; }
+
+        constexpr bool accessReadable(AccessType at) {
+            return at != AccessType::writeOnly && at != AccessType::writeOnce;
+        }
+
+        // Every write factory (literal and runtime) asserts this; a write to a read-only field
+        // is ignored by the hardware and would otherwise compile.
+        template<typename T>
         struct IsWritable : std::false_type {};
 
-        template<typename TAddress,
-                 unsigned               Mask,
-                 ReadActionType         RAction,
-                 ModifiedWriteValueType WAction,
-                 typename TFieldType>
-        struct IsWritable<FieldLocation<TAddress,
-                                        Mask,
-                                        Access<AccessType::readWrite, RAction, WAction>,
-                                        TFieldType>> : std::true_type {};
+        template<typename TAddress, unsigned Mask, typename TAccess, typename TFieldType>
+        struct IsWritable<FieldLocation<TAddress, Mask, TAccess, TFieldType>>
+          : std::bool_constant<accessWritable(AccessTypeOf<TAccess>::value)> {};
 
-        template<typename TAddress,
-                 unsigned               Mask,
-                 ReadActionType         RAction,
-                 ModifiedWriteValueType WAction,
-                 typename TFieldType>
-        struct IsWritable<FieldLocation<TAddress,
-                                        Mask,
-                                        Access<AccessType::writeOnly, RAction, WAction>,
-                                        TFieldType>> : std::true_type {};
+        // read() asserts this; a write-only field reads back as junk.
+        template<typename T>
+        struct IsReadable : std::false_type {};
+
+        template<typename TAddress, unsigned Mask, typename TAccess, typename TFieldType>
+        struct IsReadable<FieldLocation<TAddress, Mask, TAccess, TFieldType>>
+          : std::bool_constant<accessReadable(AccessTypeOf<TAccess>::value)> {};
+
+        // A literal fits its field when it has no bits above the field's width: the shift
+        // into place would otherwise push them out the top, past the post-shift mask check.
+        constexpr bool literalFits(unsigned mask,
+                                   unsigned value) {
+            return value <= (mask >> maskStartsAt(mask));
+        }
 
         template<typename T>
         struct IsSetToClear : std::false_type {};

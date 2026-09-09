@@ -237,7 +237,8 @@ function(
     sanitize
     linker_file
     application
-    bootloader)
+    bootloader
+    core1_stack_size)
 
     # Compute flags first so they are available for the shared-library key.
     if(optimize STREQUAL size)
@@ -312,6 +313,7 @@ function(
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_noInit_body.inc.ld)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_noInitLowRam_body.inc.ld)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_stack_body.inc.ld)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_stack1_body.inc.ld)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_heap_body.inc.ld)
 
     add_target_linker_dependency(${name} ${linker_file})
@@ -332,6 +334,7 @@ function(
             "${LINKER_PREFIX}--defsym=cmake_min_stack_size=${min_stack_size}"
             "${LINKER_PREFIX}--defsym=cmake_stack_size_extra=0"
             "${LINKER_PREFIX}--defsym=cmake_heap_size=${heap_size}"
+            "${LINKER_PREFIX}--defsym=cmake_core1_stack_size=${core1_stack_size}"
             "${LINKER_PREFIX}--script=${linker_file}"
             "${LINKER_PREFIX}--Map=${CMAKE_CURRENT_BINARY_DIR}/${name}.map")
         add_clean_file(${name} ${CMAKE_CURRENT_BINARY_DIR}/${name}.map)
@@ -362,6 +365,8 @@ function(
                 ${SWD_SPEED}
                 JLINK_IP
                 ${JLINK_IP}
+                JLINK_PROBE
+                "${JLINK_PROBE}"
                 SUFFIX
                 "_flash.hex")
         else()
@@ -373,6 +378,8 @@ function(
                 ${SWD_SPEED}
                 JLINK_IP
                 ${JLINK_IP}
+                JLINK_PROBE
+                "${JLINK_PROBE}"
                 SUFFIX
                 "_eeprom_flash.hex")
         endif()
@@ -389,6 +396,8 @@ function(
             ${SWD_SPEED}
             JLINK_IP
             ${JLINK_IP}
+            JLINK_PROBE
+            "${JLINK_PROBE}"
             DUPLEX_BASE_PORT
             ${DUPLEX_BASE_PORT}
             MAP_FILE
@@ -401,8 +410,8 @@ endfunction()
 
 function(kvasir_executable_variants base_name)
     cmake_parse_arguments(
-        PARSE_ARGV 1 PARSED_ARGS ""
-        "OPTIMIZATION;MIN_STACK_SIZE;MIN_LOG_LEVEL;MIN_LOG_LEVEL_DEBUG;MIN_LOG_LEVEL_RELEASE"
+        PARSE_ARGV 1 PARSED_ARGS "RAM_ONLY"
+        "OPTIMIZATION;MIN_STACK_SIZE;CORE1_STACK_SIZE;MIN_LOG_LEVEL;MIN_LOG_LEVEL_DEBUG;MIN_LOG_LEVEL_RELEASE"
         "SOURCES;LIBRARIES;ADDITIONAL_FLAGS;ADDITIONAL_DEBUG_FLAGS;ADDITIONAL_RELEASE_FLAGS;ADDITIONAL_SANITIZE_FLAGS")
 
     if(PARSED_ARGS_UNPARSED_ARGUMENTS)
@@ -422,6 +431,19 @@ function(kvasir_executable_variants base_name)
     set(_min_stack "")
     if(PARSED_ARGS_MIN_STACK_SIZE)
         set(_min_stack MIN_STACK_SIZE ${PARSED_ARGS_MIN_STACK_SIZE})
+    endif()
+
+    # Opt-in to a second core: sizes .stack1 and defines KVASIR_MULTICORE for every variant.
+    set(_core1_stack "")
+    if(PARSED_ARGS_CORE1_STACK_SIZE)
+        set(_core1_stack CORE1_STACK_SIZE ${PARSED_ARGS_CORE1_STACK_SIZE})
+    endif()
+
+    # Opt-in to an image that lives entirely in RAM (the chip's LINKER_FILE_RAM_ONLY): loaded by the bootrom's UF2 path
+    # or a debugger, never written to flash. What a flash eraser is built as.
+    set(_ram_only "")
+    if(PARSED_ARGS_RAM_ONLY)
+        set(_ram_only RAM_ONLY)
     endif()
 
     # Log floor per variant: MIN_LOG_LEVEL applies to every logging variant, MIN_LOG_LEVEL_DEBUG overrides it for the
@@ -460,6 +482,8 @@ function(kvasir_executable_variants base_name)
         debug
         USE_LOG
         ${_min_stack}
+        ${_core1_stack}
+        ${_ram_only}
         ${_min_log_debug}
         ${PARSED_ARGS_ADDITIONAL_FLAGS}
         ${PARSED_ARGS_ADDITIONAL_DEBUG_FLAGS})
@@ -469,8 +493,15 @@ function(kvasir_executable_variants base_name)
 
     # Release variant - no logging, no sanitizer, configurable optimization
     add_executable(${release_target} ${PARSED_ARGS_SOURCES})
-    target_configure_kvasir(${release_target} OPTIMIZATION_STRATEGY ${PARSED_ARGS_OPTIMIZATION} ${_min_stack}
-                            ${PARSED_ARGS_ADDITIONAL_FLAGS} ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
+    target_configure_kvasir(
+        ${release_target}
+        OPTIMIZATION_STRATEGY
+        ${PARSED_ARGS_OPTIMIZATION}
+        ${_min_stack}
+        ${_core1_stack}
+        ${_ram_only}
+        ${PARSED_ARGS_ADDITIONAL_FLAGS}
+        ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
     if(PARSED_ARGS_LIBRARIES)
         target_link_libraries(${release_target} ${PARSED_ARGS_LIBRARIES})
     endif()
@@ -483,6 +514,8 @@ function(kvasir_executable_variants base_name)
         ${PARSED_ARGS_OPTIMIZATION}
         USE_LOG
         ${_min_stack}
+        ${_core1_stack}
+        ${_ram_only}
         ${_min_log_release}
         ${PARSED_ARGS_ADDITIONAL_FLAGS}
         ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
@@ -499,6 +532,8 @@ function(kvasir_executable_variants base_name)
         USE_SANITIZER
         USE_LOG
         ${_min_stack}
+        ${_core1_stack}
+        ${_ram_only}
         ${_min_log_release}
         ${PARSED_ARGS_ADDITIONAL_FLAGS}
         ${PARSED_ARGS_ADDITIONAL_SANITIZE_FLAGS})
@@ -513,8 +548,8 @@ function(target_configure_kvasir target)
         PARSE_ARGV
         1
         PARSED_ARGS
-        "USE_LOG;NOT_USE_ASSERT;ENABLE_SELF_OVERRIDE;USE_SANITIZER"
-        "LOG;MIN_LOG_LEVEL;MIN_STACK_SIZE;HEAP_SIZE;OPTIMIZATION_STRATEGY;LINKER_FILE;LINKER_FILE_TEMPLATE;APPLICATION;BOOTLOADER;BOOTLOADER_SIZE"
+        "USE_LOG;NOT_USE_ASSERT;ENABLE_SELF_OVERRIDE;USE_SANITIZER;RAM_ONLY"
+        "LOG;MIN_LOG_LEVEL;MIN_STACK_SIZE;CORE1_STACK_SIZE;HEAP_SIZE;OPTIMIZATION_STRATEGY;LINKER_FILE;LINKER_FILE_TEMPLATE;APPLICATION;BOOTLOADER;BOOTLOADER_SIZE"
         "")
 
     if(PARSED_ARGS_UNPARSED_ARGUMENTS)
@@ -523,6 +558,15 @@ function(target_configure_kvasir target)
 
     if(NOT PARSED_ARGS_MIN_STACK_SIZE)
         set(PARSED_ARGS_MIN_STACK_SIZE 4k)
+    endif()
+
+    # A second core is opt-in. Without CORE1_STACK_SIZE the image is single-core and, by contract, identical to what it
+    # was before multicore support existed: no define, an empty .stack1, nothing else.
+    if(NOT PARSED_ARGS_CORE1_STACK_SIZE)
+        set(PARSED_ARGS_CORE1_STACK_SIZE 0)
+    endif()
+    if(NOT PARSED_ARGS_CORE1_STACK_SIZE STREQUAL "0")
+        target_compile_definitions(${target} PUBLIC KVASIR_MULTICORE=1)
     endif()
 
     if(NOT PARSED_ARGS_HEAP_SIZE)
@@ -573,7 +617,17 @@ function(target_configure_kvasir target)
         set(bootloader_size ${PARSED_ARGS_BOOTLOADER_SIZE})
     endif()
 
-    if(NOT PARSED_ARGS_LINKER_FILE)
+    if(PARSED_ARGS_RAM_ONLY)
+        if(PARSED_ARGS_LINKER_FILE OR PARSED_ARGS_LINKER_FILE_TEMPLATE)
+            message(
+                FATAL_ERROR "${target}: RAM_ONLY picks the chip's RAM-only linker file; do not pass LINKER_FILE too")
+        endif()
+        if(NOT LINKER_FILE_RAM_ONLY)
+            message(FATAL_ERROR "${target}: RAM_ONLY needs the chip to define LINKER_FILE_RAM_ONLY")
+        endif()
+        set(PARSED_ARGS_LINKER_FILE ${LINKER_FILE_RAM_ONLY})
+        target_compile_definitions(${target} PUBLIC KVASIR_RAM_ONLY=1)
+    elseif(NOT PARSED_ARGS_LINKER_FILE)
         if(PARSED_ARGS_LINKER_FILE_TEMPLATE)
             set(GEN_BOOTLOADER_SIZE ${bootloader_size})
             configure_file(${CMAKE_CURRENT_SOURCE_DIR}/${PARSED_ARGS_LINKER_FILE_TEMPLATE}
@@ -600,7 +654,8 @@ function(target_configure_kvasir target)
         ${USE_SANITIZER}
         ${PARSED_ARGS_LINKER_FILE}
         ${PARSED_ARGS_APPLICATION}
-        ${PARSED_ARGS_BOOTLOADER})
+        ${PARSED_ARGS_BOOTLOADER}
+        ${PARSED_ARGS_CORE1_STACK_SIZE})
 
     if(NOT PARSED_ARGS_USE_LOG)
         if(PARSED_ARGS_LOG)
