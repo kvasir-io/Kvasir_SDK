@@ -22,18 +22,28 @@ namespace Kvasir { namespace Nvic {
 
         struct TriggerInterrupt {};
 
-        static constexpr Enable           enable{};
-        static constexpr Disable          disable{};
-        static constexpr SetPending       setPending{};
-        static constexpr ClearPending     clearPending{};
-        static constexpr SetPriority<0>   setPriority0{};
-        static constexpr SetPriority<1>   setPriority1{};
-        static constexpr SetPriority<2>   setPriority2{};
-        static constexpr SetPriority<3>   setPriority3{};
-        static constexpr SetPriority<4>   setPriority4{};
-        static constexpr SetPriority<5>   setPriority5{};
-        static constexpr SetPriority<6>   setPriority6{};
-        static constexpr SetPriority<7>   setPriority7{};
+        static constexpr Enable         enable{};
+        static constexpr Disable        disable{};
+        static constexpr SetPending     setPending{};
+        static constexpr ClearPending   clearPending{};
+        static constexpr SetPriority<0> setPriority0{};
+        static constexpr SetPriority<1> setPriority1{};
+        static constexpr SetPriority<2> setPriority2{};
+        static constexpr SetPriority<3> setPriority3{};
+        static constexpr SetPriority<4> setPriority4{};
+        static constexpr SetPriority<5> setPriority5{};
+        static constexpr SetPriority<6> setPriority6{};
+        static constexpr SetPriority<7> setPriority7{};
+        // 8-15 only exist on a core with four priority bits (the RP2350's Cortex-M33); the
+        // core layer rejects a level its priority fields cannot hold (0-3 on a Cortex-M0+).
+        static constexpr SetPriority<8>   setPriority8{};
+        static constexpr SetPriority<9>   setPriority9{};
+        static constexpr SetPriority<10>  setPriority10{};
+        static constexpr SetPriority<11>  setPriority11{};
+        static constexpr SetPriority<12>  setPriority12{};
+        static constexpr SetPriority<13>  setPriority13{};
+        static constexpr SetPriority<14>  setPriority14{};
+        static constexpr SetPriority<15>  setPriority15{};
         static constexpr TriggerInterrupt triggerInterrupt{};
     }   // namespace Action
 
@@ -155,9 +165,6 @@ namespace Kvasir { namespace Nvic {
     using UnusedIsr = Isr<std::addressof(DefaultIsrs::onIsr), Index<0>>;
 
     template<typename T = void>
-    struct InterruptOffsetTraits;   // must be specialized in a chipxxxInterrupt file
-
-    template<int Priority, int I>
-    struct PriorityDisambiguator;   // must be specialized in a chipxxxInterrupt file
+    struct InterruptOffsetTraits;   // specialized by each chip, in chip/Interrupt.hpp
 
 }}   // namespace Kvasir::Nvic

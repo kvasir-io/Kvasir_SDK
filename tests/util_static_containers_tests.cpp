@@ -147,6 +147,37 @@ static void stringModifiers() {
     CHECK(s.empty());
 }
 
+// put and put_uint append, at compile time too
+static_assert([] {
+    StaticString<8> s;
+    s.put("a");
+    s.put_uint(42);
+    return std::string_view{s} == "a42";
+}());
+
+static void stringPut() {
+    Kvasir::Test::test("stringPut");
+
+    StaticString<24> s;
+    s.put("id=");
+    s.put_uint(0);
+    CHECK(std::string_view{s} == "id=0");
+
+    s.put(std::string_view{" max="});
+    s.put_uint(4294967295U);
+    CHECK(std::string_view{s} == "id=0 max=4294967295");
+
+    // an empty view appends nothing
+    s.put(std::string_view{});
+    CHECK_EQ(s.size(), 19U);
+
+    // the digits exactly fill the capacity
+    StaticString<3> exact;
+    exact.put_uint(123);
+    CHECK(exact.full());
+    CHECK(std::string_view{exact} == "123");
+}
+
 static void stringOperations() {
     Kvasir::Test::test("stringOperations");
 
@@ -567,6 +598,7 @@ int main() {
     stringAssignment();
     stringElementAccess();
     stringModifiers();
+    stringPut();
     stringOperations();
     stringComparison();
     stringLiteral();

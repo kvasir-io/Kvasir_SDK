@@ -29,6 +29,20 @@ constexpr bool same = std::is_same_v<A, B>;
 template<int Port, int Pin>
 using Loc = Kvasir::Register::PinLocation<Port, Pin>;
 
+// the pin and port a location names, as values
+static_assert(Kvasir::Io::pinNumber(Loc<0,
+                                        25>{})
+              == 25);
+static_assert(Kvasir::Io::portNumber(Loc<1,
+                                         7>{})
+              == 1);
+static_assert(Loc<1,
+                  7>::pin
+                == 7
+              && Loc<1,
+                     7>::port
+                   == 1);
+
 // ---------------------------------------------------------------------------
 // fake chip file: one GPIO block per port
 //

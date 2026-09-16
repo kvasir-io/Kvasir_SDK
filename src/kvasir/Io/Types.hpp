@@ -96,10 +96,29 @@ namespace Register {
     template<int Port, int Pin>
     struct PinLocation {
         using type = PinLocation<Port, Pin>;
+
+        static constexpr int port = Port;
+        static constexpr int pin  = Pin;
     };
 }   // namespace Register
 
 namespace Io {
+    /// The GPIO number a PinLocation names, as a value: for a log line or a static_assert
+    /// about a board's pin choice (`pinNumber(HW::Pin::led{})`).
+    template<int Port,
+             int Pin>
+    constexpr int pinNumber(Register::PinLocation<Port,
+                                                  Pin>) {
+        return Pin;
+    }
+
+    template<int Port,
+             int Pin>
+    constexpr int portNumber(Register::PinLocation<Port,
+                                                   Pin>) {
+        return Port;
+    }
+
     // A GPIO as a Startup resource (kvasir/StartUp/Resources.hpp). Provided by whoever
     // configures the pad, which the chip layer derives from the peripheral's
     // initStepPinConfig, so nothing declares it; claimed by a driver that drives or reads a

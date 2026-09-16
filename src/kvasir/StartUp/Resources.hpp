@@ -107,12 +107,33 @@ namespace Kvasir { namespace Startup {
     };
 
     // What an init-step action enables: the interrupt indexes (as std::integral_constant<int,
-    // I>) a literal write turns on. The chip layer specialises this for the NVIC's ISER
-    // registers and SysTick's TICKINT; everything else enables nothing. Actions come from
-    // `initStepInterruptConfig` and `initStepPeripheryEnable`, and Startup requires an Isr
-    // in the same list for every index found (ListRules::EnabledLinesHandled).
+    // I>) a literal write turns on. The core layer specialises this for the NVIC's ISER
+    // registers and SysTick's TICKINT (cortex_common's Nvic.hpp and Systick.hpp); everything
+    // else enables nothing. Actions come from `initStepInterruptConfig` and
+    // `initStepPeripheryEnable`, and Startup requires an Isr in the same list for every index
+    // found (ListRules::EnabledLinesHandled).
     template<typename Action>
     struct InterruptOfAction {
+        using type = brigand::list<>;
+    };
+
+    // What an init-step action sets as an interrupt's priority: IsrPriority<I, L> for a write
+    // that sets index I to level L. The core layer specialises this for the NVIC's IPR and the
+    // SCB's SHPR bytes (cortex_common); everything else sets none. A write whose level is not
+    // known at compile time (a run-time value, a toggle, a literal over part of the priority
+    // bits) sets unknownIsrLevel, which fails an ISR-context contract instead of passing it
+    // by accident. ListRules::IsrPrioritiesIn pairs every enabled index with its level, 0 when
+    // unset.
+    inline constexpr int unknownIsrLevel = -1;
+
+    template<int Index, int Level>
+    struct IsrPriority {
+        static constexpr int index = Index;
+        static constexpr int level = Level;
+    };
+
+    template<typename Action>
+    struct PriorityOfAction {
         using type = brigand::list<>;
     };
 

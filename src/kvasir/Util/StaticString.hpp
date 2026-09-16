@@ -3,7 +3,9 @@
 #include "StaticVector.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
+#include <cstdint>
 #include <iterator>
 #include <string_view>
 
@@ -129,6 +131,24 @@ public:
     ///@{
 
     constexpr void push_back(char c) { data_.push_back(c); }
+
+    /// Append \p sv. Asserts that it fits, like every other append.
+    constexpr void put(std::string_view sv) {
+        assert(N >= size() + sv.size());
+        std::copy(sv.begin(), sv.end(), std::back_inserter(data_));
+    }
+
+    /// Append \p v as decimal digits, no sign, no padding. Asserts that they fit.
+    constexpr void put_uint(std::uint32_t v) {
+        std::array<char, 10> digits{};   // 4294967295 is ten of them
+        std::size_t          n = 0;
+        do {
+            digits[n++] = static_cast<char>('0' + v % 10);
+            v /= 10;
+        } while(v != 0);
+        assert(N >= size() + n);
+        while(n != 0) { data_.push_back(digits[--n]); }
+    }
 
     constexpr void clear() { data_.clear(); }
 

@@ -336,6 +336,37 @@ namespace Kvasir { namespace Startup {
                 "interruptEnable copied from another driver)";
         };
 
+        // An entry's ISR-context contract (ListRules.hpp: IsrContractHolds) against the enabled
+        // interrupts, reported per (entry, index).
+        struct IsrLevelUnserved {
+            static constexpr std::string_view message
+              = "an interrupt is enabled at a priority level this entry has no ISR context "
+                "for: an ISR at that level could preempt another ISR's log record on a ring "
+                "it shares. Give the level its own context (uc_log: add it to the "
+                "IsrPolicy::PerLevel Levels<...>, preferred), declare it silent if no ISR at "
+                "that level ever logs (SilentLevels<...>), or use the entry's masked-record "
+                "mode (IsrPolicy::MaskedRecord)";
+        };
+
+        struct IsrLevelsDiffer {
+            static constexpr std::string_view message
+              = "enabled interrupts that may log use more than one priority level, and this "
+                "entry keeps one ISR context for all of them: an ISR at the higher level "
+                "preempts one at the lower mid-record. Configure the entry per level (uc_log: "
+                "IsrPolicy::PerLevel, preferred), declare the levels whose ISRs never log as "
+                "silent (SilentLevels<...>, SysTick's level 0 typically), or use its "
+                "masked-record mode (IsrPolicy::MaskedRecord)";
+        };
+
+        struct IsrLevelUnknown {
+            static constexpr std::string_view message
+              = "an init step writes this interrupt's priority in a form the check cannot "
+                "read (a run-time value, a toggle, or a literal over part of the priority "
+                "bits), so its level is unknown and this entry's ISR contexts cannot be shown "
+                "to cover it. Set the priority with a literal (Nvic::makeSetPriority), or use "
+                "the entry's masked-record mode (uc_log: IsrPolicy::MaskedRecord)";
+        };
+
         template<typename Rule, typename Where, typename Indexes>
         struct ReportIndexes;
 
@@ -375,6 +406,86 @@ namespace Kvasir { namespace Startup {
                               Where,
                               typename ListRules::UnhandledIndexes<Enabled, Isrs>::type>::value;
         };
+
+        // The entries an ISR-context contract is read from: every core's list, and the user
+        // log backend even when no list names it, since listing it is only a convention.
+        template<typename Backend>
+        constexpr bool isCompleteType = requires { sizeof(Backend); };
+
+        template<typename CoreLists, typename Backend>
+        struct IsrContractEntries;
+
+        template<typename... Ls, typename Backend>
+        struct IsrContractEntries<brigand::list<Ls...>, Backend> {
+            using Listed = brigand::append<Ls...>;
+            using type
+              = std::conditional_t<isCompleteType<Backend> && !Contains<Listed, Backend>::value,
+                                   brigand::append<Listed, brigand::list<Backend>>,
+                                   Listed>;
+        };
+
+        // The reports of one entry's contract on one group of interrupts
+        // (ListRules::IsrPriorityGroupsFor), `T` in the trail: entries without one pass.
+        template<typename Prios, typename T>
+        struct IsrLevelReportsFor : Bool<true> {};
+
+        template<typename Prios, typename T>
+            requires(ListRules::declaresIsrLevels<T> && !ListRules::declaresSingleIsrLevel<T>)
+        struct IsrLevelReportsFor<Prios, T>
+          : Bool<ReportIndexes<IsrLevelUnknown,
+                               T,
+                               typename ListRules::UnknownIsrLevelIndexes<Prios>::type>::value
+                 && ReportIndexes<
+                   IsrLevelUnserved,
+                   T,
+                   typename ListRules::UnservedIsrIndexes<T::isrPriorityLevels,
+                                                          ListRules::silentIsrLevelsOf<T>(),
+                                                          Prios>::type>::value> {};
+
+        template<typename Prios, typename T>
+            requires(ListRules::declaresSingleIsrLevel<T> && !ListRules::declaresIsrLevels<T>)
+        struct IsrLevelReportsFor<Prios, T>
+          : Bool<ReportIndexes<IsrLevelUnknown,
+                               T,
+                               typename ListRules::UnknownIsrLevelIndexes<Prios>::type>::value
+                 && ReportIndexes<
+                   IsrLevelsDiffer,
+                   T,
+                   typename ListRules::MultiLevelIsrIndexes<ListRules::silentIsrLevelsOf<T>(),
+                                                            Prios>::type>::value> {};
+
+        template<typename T, typename Groups>
+        struct IsrContractReportsOn;
+
+        template<typename T, typename... Gs>
+        struct IsrContractReportsOn<T, brigand::list<Gs...>>
+          : Bool<(IsrLevelReportsFor<Gs, T>::value && ...)> {};
+
+        template<typename Entries, typename CoreLists>
+        struct IsrContractReports;
+
+        template<typename... Ts, typename CoreLists>
+        struct IsrContractReports<brigand::list<Ts...>, CoreLists>
+          : Bool<(IsrContractReportsOn<
+                    Ts,
+                    typename ListRules::IsrPriorityGroupsFor<Ts, CoreLists>::type>::value
+                  && ...)> {};
+
+        // The same rule as a plain predicate, for the assert that carries the message.
+        template<typename Entries, typename CoreLists>
+        struct IsrContractsHold;
+
+        template<typename... Ts, typename CoreLists>
+        struct IsrContractsHold<brigand::list<Ts...>, CoreLists>
+          : Bool<(ListRules::IsrContractHolds<Ts, CoreLists>::value && ...)> {};
+
+        template<typename Entries>
+        struct NoContradictingIsrContract;
+
+        template<typename... Ts>
+        struct NoContradictingIsrContract<brigand::list<Ts...>>
+          : Bool<(!(ListRules::declaresIsrLevels<Ts> && ListRules::declaresSingleIsrLevel<Ts>)
+                  && ...)> {};
 
         // Core 0's vectors against every SecondaryCore's.
         template<typename Primary, typename... Ts>
@@ -751,6 +862,25 @@ namespace Kvasir { namespace Startup {
                                                   Peripherals...>::value,
                       "an interrupt is installed in both cores' vector tables (see the Report "
                       "above for the index): list the peripheral on one core");
+
+        // Every entry's ISR-context contract, the log backend's above all, against the enabled
+        // interrupts of every core (ListRules::IsrContractHolds). Entries of a SecondaryCore's
+        // list count, and so does the user backend when no list names it.
+        using IsrCoreLists = Detail::CoreLists<brigand::list<Peripherals...>, Peripherals...>;
+        using IsrContractEntries =
+          typename Detail::IsrContractEntries<IsrCoreLists,
+                                              ::uc_log::ComBackend<::uc_log::Tag::User>>::type;
+        static_assert(Detail::NoContradictingIsrContract<IsrContractEntries>::value,
+                      "an entry declares both isrPriorityLevels and singleIsrPriorityLevel");
+        static_assert(Detail::IsrContractReports<IsrContractEntries,
+                                                 IsrCoreLists>::value);
+        static_assert(Detail::IsrContractsHold<IsrContractEntries,
+                                               IsrCoreLists>::value,
+                      "an entry's ISR contexts do not cover the enabled interrupts' priority "
+                      "levels (see the Report above for the entry and the index): one ISR could "
+                      "preempt another's log record. Serve the level, declare it silent, use "
+                      "the masked-record mode, or, for an unknown level, set the priority with "
+                      "a literal");
 
         [[gnu::used, gnu::section(".core_vectors")]] static constexpr Kvasir::Startup::
           NvicVectorTable<Kvasir::Startup::GetIsrPointersT<Peripherals...>> nvicIsrVectors{};

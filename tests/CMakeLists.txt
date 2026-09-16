@@ -82,7 +82,6 @@ kvasir_add_test(kvasir_test_rate_limiter rate_limiter_tests.cpp)
 kvasir_add_test(kvasir_test_register_factories factories_tests.cpp)
 kvasir_add_test(kvasir_test_io io_tests.cpp)
 kvasir_add_test(kvasir_test_devices devices_tests.cpp)
-kvasir_add_test(kvasir_test_i2c_device_base i2c_device_base_tests.cpp)
 
 kvasir_add_multicore_test(kvasir_test_spinlock spinlock_tests.cpp)
 kvasir_add_multicore_test(kvasir_test_seqlock seqlock_tests.cpp)
@@ -117,8 +116,6 @@ set(KVASIR_NON_SELF_CONTAINED_HEADERS
     kvasir/Util/ubsan.hpp # needs the remote_fmt _sc literal
     kvasir/StartUp/StartUp.hpp # needs uc_log and a chip file
     kvasir/StartUp/SecondaryCore.hpp # includes StartUp.hpp, needs uc_log and a chip file
-    kvasir/Devices/BusPowerManager.hpp # uses UC_LOG_W without including uc_log
-    kvasir/Devices/I2CDeviceBase.hpp # uses UC_LOG_W without including uc_log
 )
 
 file(
