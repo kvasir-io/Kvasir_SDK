@@ -67,7 +67,11 @@ def extract_meaningful_name(long_name):
         if match:
             return f"[{match.group(1)}...]"
 
-    match = re.search(r'((?:\w+::)+\w+)<', long_name)
+    # needs a '::' to match; a name GNU objdump left mangled (thousands of
+    # \w, no '::') made it a quadratic scan: minutes for a gcc listing
+    match = None
+    if '::' in long_name:
+        match = re.search(r'((?:\w+::)+\w+)<', long_name)
     if match:
         full_name = match.group(1)
         parts = full_name.split('::')

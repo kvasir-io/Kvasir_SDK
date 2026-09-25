@@ -36,25 +36,9 @@ else()
 endif()
 get_filename_component(CHIP_ROOT_DIR ${CHIP_ROOT_DIR} ABSOLUTE)
 
-# Determine KVASIR_DEVICES_ROOT
-if(DEFINED KVASIR_DEVICES_ROOT)
-    set(KVASIR_DEVICES_ROOT_DIR ${KVASIR_DEVICES_ROOT})
-    set(KVASIR_DEVICES_ROOT_SOURCE "CMake variable")
-elseif(DEFINED ENV{KVASIR_DEVICES_ROOT})
-    set(KVASIR_DEVICES_ROOT_DIR $ENV{KVASIR_DEVICES_ROOT})
-    set(KVASIR_DEVICES_ROOT_SOURCE "environment")
-else()
-    # Compute from sibling relationship
-    get_filename_component(KVASIR_PARENT_DIR ${KVASIR_ROOT_DIR} DIRECTORY)
-    set(KVASIR_DEVICES_ROOT_DIR "${KVASIR_PARENT_DIR}/kvasir_devices")
-    set(KVASIR_DEVICES_ROOT_SOURCE "computed as sibling")
-endif()
-get_filename_component(KVASIR_DEVICES_ROOT_DIR ${KVASIR_DEVICES_ROOT_DIR} ABSOLUTE)
-
 # Report configuration
 message(STATUS "Kvasir: KVASIR_ROOT=${KVASIR_ROOT_DIR} (from ${KVASIR_ROOT_SOURCE})")
 message(STATUS "Kvasir: CHIP_ROOT=${CHIP_ROOT_DIR} (from ${CHIP_ROOT_SOURCE})")
-message(STATUS "Kvasir: KVASIR_DEVICES_ROOT=${KVASIR_DEVICES_ROOT_DIR} (from ${KVASIR_DEVICES_ROOT_SOURCE})")
 
 # Make these available globally
 set(KVASIR_ROOT
@@ -62,9 +46,6 @@ set(KVASIR_ROOT
     CACHE INTERNAL "" FORCE)
 set(CHIP_ROOT
     ${CHIP_ROOT_DIR}
-    CACHE INTERNAL "" FORCE)
-set(KVASIR_DEVICES_ROOT
-    ${KVASIR_DEVICES_ROOT_DIR}
     CACHE INTERNAL "" FORCE)
 
 # Validate that CHIP_ROOT exists
@@ -94,6 +75,34 @@ endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CROSSCOMPILING True)
 
+# <var> from the CMake variable, the environment, or the sibling directory <sibling> of KVASIR_ROOT
+function(kvasir_resolve_root var sibling)
+    if(DEFINED ${var} AND NOT "${${var}}" STREQUAL "")
+        set(_dir "${${var}}")
+        set(_from "CMake variable")
+    elseif(DEFINED ENV{${var}})
+        set(_dir "$ENV{${var}}")
+        set(_from "environment")
+    else()
+        get_filename_component(_parent "${KVASIR_ROOT}" DIRECTORY)
+        set(_dir "${_parent}/${sibling}")
+        set(_from "computed as sibling")
+    endif()
+    get_filename_component(_dir "${_dir}" ABSOLUTE)
+    message(STATUS "Kvasir: ${var}=${_dir} (from ${_from})")
+    set(${var}
+        "${_dir}"
+        CACHE INTERNAL "" FORCE)
+    set(${var}
+        "${_dir}"
+        PARENT_SCOPE)
+endfunction()
+
+# Registers a package for util.cmake to add after project(), unless <guard_target> already exists
+function(kvasir_add_package source_dir binary_name guard_target)
+    set_property(GLOBAL APPEND PROPERTY KVASIR_PACKAGES "${source_dir}|${binary_name}|${guard_target}")
+endfunction()
+
 add_subdirectory(${KVASIR_ROOT}/svd_converter ${CMAKE_BINARY_DIR}/kvasir_svd_converter)
 include(${CHIP_ROOT}/cmake/chip.cmake)
 
@@ -120,6 +129,10 @@ set(JLINK_PROBE
 set(DUPLEX_BASE_PORT
     ""
     CACHE STRING "Choose the first tcp port for uc_log duplex channels, empty for default")
+
+set(UC_LOG_TRANSPORT
+    ""
+    CACHE STRING "uc_log_printer control and duplex transport: unix (default) or tcp")
 
 if(COMPILE_TARGET STREQUAL arm_clang)
     set(CPPLIB

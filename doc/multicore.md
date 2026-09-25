@@ -85,15 +85,9 @@ blocks while it happens (rule 2 below applies in both directions at that moment)
 
 ### Rebooting the chip
 
-`Kvasir::SystemControl::SystemReset` (AIRCR.SYSRESETREQ) is not a chip reset on the RP2040
-and RP2350: it warm-resets the core that writes it and nothing else. From core 1 that parks
-core 1 in the bootrom's holding pen while core 0 keeps running against a partner that is
-gone (measured on the RP2350: core 1 at the bootrom's `wait_for_vector`, core 0 still in
-`main()`); from core 0 it leaves core 1 and every peripheral running. A reboot that restarts
-both cores and the peripherals from the bootrom is `Kvasir::reboot()` in the chip layer
-(`chip/rp_common/bootrom_functions.hpp`), which goes through the watchdog: on the RP2350 the
-bootrom's `reboot()` arms the watchdog timer and `PM::reset_cause()` reports `watchdog_timer`,
-on the RP2040 the raw trigger reports `watchdog_force`.
+`Kvasir::SystemControl::SystemReset` (AIRCR.SYSRESETREQ) may reset only the core that writes
+it: it does on the RP2040 and RP2350. Which call really restarts both cores and the
+peripherals is the chip package's business.
 
 ## Resources
 
@@ -143,21 +137,11 @@ Claims only count for types in a Startup list. A driver that is not a peripheral
 panel, a network controller) but is handed pins is listed for its claims alone; it has no
 init steps, so listing it costs nothing.
 
-What the RP2350 chip layer declares today:
-
-| Resource | Provided by | Claimed by |
-|---|---|---|
-| DMA channel, DMA interrupt line | `DmaBase` (from its config) | every DMA-using driver, `Kvasir::DMA::Claims<Dma, Channel...>` |
-| GPIO | whoever writes its `GPIOn_CTRL` in `initStepPinConfig` | `GpioIrq`, `Io::PinClaims<Pins...>` in drivers handed a pin |
-| PIO state machine, instruction slot | `Kvasir::Pio::Provides<Instance, Sm, Offset, Program>` in `Pio::StateMachine`, `WS2812`, `PioQspi`, `Cyw43::PioSpi` | |
-| SPI, I2C, UART instance; the ADC, USB, watchdog, a TIMER | their base classes | |
-| PWM output; PWM slice with its `(div, top)` | `PWM<Pin>`, `PWM_Timer<Slice>` | |
-| `clk_sys`, `clk_peri`, `clk_ref`, `clk_adc`, `clk_usb`, the processor clock | `ClockSettings::Provides = DefaultClockSettings::Provides<ClockSpeed, CrystalSpeed>` | every driver, at its config's `clockSpeed` (`Clocks.hpp` says which block counts which clock) |
+What a chip layer declares is documented with the chip package.
 
 Next to the resources, `Startup` refuses an interrupt vector installed in both cores'
-tables unless the chip lists the line as per core (`InterruptOffsetTraits::perCore`: SIO,
-IO_BANK0 and the core exceptions on the RP2350). A chip-wide line enabled in both NVICs
-runs its ISR on both cores at once.
+tables unless the chip lists the line as per core (`InterruptOffsetTraits::perCore`). A
+chip-wide line enabled in both NVICs runs its ISR on both cores at once.
 
 ## Posting work to the other core
 

@@ -5,9 +5,88 @@
 
 #include <cassert>
 #include <cstdint>
+#include <optional>
 #include <type_traits>
 
 namespace Kvasir { namespace Fault {
+    /// The registers of the last fault, kept in .noInit across the reset.
+    struct Record {
+        static constexpr std::uint32_t Magic = 0xFA17'C0DEU;
+
+        std::uint32_t magic;
+        std::uint32_t count;   // faults since last reported; registers are the first one's
+        std::uint32_t pc;
+        std::uint32_t lr;
+        std::uint32_t xpsr;
+        std::uint32_t excReturn;
+        std::uint32_t r0;
+        std::uint32_t r1;
+        std::uint32_t r2;
+        std::uint32_t r3;
+        std::uint32_t r12;
+    };
+
+    // volatile: uninitialized, LTO would otherwise shrink `magic` to one bit
+    [[gnu::section(".noInit"), gnu::used]] inline Record volatile lastFault;
+
+    inline std::optional<Record> takeLastFault() {
+        if(lastFault.magic != Record::Magic) { return std::nullopt; }
+        Record const r{.magic     = Record::Magic,
+                       .count     = lastFault.count,
+                       .pc        = lastFault.pc,
+                       .lr        = lastFault.lr,
+                       .xpsr      = lastFault.xpsr,
+                       .excReturn = lastFault.excReturn,
+                       .r0        = lastFault.r0,
+                       .r1        = lastFault.r1,
+                       .r2        = lastFault.r2,
+                       .r3        = lastFault.r3,
+                       .r12       = lastFault.r12};
+        lastFault.magic = 0;
+        return r;
+    }
+
+    inline void logLastFault() {
+        [[maybe_unused]] auto const fault = takeLastFault();
+        if(fault) {
+            UC_LOG_E(
+              "the run before this one ended in a fault ({} since the last report, this is the "
+              "first): PC={:#010x} LR={:#010x} xPSR={:#010x} EXC_RETURN={:#010x} R0={:#010x} "
+              "R1={:#010x} R2={:#010x} R3={:#010x} R12={:#010x}",
+              fault->count,
+              fault->pc,
+              fault->lr,
+              fault->xpsr,
+              fault->excReturn,
+              fault->r0,
+              fault->r1,
+              fault->r2,
+              fault->r3,
+              fault->r12);
+        }
+    }
+
+    inline void RecordAndLog(std::uint32_t const* stack_ptr,
+                             std::uint32_t        lr_value) {
+        // keep the first fault: later ones before the next boot are its consequences
+        if(lastFault.magic == Record::Magic) {
+            lastFault.count = lastFault.count + 1;
+        } else {
+            lastFault.count     = 1;
+            lastFault.r0        = stack_ptr[0];
+            lastFault.r1        = stack_ptr[1];
+            lastFault.r2        = stack_ptr[2];
+            lastFault.r3        = stack_ptr[3];
+            lastFault.r12       = stack_ptr[4];
+            lastFault.lr        = stack_ptr[5];
+            lastFault.pc        = stack_ptr[6];
+            lastFault.xpsr      = stack_ptr[7];
+            lastFault.excReturn = lr_value;
+            lastFault.magic     = Record::Magic;
+        }
+        Core::Log(stack_ptr, lr_value);
+    }
+
     struct CleanUpActionNone {
         void operator()() {}
     };
@@ -22,7 +101,7 @@ namespace Kvasir { namespace Fault {
     // the default and the only choice on a single-core chip) or Startup::Core1StackTop for
     // the handler in a SecondaryCore's list. The handler sets SP to StackTop minus
     // StackReserveBytes and runs down from there, so the top StackReserveBytes of the
-    // faulting context survive untouched and are what Core::Fault::Log reads its frame
+    // faulting context survive untouched and are what Core::Log (the chip's Fault::Core) reads its frame
     // from; a context that had grown deeper than the reserve has its frame under the
     // handler's own pushes. So the reserve wants to be more than the stack's expected
     // high-water mark and less than the stack, which nothing here can check against a
@@ -80,7 +159,7 @@ namespace Kvasir { namespace Fault {
               :
               : "l"(GetSafeStackPointer()),
                 "l"(std::addressof(CleanUpFunc)),
-                "i"(std::addressof(Core::Fault::Log)),
+                "i"(std::addressof(RecordAndLog)),
                 "l"(std::addressof(FaultFunc))
               : "r0", "r1", "r2", "r4", "r5");
 #else
@@ -100,7 +179,7 @@ namespace Kvasir { namespace Fault {
               :
               : "l"(GetSafeStackPointer()),
                 "l"(std::addressof(CleanUpFunc)),
-                "i"(std::addressof(Core::Fault::Log)),
+                "i"(std::addressof(RecordAndLog)),
                 "l"(std::addressof(FaultFunc))
               : "r0", "r1", "r2", "r4", "r5");
 #endif
@@ -151,7 +230,7 @@ namespace Kvasir { namespace Fault {
               :
               : "l"(GetSafeStackPointer()),
                 "l"(std::addressof(CleanUpFunc)),
-                "i"(std::addressof(Core::Fault::Log)),
+                "i"(std::addressof(RecordAndLog)),
                 "l"(std::addressof(FaultFunc))
               : "r0", "r1", "r2", "r4", "r5");
         }
@@ -205,7 +284,7 @@ namespace Kvasir { namespace Fault {
 #endif
         }
 
-        static constexpr auto earlyInit = Core::Fault::EarlyInitList{};
+        static constexpr auto earlyInit = Core::EarlyInitList{};
 
         static constexpr auto initStepPeripheryEnable = MPL::list(
           Nvic::makeEnable(Nvic::InterruptOffsetTraits<>::FaultInterruptIndexsNeedEnable{}));

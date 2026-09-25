@@ -7,6 +7,10 @@ _LINKER_INTERN_core1_vectors_start_ = .;
 KEEP(*(.core1_vectors*))
 _LINKER_INTERN_core1_vectors_end_ = .;
 *(SORT_BY_ALIGNMENT(.text*))
+/* libc++'s replaceable operator new/delete; it checks the bounds symbols (overridable_function.h) */
+__start___lcxx_override = .;
+*(__lcxx_override)
+__stop___lcxx_override = .;
 *(SORT_BY_ALIGNMENT(.rodata*))
 . = ALIGN(4);
 _LINKER_INTERN_init_array_start_ = .;

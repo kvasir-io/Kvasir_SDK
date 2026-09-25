@@ -5,7 +5,22 @@
 #include <cstdint>
 #include <string_view>
 
-namespace kvasir { namespace detail {
+namespace Kvasir { namespace Ubsan {
+    // read over the probe by `kvasir_bench.py ub`, since the log line may be lost
+    struct UbsanReports {
+        std::uint32_t count;
+        std::uint32_t lastReturnAddress;
+    };
+
+    [[gnu::used]] inline UbsanReports volatile ubsanReports{};
+
+    // every handler, clang's minimal and gcc's full ABI alike
+    inline void countReport(void const* caller) {
+        ubsanReports.count = ubsanReports.count + 1;
+        ubsanReports.lastReturnAddress
+          = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(caller));
+    }
+
     struct UbsanHandlerName {
     private:
         std::string_view sv;
@@ -25,18 +40,20 @@ namespace kvasir { namespace detail {
 
         constexpr operator std::string_view() const { return sv; }
     };
-}}   // namespace kvasir::detail
+}}   // namespace Kvasir::Ubsan
 
 extern "C" {
 
-#define UBSAN_REPORT()                                                                          \
-    do {                                                                                        \
-        [[maybe_unused]] constexpr auto UBSAN_HANDLER_FUNCTION_NAME = __FUNCTION__;             \
-        UC_LOG_C(                                                                               \
-          "UB: "_sc                                                                             \
-            + SC_LIFT(::kvasir::detail::UbsanHandlerName{SC_LIFT(UBSAN_HANDLER_FUNCTION_NAME)}) \
-            + " at {}"_sc,                                                                      \
-          __builtin_return_address(0));                                                         \
+#define UBSAN_REPORT()                                                                         \
+    do {                                                                                       \
+        ::Kvasir::Ubsan::countReport(__builtin_return_address(0));                             \
+        [[maybe_unused]] constexpr auto UBSAN_HANDLER_FUNCTION_NAME = __FUNCTION__;            \
+        UC_LOG_SCOPE_MODULE("ubsan");                                                          \
+        UC_LOG_C(                                                                              \
+          "UB: "_sc                                                                            \
+            + SC_LIFT(::Kvasir::Ubsan::UbsanHandlerName{SC_LIFT(UBSAN_HANDLER_FUNCTION_NAME)}) \
+            + " at {}"_sc,                                                                     \
+          __builtin_return_address(0));                                                        \
     } while(false)
 
 [[gnu::used]] inline void __ubsan_handle_mul_overflow_minimal() { UBSAN_REPORT(); }
@@ -85,7 +102,7 @@ extern "C" {
 // data block starts with the source location - the only part read here (layouts follow
 // gcc/ubsan.cc). Handlers log and return, except the two the compiler declares noreturn, which
 // trap.
-namespace kvasir::detail {
+namespace Kvasir::Ubsan {
 struct UbsanSourceLocation {
     char const*   filename;
     std::uint32_t line;
@@ -95,6 +112,7 @@ struct UbsanSourceLocation {
 inline void ubsanReport(std::string_view           check,
                         UbsanSourceLocation const* loc,
                         void*                      caller) {
+    countReport(caller);
     // the location pointer is documented as optional
     if(loc == nullptr || loc->filename == nullptr) {
         UC_LOG_C("UB: {} at {}", check, caller);
@@ -107,16 +125,16 @@ inline void ubsanReport(std::string_view           check,
              loc->column,
              caller);
 }
-}   // namespace kvasir::detail
+}   // namespace Kvasir::Ubsan
 
 extern "C" {
-using kvasir::detail::UbsanSourceLocation;
+using Kvasir::Ubsan::UbsanSourceLocation;
 using ValueHandle = std::uintptr_t;
 
-    #define KVASIR_UBSAN_GCC(name, ...)                                              \
-        [[gnu::used]] inline void __ubsan_handle_##name(                             \
-          UbsanSourceLocation const* data __VA_OPT__(, ) __VA_ARGS__) {              \
-            ::kvasir::detail::ubsanReport(#name, data, __builtin_return_address(0)); \
+    #define KVASIR_UBSAN_GCC(name, ...)                                             \
+        [[gnu::used]] inline void __ubsan_handle_##name(                            \
+          UbsanSourceLocation const* data __VA_OPT__(, ) __VA_ARGS__) {             \
+            ::Kvasir::Ubsan::ubsanReport(#name, data, __builtin_return_address(0)); \
         }
 
 KVASIR_UBSAN_GCC(add_overflow,
@@ -161,20 +179,20 @@ KVASIR_UBSAN_GCC(alignment_assumption,
 // the one handler whose location is the second argument, not the data block
 [[gnu::used]] inline void __ubsan_handle_nonnull_return_v1(void const*,
                                                            UbsanSourceLocation const* loc) {
-    ::kvasir::detail::ubsanReport("nonnull_return_v1", loc, __builtin_return_address(0));
+    ::Kvasir::Ubsan::ubsanReport("nonnull_return_v1", loc, __builtin_return_address(0));
 }
 
 [[gnu::used,
   noreturn]] inline void
 __ubsan_handle_builtin_unreachable(UbsanSourceLocation const* data) {
-    ::kvasir::detail::ubsanReport("builtin_unreachable", data, __builtin_return_address(0));
+    ::Kvasir::Ubsan::ubsanReport("builtin_unreachable", data, __builtin_return_address(0));
     while(true) { asm volatile("bkpt 6" : : :); }
 }
 
 [[gnu::used,
   noreturn]] inline void
 __ubsan_handle_missing_return(UbsanSourceLocation const* data) {
-    ::kvasir::detail::ubsanReport("missing_return", data, __builtin_return_address(0));
+    ::Kvasir::Ubsan::ubsanReport("missing_return", data, __builtin_return_address(0));
     while(true) { asm volatile("bkpt 6" : : :); }
 }
 }

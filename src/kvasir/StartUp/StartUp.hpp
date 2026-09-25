@@ -971,6 +971,7 @@ template<int Line,
          typename Filename,
          typename Expr>
 inline void log_assert() {
+    UC_LOG_SCOPE_MODULE("assert");
     UC_LOG_IMPL(uc_log::LogLevel::crit,
                 Line,
                 std::string_view{Filename{}()},
@@ -991,6 +992,7 @@ void log_assert(int         line,
 void log_assert([[maybe_unused]] int         line,
                 [[maybe_unused]] char const* filename,
                 [[maybe_unused]] char const* expr) {
+    UC_LOG_SCOPE_MODULE("assert");
     UC_LOG_C("libc/libc++ assert({}) {}:{}",
              std::string_view{expr},
              std::string_view{filename},
@@ -1017,6 +1019,7 @@ __assert_func(char const* file,
 [[gnu::noreturn,
   gnu::used]] void
 abort() {
+    UC_LOG_SCOPE_MODULE("assert");
     UC_LOG_C("abort() called (libstdc++ __throw_* or libc)");
     while(true) { asm volatile("bkpt 5" : : :); }
 }
@@ -1035,6 +1038,56 @@ _exit(int) {
 // destructors - firmware never exits
 extern "C" {
 [[gnu::used]] int atexit(void (*)()) { return 0; }
+}
+    #elif defined(LIBC_NAMESPACE)
+// third-party static destructors; noexcept as llvm-libc declares it
+extern "C" {
+[[gnu::used]] int atexit(void (*)()) noexcept { return 0; }
+}
+    #endif
+    #if defined(KVASIR_HEAP) && defined(LIBC_NAMESPACE)
+// llvm-libc baremetal OSUtil hooks: heap corruption is reported via stderr and exit
+extern "C" {
+struct __llvm_libc_stdio_cookie {
+    char unused;
+};
+
+extern __llvm_libc_stdio_cookie        __llvm_libc_stdin_cookie;
+extern __llvm_libc_stdio_cookie        __llvm_libc_stdout_cookie;
+extern __llvm_libc_stdio_cookie        __llvm_libc_stderr_cookie;
+[[gnu::used]] __llvm_libc_stdio_cookie __llvm_libc_stdin_cookie{};
+[[gnu::used]] __llvm_libc_stdio_cookie __llvm_libc_stdout_cookie{};
+[[gnu::used]] __llvm_libc_stdio_cookie __llvm_libc_stderr_cookie{};
+
+long                   __llvm_libc_stdio_read(void*,
+                                              char*,
+                                              std::size_t);
+long                   __llvm_libc_stdio_write(void*,
+                                               char const*,
+                                               std::size_t);
+[[gnu::noreturn]] void __llvm_libc_exit(int);
+
+[[gnu::used]] long __llvm_libc_stdio_read(void*,
+                                          char*,
+                                          std::size_t) {
+    return 0;
+}
+
+[[gnu::used]] long __llvm_libc_stdio_write(void*,
+                                           char const* buf,
+                                           std::size_t size) {
+    UC_LOG_SCOPE_MODULE("libc");
+    UC_LOG_C("libc: {}", std::string_view{buf, size});
+    return static_cast<long>(size);
+}
+
+[[gnu::noreturn,
+  gnu::used]] void
+__llvm_libc_exit(int status) {
+    UC_LOG_SCOPE_MODULE("libc");
+    UC_LOG_C("libc exit({})", status);
+    while(true) { asm volatile("bkpt 5" : : :); }
+}
 }
     #endif
     #if defined(__GLIBCXX__)
@@ -1190,9 +1243,32 @@ namespace std {
 //void terminate() noexcept { assert(false); }
 }   // namespace std
 
+#if !defined(KVASIR_HEAP)
 void operator delete(void*) noexcept {}
 
 void operator delete(void*,
                      std::size_t) noexcept {}
+
+void operator delete[](void*) noexcept {}
+
+void operator delete[](void*,
+                       std::size_t) noexcept {}
+
+    // keep libc++'s new.cpp (and its malloc) out of the link; reaching one is a bug
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wmissing-noreturn"
+
+void* operator new(std::size_t) {
+    assert(false);
+    __builtin_trap();
+}
+
+void* operator new[](std::size_t) {
+    assert(false);
+    __builtin_trap();
+}
+
+    #pragma GCC diagnostic pop
+#endif
 
 #include "kvasir/StartUp/SecondaryCore.hpp"

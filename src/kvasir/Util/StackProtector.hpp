@@ -1,10 +1,11 @@
 #pragma once
 
-#include "uc_log/uc_log.hpp"
-
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
+#include <type_traits>
 
 namespace Kvasir {
 

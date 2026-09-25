@@ -9,8 +9,9 @@ function(target_add_flash_jlink target)
     if(POLICY CMP0174)
         cmake_policy(SET CMP0174 NEW)
     endif()
-    cmake_parse_arguments(PARSE_ARGV 1 PARSED_ARGS ""
-                          "TARGET_MPU;SWD_SPEED;JLINK_IP;JLINK_PROBE;SUFFIX;AUXILIARY_TARGETS_PREFIX" "DEPENDS")
+    cmake_parse_arguments(
+        PARSE_ARGV 1 PARSED_ARGS "" "TARGET_MPU;SWD_SPEED;JLINK_IP;JLINK_PROBE;SUFFIX;AUXILIARY_TARGETS_PREFIX"
+        "DEPENDS;CONNECT_COMMANDS")
 
     if(PARSED_ARGS_UNPARSED_ARGUMENTS)
         message(FATAL_ERROR "unknown argument ${PARSED_ARGS_UNPARSED_ARGUMENTS}")
@@ -48,6 +49,12 @@ function(target_add_flash_jlink target)
         endif()
     else()
         set(jlink_connect_command "IP ${PARSED_ARGS_JLINK_IP}\nconnect\nr\nh\n")
+    endif()
+
+    # chip package's TARGET_JLINK_CONNECT_COMMANDS, run right after `connect`
+    if(PARSED_ARGS_CONNECT_COMMANDS)
+        list(JOIN PARSED_ARGS_CONNECT_COMMANDS "\n" jlink_connect_extra)
+        string(REPLACE "connect\n" "connect\n${jlink_connect_extra}\n" jlink_connect_command "${jlink_connect_command}")
     endif()
 
     find_program(jlinkexe JLinkExe REQUIRED)

@@ -12,11 +12,25 @@ find_package(
 
 include(${kvasir_cmake_dir}/jlink.cmake)
 
-# Add kvasir_devices subdirectory if it exists and contains CMakeLists.txt
-if(IS_DIRECTORY "${KVASIR_DEVICES_ROOT}" AND EXISTS "${KVASIR_DEVICES_ROOT}/CMakeLists.txt")
-    add_subdirectory(${KVASIR_DEVICES_ROOT} ${CMAKE_BINARY_DIR}/kvasir_devices)
-    message(STATUS "Kvasir: Added kvasir_devices subdirectory from ${KVASIR_DEVICES_ROOT}")
-endif()
+include(${kvasir_cmake_dir}/kvasir_sdk_targets.cmake)
+target_link_libraries(kvasir_sdk INTERFACE uc_log::uc_log)
+
+# packages registered by the chip package (kvasir_add_package)
+get_property(_kvasir_packages GLOBAL PROPERTY KVASIR_PACKAGES)
+foreach(_package IN LISTS _kvasir_packages)
+    string(REPLACE "|" ";" _package "${_package}")
+    list(GET _package 0 _source)
+    list(GET _package 1 _binary)
+    list(GET _package 2 _guard)
+    if(TARGET ${_guard})
+        continue()
+    endif()
+    if(NOT EXISTS "${_source}/CMakeLists.txt")
+        message(FATAL_ERROR "Kvasir: the chip package needs ${_binary}, but ${_source} has no CMakeLists.txt")
+    endif()
+    add_subdirectory(${_source} ${CMAKE_BINARY_DIR}/${_binary})
+    message(STATUS "Kvasir: added ${_binary} from ${_source}")
+endforeach()
 
 function(add_clean_file target file)
     get_target_property(cur_additional_clean_files ${target} ADDITIONAL_CLEAN_FILES)
@@ -39,6 +53,19 @@ function(print_size target linker_file)
             ${kvasir_cmake_dir}/tools/pretty_size.py "${CMAKE_SIZE}" "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
             "${TARGET_FLASH_SIZE}" "${TARGET_RAM_SIZE}" "${TARGET_EEPROM_SIZE}" "${linker_file}"
         COMMENT "Print memory usage for ${target}")
+endfunction()
+
+# Every KVASIR_RAM_FUNC_ATTRIBUTES function (KVASIR_RAM_FUNC_MARK()) really runs from RAM, and nothing it reaches from
+# flash; removes the .elf when not, so the next build fails again instead of passing on a stale image.
+function(check_ram_funcs target)
+    add_custom_command(
+        TARGET ${target}
+        POST_BUILD
+        COMMAND
+            ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
+            ${kvasir_cmake_dir}/tools/check_ram_funcs.py --delete-on-failure "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
+        COMMENT "Checking that the RAM functions of ${target}.elf are in RAM"
+        VERBATIM)
 endfunction()
 
 function(check_undefined_refs target)
@@ -287,6 +314,7 @@ function(
     target_include_directories(${name} PUBLIC ${KVASIR_ROOT_DIR}/src)
     target_include_directories(${name} PUBLIC ${CHIP_ROOT_DIR}/src)
     target_include_directories(${name} PUBLIC ${CHIP_ROOT_DIR}/core/src)
+    check_ram_funcs(${name})
     check_undefined_refs(${name})
     generate_object(${name} .bin binary)
     generate_object(${name} .hex ihex)
@@ -367,6 +395,8 @@ function(
                 ${JLINK_IP}
                 JLINK_PROBE
                 "${JLINK_PROBE}"
+                CONNECT_COMMANDS
+                ${TARGET_JLINK_CONNECT_COMMANDS}
                 SUFFIX
                 "_flash.hex")
         else()
@@ -380,6 +410,8 @@ function(
                 ${JLINK_IP}
                 JLINK_PROBE
                 "${JLINK_PROBE}"
+                CONNECT_COMMANDS
+                ${TARGET_JLINK_CONNECT_COMMANDS}
                 SUFFIX
                 "_eeprom_flash.hex")
         endif()
@@ -388,6 +420,10 @@ function(
             add_dependencies(flash_${name} flash_${bootloader})
         endif()
 
+        get_target_property(_uc_log_filter ${name} UC_LOG_FILTER)
+        if(NOT _uc_log_filter)
+            set(_uc_log_filter "")
+        endif()
         target_add_uc_log_rtt_jlink(
             ${name}
             TARGET_MPU
@@ -400,6 +436,12 @@ function(
             "${JLINK_PROBE}"
             DUPLEX_BASE_PORT
             ${DUPLEX_BASE_PORT}
+            TRANSPORT
+            ${UC_LOG_TRANSPORT}
+            PRE_RESET_COMMANDS
+            ${TARGET_JLINK_CONNECT_COMMANDS}
+            LOG_FILTER
+            "${_uc_log_filter}"
             MAP_FILE
             ${name}.map
             HEX_FILE
@@ -410,8 +452,11 @@ endfunction()
 
 function(kvasir_executable_variants base_name)
     cmake_parse_arguments(
-        PARSE_ARGV 1 PARSED_ARGS "RAM_ONLY"
-        "OPTIMIZATION;MIN_STACK_SIZE;CORE1_STACK_SIZE;MIN_LOG_LEVEL;MIN_LOG_LEVEL_DEBUG;MIN_LOG_LEVEL_RELEASE"
+        PARSE_ARGV
+        1
+        PARSED_ARGS
+        "RAM_ONLY"
+        "OPTIMIZATION;MIN_STACK_SIZE;CORE1_STACK_SIZE;HEAP_SIZE;MIN_LOG_LEVEL;MIN_LOG_LEVEL_DEBUG;MIN_LOG_LEVEL_RELEASE;LOG_FILTER"
         "SOURCES;LIBRARIES;ADDITIONAL_FLAGS;ADDITIONAL_DEBUG_FLAGS;ADDITIONAL_RELEASE_FLAGS;ADDITIONAL_SANITIZE_FLAGS")
 
     if(PARSED_ARGS_UNPARSED_ARGUMENTS)
@@ -437,6 +482,18 @@ function(kvasir_executable_variants base_name)
     set(_core1_stack "")
     if(PARSED_ARGS_CORE1_STACK_SIZE)
         set(_core1_stack CORE1_STACK_SIZE ${PARSED_ARGS_CORE1_STACK_SIZE})
+    endif()
+
+    set(_heap "")
+    if(PARSED_ARGS_HEAP_SIZE)
+        set(_heap HEAP_SIZE ${PARSED_ARGS_HEAP_SIZE})
+    endif()
+
+    set(_log_filter "")
+    if(PARSED_ARGS_LOG_FILTER)
+        get_filename_component(_log_filter_path "${PARSED_ARGS_LOG_FILTER}" ABSOLUTE BASE_DIR
+                               "${CMAKE_CURRENT_SOURCE_DIR}")
+        set(_log_filter LOG_FILTER ${_log_filter_path})
     endif()
 
     # Opt-in to an image that lives entirely in RAM (the chip's LINKER_FILE_RAM_ONLY): loaded by the bootrom's UF2 path
@@ -483,6 +540,8 @@ function(kvasir_executable_variants base_name)
         USE_LOG
         ${_min_stack}
         ${_core1_stack}
+        ${_heap}
+        ${_log_filter}
         ${_ram_only}
         ${_min_log_debug}
         ${PARSED_ARGS_ADDITIONAL_FLAGS}
@@ -499,6 +558,8 @@ function(kvasir_executable_variants base_name)
         ${PARSED_ARGS_OPTIMIZATION}
         ${_min_stack}
         ${_core1_stack}
+        ${_heap}
+        ${_log_filter}
         ${_ram_only}
         ${PARSED_ARGS_ADDITIONAL_FLAGS}
         ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
@@ -515,6 +576,8 @@ function(kvasir_executable_variants base_name)
         USE_LOG
         ${_min_stack}
         ${_core1_stack}
+        ${_heap}
+        ${_log_filter}
         ${_ram_only}
         ${_min_log_release}
         ${PARSED_ARGS_ADDITIONAL_FLAGS}
@@ -533,6 +596,8 @@ function(kvasir_executable_variants base_name)
         USE_LOG
         ${_min_stack}
         ${_core1_stack}
+        ${_heap}
+        ${_log_filter}
         ${_ram_only}
         ${_min_log_release}
         ${PARSED_ARGS_ADDITIONAL_FLAGS}
@@ -549,7 +614,7 @@ function(target_configure_kvasir target)
         1
         PARSED_ARGS
         "USE_LOG;NOT_USE_ASSERT;ENABLE_SELF_OVERRIDE;USE_SANITIZER;RAM_ONLY"
-        "LOG;MIN_LOG_LEVEL;MIN_STACK_SIZE;CORE1_STACK_SIZE;HEAP_SIZE;OPTIMIZATION_STRATEGY;LINKER_FILE;LINKER_FILE_TEMPLATE;APPLICATION;BOOTLOADER;BOOTLOADER_SIZE"
+        "LOG;MIN_LOG_LEVEL;LOG_FILTER;MIN_STACK_SIZE;CORE1_STACK_SIZE;HEAP_SIZE;OPTIMIZATION_STRATEGY;LINKER_FILE;LINKER_FILE_TEMPLATE;APPLICATION;BOOTLOADER;BOOTLOADER_SIZE"
         "")
 
     if(PARSED_ARGS_UNPARSED_ARGUMENTS)
@@ -558,6 +623,29 @@ function(target_configure_kvasir target)
 
     if(NOT PARSED_ARGS_MIN_STACK_SIZE)
         set(PARSED_ARGS_MIN_STACK_SIZE 4k)
+    endif()
+
+    # uc_log compile-time log filter, read via #embed: a uc_log_filter.txt next to the project's top CMakeLists.txt is
+    # picked up with no argument, LOG_FILTER <dir>/uc_log_filter.txt names another. Editing it only recompiles (#embed
+    # puts it into the depfile); only adding or removing the default file re-configures (the glob).
+    set(_log_filter "")
+    if(PARSED_ARGS_LOG_FILTER)
+        get_filename_component(_log_filter "${PARSED_ARGS_LOG_FILTER}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        if(NOT EXISTS "${_log_filter}")
+            message(FATAL_ERROR "${target}: LOG_FILTER ${_log_filter} does not exist")
+        endif()
+    else()
+        file(GLOB _log_filter CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/uc_log_filter.txt")
+    endif()
+    if(_log_filter)
+        get_filename_component(_log_filter_name "${_log_filter}" NAME)
+        if(NOT _log_filter_name STREQUAL "uc_log_filter.txt")
+            message(FATAL_ERROR "${target}: the log filter file must be named uc_log_filter.txt (#embed finds it by "
+                                "name), not ${_log_filter_name}")
+        endif()
+        get_filename_component(_log_filter_dir "${_log_filter}" DIRECTORY)
+        target_compile_options(${target} PRIVATE "--embed-dir=${_log_filter_dir}")
+        set_target_properties(${target} PROPERTIES UC_LOG_FILTER "${_log_filter}")
     endif()
 
     # A second core is opt-in. Without CORE1_STACK_SIZE the image is single-core and, by contract, identical to what it
@@ -571,6 +659,9 @@ function(target_configure_kvasir target)
 
     if(NOT PARSED_ARGS_HEAP_SIZE)
         set(PARSED_ARGS_HEAP_SIZE 0k)
+    endif()
+    if(NOT PARSED_ARGS_HEAP_SIZE MATCHES "^0[kKmM]?$")
+        target_compile_definitions(${target} PUBLIC KVASIR_HEAP=1)
     endif()
 
     if(NOT PARSED_ARGS_OPTIMIZATION_STRATEGY)

@@ -36,6 +36,9 @@ if(USE_SANITIZER)
     add_link_options(-fsanitize=${USE_SANITIZER})
 endif()
 
+# kvasir::sdk and kvasir::test_support, as other repos' host tests use them
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/kvasir_sdk_targets.cmake)
+
 # the plain Kvasir headers, for tests that do not touch hardware registers
 add_library(kvasir_headers INTERFACE)
 target_include_directories(kvasir_headers INTERFACE ${CMAKE_CURRENT_LIST_DIR}/../src)
@@ -79,9 +82,9 @@ kvasir_add_test(kvasir_test_register_sequence_point sequence_point_tests.cpp)
 kvasir_add_test(kvasir_test_register_multi_register multi_register_tests.cpp)
 kvasir_add_test(kvasir_test_register_special_access special_access_tests.cpp)
 kvasir_add_test(kvasir_test_rate_limiter rate_limiter_tests.cpp)
+target_link_libraries(kvasir_test_rate_limiter PRIVATE kvasir::test_support)
 kvasir_add_test(kvasir_test_register_factories factories_tests.cpp)
 kvasir_add_test(kvasir_test_io io_tests.cpp)
-kvasir_add_test(kvasir_test_devices devices_tests.cpp)
 
 kvasir_add_multicore_test(kvasir_test_spinlock spinlock_tests.cpp)
 kvasir_add_multicore_test(kvasir_test_seqlock seqlock_tests.cpp)
@@ -112,7 +115,7 @@ set(KVASIR_NON_SELF_CONTAINED_HEADERS
     kvasir/Atomic/detail/arm_Clang_atomic.hpp # needs core/Nvic.hpp from a chip file
     kvasir/Atomic/detail/arm_GCC_atomic.hpp # needs core/Nvic.hpp from a chip file
     kvasir/Util/FaultHandler.hpp # needs core/Fault.hpp from a chip file
-    kvasir/Util/StackProtector.hpp # needs uc_log
+    kvasir/Util/BootLog.hpp # includes FaultHandler.hpp (chip file), uc_log and the generated cmake_git_version header
     kvasir/Util/ubsan.hpp # needs the remote_fmt _sc literal
     kvasir/StartUp/StartUp.hpp # needs uc_log and a chip file
     kvasir/StartUp/SecondaryCore.hpp # includes StartUp.hpp, needs uc_log and a chip file
@@ -144,3 +147,9 @@ target_compile_options(kvasir_self_contained_headers PRIVATE -Wall -Wextra -Werr
 # make the check visible as a test as well so `ctest` reports on it
 add_test(NAME kvasir_test_header_self_containment COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target
                                                           kvasir_self_contained_headers)
+
+# cmake/tools/check_ram_funcs.py (the post-link RAM function check) against ARM images built with every ARM toolchain
+# found here; a missing toolchain is a skip inside the test, not a failure
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME kvasir_test_check_ram_funcs COMMAND ${Python3_EXECUTABLE}
+                                                  ${CMAKE_CURRENT_LIST_DIR}/ram_funcs/test_check_ram_funcs.py)

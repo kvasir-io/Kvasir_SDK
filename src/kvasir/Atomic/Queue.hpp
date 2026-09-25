@@ -2,8 +2,11 @@
 
 #include "kvasir/Mpl/Utility.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <ranges>
+#include <type_traits>
 
 namespace Kvasir { namespace Atomic {
 
@@ -94,6 +97,17 @@ namespace Kvasir { namespace Atomic {
 
         static constexpr IndexType next(IndexType in) { return (in + 1) % Size; }
 
+        // contiguous trivially copyable ranges are copied in at most two runs instead of per element
+        template<typename TRange>
+        static constexpr bool CopiesInRuns
+          = std::ranges::contiguous_range<TRange> && std::is_trivially_copyable_v<TDataType>;
+
+        static constexpr IndexType advanced(IndexType   index,
+                                            std::size_t count) {
+            std::size_t const end = std::size_t{index} + count;
+            return IndexType(end >= Size ? end - Size : end);
+        }
+
         void push(TDataType in) {
             auto const tail     = tail_.load(load_memory_order);
             auto const head     = head_.load(load_memory_order);
@@ -115,12 +129,20 @@ namespace Kvasir { namespace Atomic {
             auto       tail = tail_.load(load_memory_order);
             auto const head = head_.load(load_memory_order);
             if(range.size() < Size - distance(head, tail)) {
-                auto       begin = range.begin();
-                auto const end   = range.end();
-                while(begin != end) {
-                    data_[tail]
-                      = *begin++;   //NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                    tail = next(tail);
+                if constexpr(CopiesInRuns<TRange const>) {
+                    std::size_t const count = range.size();
+                    std::size_t const first = std::min<std::size_t>(count, Size - tail);
+                    std::copy_n(std::ranges::data(range), first, data_.data() + tail);
+                    std::copy_n(std::ranges::data(range) + first, count - first, data_.data());
+                    tail = advanced(tail, count);
+                } else {
+                    auto       begin = range.begin();
+                    auto const end   = range.end();
+                    while(begin != end) {
+                        data_[tail]
+                          = *begin++;   //NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
+                        tail = next(tail);
+                    }
                 }
                 TSync::fence();
                 tail_.store(tail, store_memory_order);   // commit
@@ -148,12 +170,20 @@ namespace Kvasir { namespace Atomic {
             auto       head  = head_.load(load_memory_order);
             auto const lsize = distance(head, tail);
             if(lsize < range.size()) { return false; }
-            auto       begin = range.begin();
-            auto const end   = range.end();
-            while(begin != end) {
-                *begin++
-                  = data_[head];   //NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                head = next(head);
+            if constexpr(CopiesInRuns<TRange>) {
+                std::size_t const count = range.size();
+                std::size_t const first = std::min<std::size_t>(count, Size - head);
+                std::copy_n(data_.data() + head, first, std::ranges::data(range));
+                std::copy_n(data_.data(), count - first, std::ranges::data(range) + first);
+                head = advanced(head, count);
+            } else {
+                auto       begin = range.begin();
+                auto const end   = range.end();
+                while(begin != end) {
+                    *begin++
+                      = data_[head];   //NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
+                    head = next(head);
+                }
             }
             TSync::fence();
             head_.store(head, store_memory_order);   // commit

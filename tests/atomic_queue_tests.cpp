@@ -7,8 +7,10 @@
 #include "kvasir/Atomic/Queue.hpp"
 #include "test_harness.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <type_traits>
 #include <vector>
 
@@ -537,6 +539,43 @@ static void interleavedBulkProducerConsumer() {
     CHECK(q.empty());
 }
 
+// the two-run copy and the per-element copy must leave the same queue, from every start and length
+static void rangeCopiesInRunsFromEveryIndex() {
+    static constexpr std::size_t Size = 13;
+    for(std::size_t start = 0; start != Size; ++start) {
+        for(std::size_t count = 0; count != Size; ++count) {
+            TestQueue<std::uint8_t, Size> runs;
+            TestQueue<std::uint8_t, Size> single;
+            for(std::size_t i = 0; i != start; ++i) {   // move both indices to `start`
+                std::uint8_t out{};
+                runs.push(std::uint8_t{0});
+                single.push(std::uint8_t{0});
+                CHECK(runs.pop_into(out));
+                CHECK(single.pop_into(out));
+            }
+            std::vector<std::uint8_t> in(count);
+            for(std::size_t i = 0; i != count; ++i) { in[i] = static_cast<std::uint8_t>(i + 1); }
+            std::deque<std::uint8_t> const inSingle(in.begin(), in.end());   // not contiguous
+            resetOverflow();
+            runs.push(in);
+            single.push(inSingle);
+            CHECK(overflowCount == 0);
+            CHECK(runs.size() == count);
+            CHECK(runs.data_ == single.data_);
+            CHECK(runs.tail_.load() == single.tail_.load());
+
+            std::vector<std::uint8_t> out(count);
+            std::deque<std::uint8_t>  outSingle(count);
+            CHECK(runs.pop_into(out));
+            CHECK(single.pop_into(outSingle));
+            CHECK(out == in);
+            CHECK(std::equal(out.begin(), out.end(), outSingle.begin(), outSingle.end()));
+            CHECK(runs.empty());
+            CHECK(runs.head_.load() == single.head_.load());
+        }
+    }
+}
+
 int main() {
     emptyQueue();
     pushPopSingle();
@@ -550,6 +589,7 @@ int main() {
     pushRangeWrapsAround();
     popIntoRange();
     popIntoRangeWrapsAround();
+    rangeCopiesInRunsFromEveryIndex();
 
     overflowPolicyIgnore();
     byteElements();

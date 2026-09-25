@@ -169,6 +169,24 @@ SECTIONS {
     {
         *(.ARM.exidx*)
     }
+
+    /* remote_fmt call-site tags: address + 0x8000 is the log line's catalog id. Not loaded;
+       at 0 because lld ignores any other address for an INFO section. */
+    remote_fmt_sites 0 (INFO) :
+    {
+        KEEP(*(remote_fmt_sites remote_fmt_sites.*))
+    }
+
+    /* KVASIR_RAM_FUNC_MARK(): one address inside every RAM function, read by
+       cmake/tools/check_ram_funcs.py after the link. Not loaded; GNU ld drops it without KEEP. */
+    kvasir_ram_funcs 0 (INFO) :
+    {
+        KEEP(*(kvasir_ram_funcs))
+    }
+    kvasir_ram_funcs_calls_flash 0 (INFO) :
+    {
+        KEEP(*(kvasir_ram_funcs_calls_flash))
+    }
 }
 
 /* libgcc's unwinder names the bounds of the discarded unwind index. GNU ld defines them itself
