@@ -90,12 +90,14 @@ namespace Kvasir { namespace Atomic {
 
         static constexpr IndexType distance(IndexType head,
                                             IndexType tail) {
-            auto d = int(unsigned(tail) - unsigned(head));
-            if(d < 0) { d += Size; }
-            return IndexType(d);
+            auto const t = static_cast<std::size_t>(tail);
+            auto const h = static_cast<std::size_t>(head);
+            return static_cast<IndexType>(t >= h ? t - h : Size - h + t);
         }
 
-        static constexpr IndexType next(IndexType in) { return (in + 1) % Size; }
+        static constexpr IndexType next(IndexType in) {
+            return static_cast<IndexType>((static_cast<std::size_t>(in) + 1) % Size);
+        }
 
         // contiguous trivially copyable ranges are copied in at most two runs instead of per element
         template<typename TRange>
