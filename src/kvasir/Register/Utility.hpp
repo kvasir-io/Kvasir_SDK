@@ -21,7 +21,7 @@ namespace Kvasir { namespace Test {
 namespace Kvasir { namespace Register {
     constexpr unsigned maskFromRange(unsigned high,
                                      unsigned low) {
-        return (0xFFFFFFFFUL >> (31U - (high - low))) << low;
+        return (0xFFFFFFFFU >> (31U - (high - low))) << low;
     }
 
     template<typename... Is>

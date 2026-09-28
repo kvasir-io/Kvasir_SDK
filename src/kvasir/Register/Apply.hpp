@@ -480,7 +480,7 @@ namespace Kvasir { namespace Register {
               "runtime values can only be executed in an apply, they cannot be stored in a list");
             using type
               = IndexedAction<Action<FieldLocation<TAddress, Mask, TAccess, TR>, WriteAction>,
-                              brigand::size_t<Index>>;
+                              brigand::size_t<static_cast<std::size_t>(Index)>>;
         };
 
         // special case where there actually is expected input
@@ -498,7 +498,7 @@ namespace Kvasir { namespace Register {
               "runtime values can only be executed in an apply, they cannot be stored in a list");
             using type
               = IndexedAction<Action<FieldLocation<TAddress, Mask, TAccess, TR>, WriteAction>,
-                              brigand::size_t<Index>>;
+                              brigand::size_t<static_cast<std::size_t>(Index)>>;
         };
 
         // special case where a list of actions is passed

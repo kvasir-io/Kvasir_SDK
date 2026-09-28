@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
 #include <cstring>
 #include <string_view>
 
@@ -1046,6 +1047,13 @@ extern "C" {
 }
     #endif
     #if defined(KVASIR_HEAP) && defined(LIBC_NAMESPACE)
+// llvm-libc's heap aligns every block to max(4, alignof(max_align_t)) (Block::MIN_ALIGN), and
+// operator new(size_t) promises __STDCPP_DEFAULT_NEW_ALIGNMENT__. A max_align_t weaker than that
+// (lib/libc/include/stddef.h had `typedef int` until 2026-09-25) hands 8-aligned types 4-aligned
+// memory: a sanitizer type_mismatch at every such new.
+static_assert(alignof(std::max_align_t) >= __STDCPP_DEFAULT_NEW_ALIGNMENT__,
+              "max_align_t is weaker than operator new's default alignment: the heap would return "
+              "misaligned blocks (check the libc's stddef.h)");
 // llvm-libc baremetal OSUtil hooks: heap corruption is reported via stderr and exit
 extern "C" {
 struct __llvm_libc_stdio_cookie {
