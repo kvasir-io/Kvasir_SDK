@@ -40,9 +40,10 @@ jobs:
                 pacman -Syu --noconfirm
                 pacman -S --noconfirm git cmake base-devel ${{ matrix.compiler.cc == 'clang' && 'clang' || '' }} ${{ matrix.compiler.stdlib == 'libc++' && 'libc++ lld' || '' }}
 
-            # the register tests only need the headers in src/, no submodules
             - name: Checkout repository
               uses: actions/checkout@v6
+              with:
+                submodules: recursive
 
             - name: Configure CMake
               run: >
