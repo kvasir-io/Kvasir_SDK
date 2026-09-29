@@ -14,7 +14,10 @@ For every mark this script checks, in the linked ELF:
      call and tail call, every function address loaded from a literal pool (gcc's long_call:
      ldr rN, =f; blx rN) or built with movw/movt (lld's long-branch thunks), followed through
      every RAM function reached that way. Calls into ROM (outside every section) are allowed.
-Indirect calls through a register loaded from anywhere else cannot be followed.
+  3. none of them loads a flash address that is not a function (literal pool or movw/movt):
+     constant data in .rodata, which faults with XIP off.
+Indirect calls through a register loaded from anywhere else cannot be followed, and neither can
+data pointers that arrive as arguments.
 
     check_ram_funcs.py <elf> [--delete-on-failure] [--all-ram-functions] [--cxxfilt TOOL]
 
@@ -33,6 +36,7 @@ import sys
 from pathlib import Path
 
 MARK_SECTION = 'kvasir_ram_funcs'
+DATA = 'flash data via '
 
 SHT_PROGBITS = 1
 SHT_SYMTAB = 2
@@ -126,8 +130,9 @@ def sign_extend(value, bits):
 
 
 class Image:
-    def __init__(self, elf):
+    def __init__(self, elf, regions=None):
         self.elf = elf
+        self.regions = regions
         self.functions = sorted((s for s in elf.symbols if s['type'] == STT_FUNC and s['size']),
                                 key=lambda s: s['value'])
         self.function_starts = {s['value'] & ~1: s for s in self.functions}
@@ -135,6 +140,13 @@ class Image:
         self.mapping = sorted((s['value'], s['name'][1]) for s in elf.symbols
                               if s['name'][:2] in ('$t', '$d', '$a')
                               and (len(s['name']) == 2 or s['name'][2] == '.'))
+
+    def symbol_at(self, address):
+        best = None
+        for s in self.elf.symbols:
+            if s['type'] in (1, 2) and s['value'] <= address < s['value'] + max(s['size'], 1):
+                best = s
+        return best['name'] if best else None
 
     def function_at(self, address):
         for f in self.functions:
@@ -191,6 +203,8 @@ class Image:
         # a Thumb function address: odd, and the start of a function symbol
         if value is not None and value & 1 and (value & ~1) in self.function_starts:
             yield pc, value & ~1, how
+        elif value is not None and self.regions is not None and self.regions.is_flash(value):
+            yield pc, value, DATA + how.split(' ')[0]
 
     def _narrow(self, pc, hw1):
         if hw1 >> 11 == 0b11100:                                   # B T2
@@ -260,8 +274,8 @@ def marks(elf, section):
 
 
 def check(elf, all_ram_functions, name):
-    image = Image(elf)
     regions = Regions(elf)
+    image = Image(elf, regions)
     problems = []
     roots = []   # (function, walk what it reaches, marked)
     for section, walk in ((MARK_SECTION, True), (MARK_SECTION + '_calls_flash', False)):
@@ -300,6 +314,15 @@ def check(elf, all_ram_functions, name):
                 continue
             checked.add(fstart)
             for pc, target, how in image.references(function):
+                if how.startswith(DATA):
+                    sec = elf.section_at(target)
+                    chain = ' -> '.join(name(f['name']) for f in path[fstart])
+                    what = image.symbol_at(target)
+                    problems.append(f'{chain} reads flash: {how} at {pc:#010x} -> '
+                                    f'{name(what) if what else "constant data"} '
+                                    f'({sec["name"] if sec else "flash"} {target:#010x})'
+                                    + ('' if is_marked else ' (unmarked RAM function)'))
+                    continue
                 if fstart <= target < fstart + function['size']:
                     continue
                 callee = image.function_at(target)

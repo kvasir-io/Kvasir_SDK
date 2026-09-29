@@ -12,9 +12,9 @@ RULES (the tool enforces what it can; the rest is on you)
   2. One printer per board. If one runs - dominic's `just log` window, or one from `printer start`
      - use it: every command goes through its socket. `printer stop` refuses to end a printer that
      has a window (exit 4) unless asked with --confirm.
-  3. Symbols come from the tree's ELF. `peek`, `trace`, `stack`, `ub`, `crash`, `snapshot` refuse
-     (exit 4) when the printer says the board runs another build or the tree was rebuilt since the
-     flash: flash first, or --stale-ok if you know the symbol did not move.
+  3. Symbols come from the tree's ELF. `peek`, `trace`, `stack`, `ub`, `crash`, `snapshot`, `profile`
+     refuse (exit 4) when the printer says the board runs another build or the tree was rebuilt
+     since the flash: flash first, or --stale-ok if you know the symbol did not move.
   4. `reset` and `flash` refuse (exit 4) where the repo's .kvasir_bench.json says they do something
      physical (water_mix: the valve's motor calibrates at boot) - ask dominic, then --confirm.
   5. Judge a change with the `sanitize` target and end with `ub`.
@@ -48,6 +48,11 @@ COMMANDS
   stack    B T                                the stack's high-water mark (Kvasir::StackUsage)
   ub       B T                                a sanitize build's report counter
   crash    B T                                the last halt the printer caught, symbolised
+  profile  B T [--seconds S] [--top N] [--inclusive]
+                          where the core spends its time: DWT_PCSR sampled through the printer
+                          (the core keeps running), ranked by function and source line
+  chip     B T [CMD ARGS...]                  commands the chip package defines
+                                              (<CHIP_ROOT>/tools/kvasir_bench_chip.py); no CMD: list
  wait
   wait-for B T REGEX [--timeout S] [--from-now|--from-start] [--module ...]
                           the printer's log since the mark (the last flash/reset of this tool),
@@ -95,14 +100,21 @@ import typing
 import zlib
 from pathlib import Path
 
+sys.dont_write_bytecode = True  # no __pycache__ next to the imported tools
+
 # The printer's side of things - its control protocol and log history - is uc_log's own client
 # module; this tool adds what a Kvasir build tree and a Kvasir firmware know.
 sys.path.insert(
     0, str(Path(__file__).resolve().parent.parent / "uc_log" / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent /
+                "uc_log" / "remote_fmt" / "tools"))
 from uc_log_client import (LEVELS, PROTOCOL, Connection, ControlError,  # noqa: E402
                            control_socket_path, history, log_line_text, message_line,
                            metric_key, read_bytes, req_flash, req_messages, req_ping, req_read,
-                           req_reset, req_status, req_subscribe, req_wait, request, status_text)
+                           req_reset, req_status, req_subscribe, req_wait, req_write, request,
+                           status_text)
+from extract_sites import (abbreviated, demangle, demanglers,  # noqa: E402
+                           find_demangler, operator_end)
 
 PRINTER = "kvasir_uc_log/uc_log_printer_host_build/uc_log_printer"
 
@@ -158,6 +170,9 @@ class Tree:
             "JLINK_PROBE") or self._cached("JLINK_PROBE")
         self.host = os.environ.get("JLINK_IP") or self._cached(
             "JLINK_IP")   # a network J-Link
+        self.chip_root = self._cached("CHIP_ROOT")
+        # kHz; empty means the probe's maximum, which the DLL clamps 100000 to (cmake/jlink.cmake)
+        self.swd_speed = self._cached("SWD_SPEED") or "100000"
         self.device = os.environ.get("JLINK_DEVICE") or self._device()
         self.log_dir = self.build / "rtt_log" / target
 
@@ -682,10 +697,12 @@ def lookup(table, pattern: str) -> tuple[int, int, str]:
 
 
 def jlink(tree: Tree, script: str) -> str:
-    cmd = ["JLinkExe", "-NoGui", "1", "-device", tree.device, "-if", "SWD", "-speed", "4000",
+    cmd = ["JLinkExe", "-NoGui", "1", "-device", tree.device, "-if", "SWD", "-speed", tree.swd_speed,
            "-autoconnect", "1"]
     serial = tree.probe_serial()
-    if serial:
+    if tree.host:
+        cmd += ["-ip", tree.host]
+    elif serial:
         cmd += ["-USB", serial]
     with tempfile.NamedTemporaryFile("w", suffix=".jlink", delete=False) as f:
         f.write(script)
@@ -1287,7 +1304,7 @@ def snapshot(args) -> None:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    server = ["JLinkGDBServerCLExe", "-device", tree.device, "-if", "SWD", "-speed", "4000",
+    server = ["JLinkGDBServerCLExe", "-device", tree.device, "-if", "SWD", "-speed", tree.swd_speed,
               "-port", str(port), "-swoport", str(port +
                                                   1), "-telnetport", str(port + 2),
               "-nohalt", "-noir", "-silent", "-singlerun", "-nogui"]
@@ -1326,6 +1343,334 @@ def snapshot(args) -> None:
         except subprocess.TimeoutExpired:
             srv.kill()
         log_path.unlink(missing_ok=True)
+
+
+# ---- profile ---------------------------------------------------------------------------------
+
+# Armv8-M ARM (DDI0553B.y) D1.2.68 DWT_PCSR, Armv7-M ARM (DDI0403E) C1.6.5 DEMCR / C1.8.14, Armv6-M
+# (DDI0419E) the same addresses. Absent, it reads 0 (Cortex-M33 TRM r1p0 C3.2, v6-M/v7-M RAZ).
+DEMCR = 0xE000EDFC       # bit 24 TRCENA
+DWT_PCSR = 0xE000101C
+PCSR_NONE = 0xFFFFFFFF   # halted, no sample, or Secure code without Secure debug
+READ_PIECES = 64         # uc_log control::MaxPieces
+
+
+def strip_templates(name: str) -> str:
+    """`a::B<...>::c(int, x<y>)` -> `a::B::c()`; operators, `(anonymous namespace)` and lambda
+    names (`{lambda(int)#1}`, `'lambda'`) stay."""
+    out, depth, parens, i = [], 0, 0, 0
+    while i < len(name):
+        c = name[i]
+        keep = None
+        if name.startswith("[abi:", i) and "]" in name[i:i + 64]:
+            i = name.index("]", i) + 1
+            continue
+        if name.startswith("(anonymous namespace)", i):
+            keep = i + len("(anonymous namespace)")
+        elif name.startswith(("{lambda", "{unnamed"), i) and "}" in name[i:]:
+            keep = name.index("}", i) + 1
+        elif c == "'" and "'" in name[i + 1:]:
+            keep = name.index("'", i + 1) + 1
+        elif (end := operator_end(name, i)) is not None:
+            keep = end
+        if keep is not None:
+            if depth == 0:
+                out.append(name[i:keep])
+            i = keep
+            continue
+        # inside a template argument list: `A<(3 > 2)>` has a `>` in parentheses
+        if depth:
+            parens += c == "("
+            parens -= c == ")" and parens > 0
+            depth += c == "<" and not parens
+            depth -= c == ">" and not parens
+        elif c == "<":
+            depth = 1
+        elif c == "(":   # a parameter list
+            level, j = 0, i
+            while j < len(name):
+                level += name[j] == "("
+                level -= name[j] == ")"
+                j += 1
+                if level == 0:
+                    break
+            out.append("()")
+            i = j
+            continue
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)[:120]
+
+
+def short_function_names(names: set[str]) -> dict[str, str]:
+    """Mangled name -> strip_templates() of its demangled form. A demangled template signature can
+    run to megabytes (i2c_testing hwtest: 7.8 MB), so each is demangled once, streamed, and
+    abbreviated() (remote_fmt, memoised) before it is stripped."""
+    def split(n):   # a mangled name behind a prefix: __Thumbv7ABSLongThunk__ZN..., .Lswitch.table._ZN...
+        m = re.search(r"(?<=[._])_Z[A-Z]", n)
+        return (n[:m.start()], n[m.start():]) if m and not n.startswith("_Z") else ("", n)
+    out = {n: strip_templates(n) or "??" for n in names if not split(n)[
+        1].startswith("_Z")}
+    mangled = sorted({split(n)[1] for n in names} - set(out))
+    memo: dict = {}
+    unread = []
+    if mangled:
+        with tempfile.TemporaryFile("w+") as todo:
+            todo.write("\n".join(mangled) + "\n")
+            todo.seek(0)
+            with subprocess.Popen([find_demangler()], stdin=todo, stdout=subprocess.PIPE,
+                                  text=True) as demangler:
+                assert demangler.stdout is not None
+                for name, line in zip(mangled, demangler.stdout):
+                    line = line.rstrip("\n")
+                    if line.startswith("_Z"):
+                        unread.append(name)
+                    else:
+                        out[name] = strip_templates(
+                            abbreviated(line, memo=memo))
+    # what the first demangler cannot read, the other one may (remote_fmt extract_sites.py)
+    for name, line in zip(unread, demangle(demanglers(find_demangler())[1:], unread)):
+        out[name] = strip_templates(abbreviated(line, memo=memo)
+                                    if not line.startswith("_Z") else line)
+    for n in names - set(out):
+        prefix, rest = split(n)
+        out[n] = prefix + out[rest]
+    return out
+
+
+def symbolize(elf: Path, addresses: typing.Iterable[int]) -> dict[int, list[dict]]:
+    """Address -> inline stack (innermost first) with short function names. The output is read
+    line by line and each name kept once: mangled, it is still 0.6 GB for 40 000 addresses of
+    i2c_testing hwtest."""
+    tool = shutil.which("llvm-symbolizer")
+    if not tool:
+        die("llvm-symbolizer is needed for the inlined frames")
+    frames: dict[int, list[dict]] = {}
+    names: dict[str, str] = {}
+    with tempfile.TemporaryFile("w+") as todo:
+        todo.write("\n".join(f"0x{a:x}" for a in addresses) + "\n")
+        todo.seek(0)
+        with subprocess.Popen([tool, "--obj", str(elf), "--inlining", "--no-demangle",
+                               "--output-style=JSON"], stdin=todo, stdout=subprocess.PIPE,
+                              text=True) as symbolizer:
+            assert symbolizer.stdout is not None
+            for line in symbolizer.stdout:
+                entry = json.loads(line)
+                frames[int(entry["Address"], 16)] = [
+                    {"FunctionName": names.setdefault(f["FunctionName"], f["FunctionName"]),
+                     "FileName": f["FileName"], "Line": f["Line"]}
+                    for f in entry.get("Symbol", [])]
+    short = short_function_names(set(names))
+    for stack in frames.values():
+        for f in stack:
+            f["FunctionName"] = short[f["FunctionName"]]
+    return frames
+
+
+def unique_suffixes(paths: list[str]) -> dict[str, str]:
+    """Each path shortened to its fewest trailing components that no other path ends in."""
+    parts = {p: Path(p).parts or ("",) for p in paths}
+    out = {}
+    for p, mine in parts.items():
+        n = 1
+        while n < len(mine) and any(q != p and parts[q][-n:] == mine[-n:] for q in parts):
+            n += 1
+        out[p] = "/".join(mine[-n:])
+    return out
+
+
+def rank_samples(counts: dict[int, int], frames: dict[int, list[dict]], top: int) -> dict[str, list[tuple[float, str]]]:
+    """Samples per address + inline stacks (innermost first, llvm-symbolizer JSON) -> the top
+    (percent, name) by self time, inclusive time and source line."""
+    import collections
+    total = sum(counts.values()) or 1
+    short: dict[str, str] = {}
+
+    def strip(n):
+        if n not in short:
+            short[n] = strip_templates(n)
+        return short[n]
+
+    own, inclusive, lines = collections.Counter(
+    ), collections.Counter(), collections.Counter()
+    for address, n in counts.items():
+        stack = frames.get(address) or [
+            {"FunctionName": "??", "FileName": "", "Line": 0}]
+        own[strip(stack[0]["FunctionName"])] += n
+        lines[(stack[0]["FileName"], stack[0]["Line"])] += n
+        for name in {strip(f["FunctionName"]) for f in stack}:
+            inclusive[name] += n
+
+    def pct(c): return [(100 * n / total, k) for k, n in c.most_common(top)]
+    top_lines = pct(lines)
+    short = unique_suffixes([f for _, (f, _) in top_lines])
+    return {"self": pct(own), "inclusive": pct(inclusive),
+            "line": [(p, f"{short[f]}:{line}") for p, (f, line) in top_lines]}
+
+
+def profile(args) -> None:
+    """DWT_PCSR sampled through the printer while the core runs, symbolised with inlined frames."""
+    tree = Tree(args.build, args.target)
+    check_build(tree, args.stale_ok)
+    control = need_printer(tree, "the samples")
+    import collections
+    counts: collections.Counter = collections.Counter()
+    with Connection(control, 5) as c:
+        _, (demcr,) = read_bytes(c.ask(req_read([(DEMCR, 4)])))
+        if not int.from_bytes(demcr, "little") & (1 << 24):
+            die("DEMCR.TRCENA is clear: the DWT is off, DWT_PCSR reads nothing")
+        request_pcs = req_read([(DWT_PCSR, 4)] * READ_PIECES)
+        end = time.monotonic() + args.seconds
+        none = 0
+        while time.monotonic() < end:
+            _, data = read_bytes(c.ask(request_pcs))
+            for d in data:
+                pc = int.from_bytes(d, "little")
+                if pc == PCSR_NONE:
+                    none += 1
+                else:
+                    counts[pc & ~1] += 1
+    total = sum(counts.values())
+    if not total:
+        die("every sample read 0xFFFFFFFF: the core is halted, or runs Secure code without Secure "
+            "debug" if none else "no samples")
+    if set(counts) == {0}:
+        die("DWT_PCSR reads 0: this core has no DWT_PCSR")
+    ranges = code_ranges(tree)
+    outside = sum(n for a, n in counts.items() if not any(
+        lo <= a < hi for lo, hi in ranges))
+    frames = symbolize(tree.elf, counts)
+    ranked = rank_samples(counts, frames, args.top)
+    print(f"{total} samples over {args.seconds:g} s ({total / args.seconds:,.0f}/s)"
+          + (f", {none} without a PC (0xFFFFFFFF)" if none else "")
+          + (f", {outside} outside the ELF's code" if outside else ""))
+    for title, key in (("self", "self"), ("inclusive, over the inline stack", "inclusive"),
+                       ("source lines", "line")):
+        if key == "inclusive" and not args.inclusive:
+            continue
+        print(f"-- {title}")
+        for p, name in ranked[key]:
+            print(f"{p:6.1f} %  {name}")
+
+
+# ---- chip commands ---------------------------------------------------------------------------
+# A chip package may ship <CHIP_ROOT>/tools/kvasir_bench_chip.py with
+#     def commands() -> {name: (help, add_arguments(parser), run(bench, args))}
+# `run` gets a Bench; a command that reads symbols calls bench.check_build itself.
+
+
+def svd_registers(tree: Tree, peripheral: str) -> tuple[int, dict[str, tuple[int, dict[str, tuple[int, int]]]]]:
+    """A peripheral's base address and registers from chip.svd: name -> (offset, field -> (lsb, width))."""
+    import xml.etree.ElementTree as ET
+    chip_root = tree.chip_root
+    svd = Path(chip_root, "chip.svd") if chip_root else None
+    if svd is None or not svd.is_file():
+        die(
+            f"no chip.svd under the tree's CHIP_ROOT ({chip_root or 'not set'})")
+    for p in ET.parse(svd).getroot().iter("peripheral"):
+        if p.findtext("name") != peripheral:
+            continue
+        regs = {}
+        for r in p.iter("register"):
+            fields = {}
+            for f in r.iter("field"):
+                m = re.fullmatch(r"\[(\d+):(\d+)\]",
+                                 f.findtext("bitRange") or "")
+                if m:
+                    fields[f.findtext("name")] = (
+                        int(m.group(2)), int(m.group(1)) - int(m.group(2)) + 1)
+                elif f.findtext("bitOffset") is not None:
+                    fields[f.findtext("name")] = (int(f.findtext("bitOffset"), 0),
+                                                  int(f.findtext("bitWidth"), 0))
+            regs[r.findtext("name")] = (
+                int(r.findtext("addressOffset"), 0), fields)
+        return int(p.findtext("baseAddress"), 0), regs
+    die(f"{svd} has no peripheral {peripheral}")
+
+
+def field(value: int, fields: dict[str, tuple[int, int]], name: str) -> int:
+    lsb, width = fields[name]
+    return (value >> lsb) & ((1 << width) - 1)
+
+
+class Bench:
+    """What a chip command works with: the tree, the printer's socket, the chip's SVD."""
+    note, die, refuse, field = (staticmethod(note), staticmethod(die), staticmethod(refuse),
+                                staticmethod(field))
+
+    def __init__(self, tree: Tree):
+        self.tree = tree
+        self._connection: Connection | None = None
+
+    def __enter__(self) -> "Bench":
+        return self
+
+    def __exit__(self, *_) -> None:
+        if self._connection is not None:
+            self._connection.close()
+
+    def _ask(self, req: dict) -> dict:
+        if self._connection is None:
+            control = control_socket(self.tree)
+            if control is None:
+                refuse("no printer with a control socket runs for this target: chip commands go "
+                       "through it - start one (printer start, or just log)")
+            self._connection = Connection(control, 5)
+        return self._connection.ask(req)
+
+    def read(self, addresses: list[int]) -> tuple[int, list[int]]:
+        """32-bit words while the core runs: (unix µs on the log's clock, values)."""
+        stamp, data = read_bytes(
+            self._ask(req_read([(a, 4) for a in addresses])))
+        return stamp, [int.from_bytes(d, "little") for d in data]
+
+    def write(self, words: list[tuple[int, int]]) -> list[int]:
+        """(address, value) words written in order; each one's value read back after it."""
+        _, data = read_bytes(self._ask(req_write(words)))
+        return [int.from_bytes(d, "little") for d in data]
+
+    def svd(self, peripheral: str) -> tuple[int, dict[str, tuple[int, dict[str, tuple[int, int]]]]]:
+        return svd_registers(self.tree, peripheral)
+
+    def check_build(self, stale_ok: bool) -> None:
+        check_build(self.tree, stale_ok)
+
+
+def load_chip_plugin(tree: Tree) -> typing.Any:
+    """The chip package's kvasir_bench_chip.py module, or None."""
+    import importlib.util
+    path = Path(tree.chip_root, "tools",
+                "kvasir_bench_chip.py") if tree.chip_root else None
+    if path is None or not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("kvasir_bench_chip", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def chip_cmd(args) -> None:
+    tree = Tree(args.build, args.target)
+    plugin = load_chip_plugin(tree)
+    commands = plugin.commands() if plugin else {}
+    if not args.rest:
+        if not commands:
+            print(f"no chip commands ({tree.chip_root or 'no CHIP_ROOT'})")
+        for name, (text, _, _) in sorted(commands.items()):
+            print(f"{name:10} {text}")
+        return
+    name = args.rest[0]
+    if name not in commands:
+        die(f"no chip command '{name}'"
+            + (f"; this chip has: {', '.join(sorted(commands))}" if commands else ""))
+    text, add_arguments, run = commands[name]
+    parser = argparse.ArgumentParser(
+        prog=f"kvasir_bench.py chip {args.build} {args.target} {name}", description=text)
+    add_arguments(parser)
+    with Bench(tree) as bench:
+        run(bench, parser.parse_args(args.rest[1:]))
 
 
 # ---- command line ----------------------------------------------------------------------------
@@ -1447,6 +1792,23 @@ def main() -> None:
     p.add_argument("--stale-ok", action="store_true",
                    help="read symbols even if the board runs another build")
     p.set_defaults(fn=peek)
+
+    p = sub.add_parser("profile")
+    p.add_argument("build")
+    p.add_argument("target")
+    p.add_argument("--seconds", type=float, default=10)
+    p.add_argument("--top", type=int, default=30)
+    p.add_argument("--inclusive", action="store_true",
+                   help="also rank by inclusive time over the inline stack")
+    p.add_argument("--stale-ok", action="store_true",
+                   help="read symbols even if the board runs another build")
+    p.set_defaults(fn=profile)
+
+    p = sub.add_parser("chip")
+    p.add_argument("build")
+    p.add_argument("target")
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p.set_defaults(fn=chip_cmd)
 
     p = sub.add_parser("snapshot")
     p.add_argument("build")

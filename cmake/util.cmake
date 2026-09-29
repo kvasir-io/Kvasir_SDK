@@ -348,6 +348,12 @@ function(
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/two_stage_link.py)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/linker_utils.py)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/find_undefined_refs.py)
+    # POST_BUILD commands have no dependencies of their own: relink when one of their scripts changes
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/check_ram_funcs.py)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/pretty_size.py)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/strip_empty_segments.py)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/ihex_to_uf2.py)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/beautify_lst.py)
 
     get_filename_component(linker_file_path ${linker_file} ABSOLUTE)
     get_filename_component(linker_file_path ${linker_file_path} DIRECTORY)

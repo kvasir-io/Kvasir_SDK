@@ -56,6 +56,15 @@ template<int N>
     sink = v;
 }
 
+#if CASE == 5
+// a RAM function reading a constant table in flash (.rodata)
+[[KVASIR_RAM_FUNC_ATTRIBUTES]] void readsFlashTable(int v) {
+    KVASIR_RAM_FUNC_MARK();
+    static constexpr unsigned char table[16]{3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9, 3};
+    sink = table[v & 15];
+}
+#endif
+
 #if CASE == 4
     #include "unmarked.hpp"   // a file of its own: the source check reads text, not #if
 #endif
@@ -69,5 +78,8 @@ extern "C" [[gnu::section(".text.main")]] void entry() {
     callsFlashOnPurpose(sink);
 #if CASE == 4
     unmarked(sink);
+#endif
+#if CASE == 5
+    readsFlashTable(sink);
 #endif
 }

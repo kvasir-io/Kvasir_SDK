@@ -21,8 +21,9 @@ function(target_add_flash_jlink target)
         message(FATAL_ERROR "needs TARGET_MPU")
     endif()
 
+    # empty: the probe's maximum (the DLL clamps it), as uc_log's printer does
     if(NOT PARSED_ARGS_SWD_SPEED)
-        set(PARSED_ARGS_SWD_SPEED 4000)
+        set(PARSED_ARGS_SWD_SPEED 100000)
     endif()
 
     if(NOT PARSED_ARGS_SUFFIX)

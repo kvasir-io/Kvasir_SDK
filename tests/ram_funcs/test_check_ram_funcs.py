@@ -94,6 +94,15 @@ class CheckRamFuncs(unittest.TestCase):
         self.expect_fail('clang', 3, 'helper(int)',
                          'reaches flash', 'inFlash(int)')
 
+    # constant data in flash
+    def test_flash_data_read_gcc(self):
+        self.expect_fail('gcc', 5, 'readsFlashTable(int)',
+                         'reads flash', 'table')
+
+    def test_flash_data_read_clang(self):
+        self.expect_fail('clang', 5, 'readsFlashTable(int)',
+                         'reads flash', 'table')
+
     # the check reads the source list with llvm-dwarfdump and only notes its absence
     def expect_unmarked_fail(self, toolchain):
         if shutil.which('llvm-dwarfdump') is None:

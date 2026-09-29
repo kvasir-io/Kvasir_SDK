@@ -153,3 +153,6 @@ add_test(NAME kvasir_test_header_self_containment COMMAND ${CMAKE_COMMAND} --bui
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME kvasir_test_check_ram_funcs COMMAND ${Python3_EXECUTABLE}
                                                   ${CMAKE_CURRENT_LIST_DIR}/ram_funcs/test_check_ram_funcs.py)
+
+add_test(NAME kvasir_test_bench_tool COMMAND ${Python3_EXECUTABLE}
+                                             ${CMAKE_CURRENT_LIST_DIR}/../tools/test_kvasir_bench.py)
