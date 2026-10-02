@@ -70,6 +70,16 @@ COMMANDS
                                               passes it): any other one is refused
   reset    B T [--confirm]                    through the printer; answered when the log is back
                                               (a RAM_ONLY image: loaded again and started)
+  panic    B T [--cause NAME] [--confirm]     makes the running firmware call
+                                              Kvasir::Panic::raise(cause) (default user): the core
+                                              is halted for a moment, R0, PC and xPSR (IT/ICI
+                                              cleared) set, and resumed - through the printer (its
+                                              debug-register writes; the log goes on) or GDB. The
+                                              record's site is the halted code's lr, no call site.
+                                              Tests the firmware's panic
+                                              handler; it ends in whatever that does (a reboot).
+                                              The printer reports the halt ('core halted', a false
+                                              crash) and answers the reset's announcement late
   snapshot B T [--var SYMBOL]... [--frames N] HALTS about a second: registers, backtrace, vars.
                                               For a hang or a fault, never under host traffic
   printer start|stop|status [B T]             a headless printer that outlives the shell. The
@@ -96,6 +106,7 @@ tools/uc_log_client.py speaks it (use that module for anything this tool does no
 test_uc_log_client.py holds it to the golden files in uc_log/doc/control_protocol/.
 """
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -615,6 +626,110 @@ def reset(args) -> None:
         die(f"reset through the printer: {e}")
     print("reset; the log goes on")
     print(firmware_line(tree, control))
+
+
+# ---- panic -----------------------------------------------------------------------------------
+
+PANIC_RAISE = "Kvasir::Panic::raise(Kvasir::Panic::Cause)"
+
+# Armv7-M / Armv8-M debug registers (ARM DDI0553B.y D1.2.33 DCRDR, D1.2.34 DCRSR, D1.2.39 DHCSR;
+# Armv6-M DDI0419E C1.6 the same): memory mapped, so a printer's memory writes reach them. A DCRSR
+# write while the core is not halted is ignored (D1.2.34): wait for S_HALT first
+DHCSR, DCRSR, DCRDR = 0xE000EDF0, 0xE000EDF4, 0xE000EDF8
+DBGKEY, C_DEBUGEN, C_HALT, S_REGRDY, S_HALT = 0xA05F0000, 1 << 0, 1 << 1, 1 << 16, 1 << 17
+REGWNR = 1 << 16
+# DCRSR.REGSEL: R0, DebugReturnAddress (the PC the core resumes at), xPSR (D1.2.34)
+REG_R0, REG_PC, REG_XPSR = 0, 15, 16
+# EPSR.ICI/IT, xPSR[26:25] and [15:10] (B3.5): a halt can land inside an IT block or an
+# interrupted LDM/STM, and "the Debugger must ensure that the EPSR.IT and EPSR.ICI bits are
+# consistent with DebugReturnAddress, otherwise instruction execution will be UNPREDICTABLE"
+# (rule RQLRN, B13.5) - so the new PC gets them cleared. IPSR, T and the flags stay. Armv6-M has
+# neither: the bits read as 0 there
+EPSR_IT_ICI = (0b11 << 25) | (0x3F << 10)
+
+
+def function_address(tree: Tree, name: str) -> int:
+    """A function's address in the tree's ELF, by its exact demangled name."""
+    for line in nm(tree).splitlines():
+        m = re.match(r"([0-9a-f]{8}) [0-9a-f]{8} [tTwW] (.+)$", line)
+        if m and m.group(2) == name:
+            return int(m.group(1), 16)
+    die(f"{name} is not in {tree.elf.name}: a firmware without Kvasir::Panic (an older SDK)?")
+
+
+def raise_causes() -> dict[str, int]:
+    """Kvasir::Panic::Cause as the command line names it: PANIC_CAUSES (the record's names, in
+    the enum's order) with dashes, and KVASIR_PANIC's enumerator, user."""
+    return {("user" if n == "KVASIR_PANIC" else n.replace(" ", "-")): i
+            for i, n in enumerate(PANIC_CAUSES)}
+
+
+def panic_register_writes(address: int, cause: int, xpsr: int) -> list[list[tuple[int, int]]]:
+    """With the core halted and its xPSR read: R0 = cause; xPSR without IT/ICI; PC = raise (a
+    Thumb address without its bit 0: xPSR.T stays set). One list per register transfer; after
+    each DHCSR.S_REGRDY says it is done."""
+    return [[(DCRDR, cause), (DCRSR, REGWNR | REG_R0)],
+            [(DCRDR, xpsr & ~EPSR_IT_ICI), (DCRSR, REGWNR | REG_XPSR)],
+            [(DCRDR, address & ~1), (DCRSR, REGWNR | REG_PC)]]
+
+
+def panic_gdb_commands(address: int, cause: int) -> list[str]:
+    """The same in one GDB session (no printer: JLinkExe cannot read xPSR and write it back in
+    one session, and it lets the core run between two). `monitor go` before detach: detach
+    alone leaves the core halted."""
+    return ["monitor halt", f"set $r0 = {cause}", f"set $xpsr = $xpsr & ~{EPSR_IT_ICI:#x}",
+            f"set $pc = {address & ~1:#x}", "monitor go", "detach"]
+
+
+def panic(args) -> None:
+    tree = Tree(args.build, args.target)
+    # a panic handler resets as a reset does
+    confirm_needed(tree, "reset", args.confirm)
+    check_build(tree, args.stale_ok)
+    cause = raise_causes()[args.cause]
+    address = function_address(tree, PANIC_RAISE)
+    control = control_socket(tree)
+    set_mark(tree, control)
+    if control is None:
+        with gdb_server(tree) as port:
+            debugger = arm_gdb()
+            if debugger is None:
+                die("no gdb with ARM support (arm-none-eabi-gdb, gdb-multiarch, gdb)")
+            cmds = [f"target remote :{port}"] + \
+                panic_gdb_commands(address, cause)
+            gdb = subprocess.run([debugger, "-batch", "-nx", str(tree.elf)] +
+                                 [a for c in cmds for a in ("-ex", c)],
+                                 capture_output=True, text=True, timeout=60)
+        if gdb.returncode != 0 or "Remote communication error" in gdb.stderr:
+            die("gdb failed:\n" +
+                (gdb.stdout[-800:] + gdb.stderr[-800:]).strip())
+        print(
+            f"raise({args.cause}) called through GDB (no printer runs: no log)")
+        return
+
+    with Connection(control, 5) as c:
+        def dhcsr() -> int:
+            return int.from_bytes(read_bytes(c.ask(req_read([(DHCSR, 4)])))[1][0], "little")
+
+        def wait(bit: int, what: str) -> None:
+            deadline = time.time() + 1
+            while not dhcsr() & bit:
+                if time.time() > deadline:
+                    c.ask(req_write([(DHCSR, DBGKEY | C_DEBUGEN)]))
+                    die(f"{what}; resumed")
+
+        c.ask(req_write([(DHCSR, DBGKEY | C_DEBUGEN | C_HALT)]))
+        wait(S_HALT, "the core did not halt (DHCSR.S_HALT)")
+        c.ask(req_write([(DCRSR, REG_XPSR)]))
+        wait(S_REGRDY, "the core did not hand out xPSR (DHCSR.S_REGRDY)")
+        xpsr = int.from_bytes(read_bytes(
+            c.ask(req_read([(DCRDR, 4)])))[1][0], "little")
+        for step in panic_register_writes(address, cause, xpsr):
+            c.ask(req_write(step))
+            wait(S_REGRDY, "the core did not take the register write (DHCSR.S_REGRDY)")
+        c.ask(req_write([(DHCSR, DBGKEY | C_DEBUGEN)]))
+    print(f"raise({args.cause}) called through the printer; the log goes on "
+          "(wait-for 'ended in a panic' to see the next boot name it)")
 
 
 # ---- log -------------------------------------------------------------------------------------
@@ -1416,11 +1531,10 @@ gdb.execute("detach")
 '''
 
 
-def snapshot(args) -> None:
-    tree = Tree(args.build, args.target)
-    check_build(tree, args.stale_ok)
-    table = symbols(tree)
-    wanted = [lookup(table, p) for p in args.var]
+@contextlib.contextmanager
+def gdb_server(tree: Tree):
+    """A J-Link GDB server on a free local port for one gdb session; it does not halt the core
+    and ends with that session (-singlerun). Yields the port."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
@@ -1444,6 +1558,21 @@ def snapshot(args) -> None:
                 die("the GDB server did not come up:\n" +
                     "\n".join(text.splitlines()[-8:]))
             time.sleep(0.1)
+        yield port
+    finally:
+        try:
+            srv.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            srv.kill()
+        log_path.unlink(missing_ok=True)
+
+
+def snapshot(args) -> None:
+    tree = Tree(args.build, args.target)
+    check_build(tree, args.stale_ok)
+    table = symbols(tree)
+    wanted = [lookup(table, p) for p in args.var]
+    with gdb_server(tree) as port:
         with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
             f.write(GDB_SCRIPT %
                     {"port": port, "frames": args.frames, "vars": wanted})
@@ -1460,12 +1589,6 @@ def snapshot(args) -> None:
               if keep else gdb.stdout[-1500:] + gdb.stderr[-800:])
         print(
             f"(the core stood still for about {time.time() - t0:.1f} s and runs again)")
-    finally:
-        try:
-            srv.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            srv.kill()
-        log_path.unlink(missing_ok=True)
 
 
 # ---- profile ---------------------------------------------------------------------------------
@@ -1911,6 +2034,17 @@ def main() -> None:
             p.add_argument("--stale-ok", action="store_true",
                            help="read symbols even if the board runs another build")
         p.set_defaults(fn=fn)
+
+    p = sub.add_parser("panic")
+    p.add_argument("build")
+    p.add_argument("target")
+    p.add_argument("--cause", choices=list(raise_causes()), default="user",
+                   help="the Kvasir::Panic::Cause raise() is called with")
+    p.add_argument("--confirm", action="store_true",
+                   help="the repo's .kvasir_bench.json says a reset does something physical")
+    p.add_argument("--stale-ok", action="store_true",
+                   help="take raise()'s address from the ELF even if the board runs another build")
+    p.set_defaults(fn=panic)
 
     p = sub.add_parser("messages")
     p.add_argument("build")

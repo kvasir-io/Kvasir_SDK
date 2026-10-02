@@ -162,6 +162,41 @@ class PanicRecord(unittest.TestCase):
         self.assertEqual(len(values), len(kb.PANIC_CAUSES))
 
 
+class PanicCommand(unittest.TestCase):
+    """`panic` makes the core call Kvasir::Panic::raise(cause) through the debug registers."""
+
+    def test_causes_follow_the_enum(self):
+        causes = kb.raise_causes()
+        self.assertEqual(causes["assertion"], 0)
+        self.assertEqual(causes["fault"], 7)
+        self.assertEqual(causes["user"], 8, "KVASIR_PANIC is Cause::user")
+        self.assertEqual(sorted(causes.values()),
+                         list(range(len(kb.PANIC_CAUSES))))
+
+    def test_raise_is_the_header_s_signature(self):
+        header = (HERE.parent / "src/kvasir/Util/Panic.hpp").read_text()
+        self.assertIn("[[noreturn]] void raise(Cause cause);", header)
+        self.assertEqual(
+            kb.PANIC_RAISE, "Kvasir::Panic::raise(Kvasir::Panic::Cause)")
+
+    def test_register_writes_r0_xpsr_without_it_ici_then_pc(self):
+        # a halt inside an IT block of an exception handler: IT/ICI bits set, IPSR 3
+        steps = kb.panic_register_writes(0x20026439, 8, 0x89002803)
+        self.assertEqual(steps[0], [(kb.DCRDR, 8), (kb.DCRSR, 0x10000)])
+        self.assertEqual(steps[1], [(kb.DCRDR, 0x89000003), (kb.DCRSR, 0x10010)],
+                         "IT/ICI cleared (DDI0553B.y RQLRN), flags, T and IPSR kept")
+        self.assertEqual(steps[2], [(kb.DCRDR, 0x20026438), (kb.DCRSR, 0x1000F)],
+                         "the PC without the Thumb bit")
+
+    def test_it_ici_mask(self):
+        self.assertEqual(kb.EPSR_IT_ICI, 0x0600FC00)
+
+    def test_gdb_commands(self):
+        self.assertEqual(kb.panic_gdb_commands(0x20026439, 3),
+                         ["monitor halt", "set $r0 = 3", "set $xpsr = $xpsr & ~0x600fc00",
+                          "set $pc = 0x20026438", "monitor go", "detach"])
+
+
 class TreeSettings(unittest.TestCase):
     def tree(self, cache):
         tree = kb.Tree.__new__(kb.Tree)
