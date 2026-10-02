@@ -10,6 +10,7 @@
 #include <functional>    // for less and equal_to
 #include <iterator>      // for reverse_iterator and iterator traits
 #include <limits>        // for numeric_limits
+#include <memory>        // for destroy
 #include <stdexcept>     // for length_error
 #include <type_traits>   // for aligned_storage and all meta-functions
 #include <utility>       // for forward, move and swap
@@ -538,7 +539,10 @@ namespace sv_detail {
                                 InputIt last) noexcept(std::is_nothrow_destructible_v<T>) {
                 assert(first >= data() && first <= end() && "first is out-of-bounds");
                 assert(last >= data() && last <= end() && "last is out-of-bounds");
-                for(; first != last; ++first) { first->~T(); }
+                // std::destroy, not `for(; first != last; ++first) first->~T();`: clang 23's
+                // -Wlifetime-safety-invalidation takes the destructor call for an invalidation
+                // of `first` and the next `++` / `!=` for a use after it.
+                std::destroy(first, last);
             }
 
             /// (unsafe) Destroys all elements of the storage.
