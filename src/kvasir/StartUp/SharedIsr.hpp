@@ -67,6 +67,18 @@ struct SubIsr {
     static constexpr auto fn       = Fn;
     static constexpr int  priority = Priority;   // -1: the child does not ask for one
 };
+
+// Whether a handler template argument is nullptr (a source a driver leaves off). Matched by
+// specialization, never as `F == nullptr`: gcc does not fold a function's address compared with
+// null to a constant once -fsanitize=null, nonnull-attribute or returns-nonnull-attribute is on
+// (all in -fsanitize=undefined; arm-none-eabi-g++ 16.2), or -fno-delete-null-pointer-checks, so
+// that comparison breaks a static_assert or a template argument in a sanitized gcc build. clang
+// folds it either way.
+template<auto F>
+inline constexpr bool isNullHandler = false;
+
+template<>
+inline constexpr bool isNullHandler<static_cast<void (*)()>(nullptr)> = true;
 }   // namespace Kvasir::Nvic
 
 namespace Kvasir::Startup::Detail {
