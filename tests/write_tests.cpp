@@ -240,6 +240,32 @@ static void agreeingLiteralsMerge() {
     });
 }
 
+// Overlapping writes in one apply() where a runtime value is involved
+namespace OverlapRules {
+using Kvasir::Register::Detail::literalLeavesRuntimeBits;
+using Kvasir::Register::Detail::runtimeDisjoint;
+static_assert(runtimeDisjoint<CtrlReg::Addr,
+                              0x1,
+                              0x2>(),
+              "different fields: fine");
+static_assert(!runtimeDisjoint<CtrlReg::Addr,
+                               0xF0,
+                               0x30>(),
+              "two runtime writes of the same bits");
+static_assert(runtimeDisjoint<ToggleReg::Addr,
+                              0x20,
+                              0x20>(),
+              "a zero-ignored register ORs on purpose");
+static_assert(literalLeavesRuntimeBits<CtrlReg::Addr,
+                                       0x0,
+                                       0xF0>(),
+              "a 0 default under a runtime field");
+static_assert(!literalLeavesRuntimeBits<CtrlReg::Addr,
+                                        0x20,
+                                        0xF0>(),
+              "a literal 1 under a runtime field");
+}   // namespace OverlapRules
+
 int main() {
     simpleWrite<SimpleTestReg, true>();
     simpleWrite<SimpleTestReg, false>();

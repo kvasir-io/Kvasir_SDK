@@ -7,6 +7,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.dont_write_bytecode = True  # no __pycache__ next to the imported tools
@@ -68,6 +69,169 @@ class Profile(unittest.TestCase):
         # once per function on the inline stack
         self.assertIn((50.0, "outer()"), ranked["inclusive"])
         self.assertIn((37.5, "Engine.hpp:10"), ranked["line"])
+
+    NM = ("10000100 00000004 T std::optional<unsigned short>::has_value() const\n"
+          "10000100 00000004 t FPBits<float>::is_neg() const\n"
+          "10000100 00000004 t std::optional<bool>::has_value() const\n"
+          "10000200 00000010 T outer()\n"
+          "20000000 00000004 B a_variable\n")
+
+    def table(self):
+        original = kb.nm
+        kb.nm = lambda tree, demangle=True: self.NM
+        try:
+            return kb.code_symbols(None)
+        finally:
+            kb.nm = original
+
+    def test_folded_bodies_are_one_symbol_with_every_name(self):
+        table = self.table()
+        self.assertEqual([start for start, _, _ in table],
+                         [0x10000100, 0x10000200])
+        self.assertEqual(len(table[0][2]), 3)
+
+    def test_an_address_belongs_to_the_body_it_lies_in(self):
+        table = self.table()
+        self.assertEqual(kb.symbol_at(table, 0x10000102)[0], 0x10000100)
+        self.assertEqual(kb.symbol_at(table, 0x1000020e)[0], 0x10000200)
+        self.assertIsNone(kb.symbol_at(table, 0x10000104))   # between the two
+        self.assertIsNone(kb.symbol_at(table, 0x20000000))   # data, not code
+
+    def test_ranking_by_symbol_names_the_folded_body(self):
+        ranked = kb.rank_by_symbol(
+            {0x10000100: 3, 0x10000102: 3, 0x10000204: 2}, self.table(), top=5)
+        self.assertEqual(ranked[1], (25.0, "outer()"))
+        self.assertAlmostEqual(ranked[0][0], 75.0)
+        self.assertIn("[3 folded]", ranked[0][1])
+        self.assertIn("is_neg", ranked[0][1])
+
+    def test_a_zero_size_label_is_not_a_folded_function(self):
+        nm_out = ("10000130 00000000 T _LINKER_INTERN_core1_vectors_end_\n"
+                  "10000130 00012018 t main_body\n"
+                  "10000400 00000000 T asm_stub\n")
+        original = kb.nm
+        kb.nm = lambda tree, demangle=True: nm_out
+        try:
+            table = kb.code_symbols(None)
+        finally:
+            kb.nm = original
+        self.assertEqual(
+            table, [(0x10000130, 0x12018, ["main_body"]), (0x10000400, 0, ["asm_stub"])])
+        self.assertEqual(kb.symbol_name(kb.symbol_at(
+            table, 0x10000140)[1], {}), "main_body")
+        self.assertEqual(kb.symbol_at(table, 0x10000401)[1], ["asm_stub"])
+
+    def test_the_table_is_read_mangled_and_only_hit_bodies_are_demangled(self):
+        asked = []
+        nm_out = ("10000100 00000004 T _ZNKSt8optionalItE9has_valueEv\n"
+                  "10000100 00000004 t _ZNK6FPBitsIfE6is_negEv\n"
+                  "10000200 00000010 T _Z5outerv\n"
+                  "10000300 00000010 T _Z9never_hitv\n")
+        original = kb.nm
+        kb.nm = lambda tree, demangle=True: asked.append(demangle) or nm_out
+        try:
+            table = kb.code_symbols(None)
+        finally:
+            kb.nm = original
+        self.assertEqual(asked, [False])
+        short = kb.symbol_names(table, [0x10000102, 0x10000204])
+        self.assertNotIn("_Z9never_hitv", short)
+        self.assertEqual(short["_Z5outerv"], "outer()")
+        ranked = kb.rank_by_symbol(
+            {0x10000102: 1, 0x10000204: 3}, table, top=5, short=short)
+        self.assertEqual(ranked[0], (75.0, "outer()"))
+        self.assertIn("FPBits::is_neg()", ranked[1][1])
+        self.assertIn("[2 folded]", ranked[1][1])
+
+
+class PanicRecord(unittest.TestCase):
+    """`crash` decodes Kvasir::Panic::lastPanic: its magic and cause names must be Panic.hpp's."""
+
+    def test_matches_panic_header(self):
+        import re
+        header = (HERE.parent / "src/kvasir/Util/Panic.hpp").read_text()
+        magic = re.search(r"Magic = (0x[0-9A-Fa-f']+)U", header)
+        self.assertIsNotNone(magic)
+        self.assertEqual(
+            int(magic.group(1).replace("'", ""), 16), kb.PANIC_MAGIC)
+        body = re.search(
+            r"enum class Cause : unsigned char \{(.*?)\};", header, re.S).group(1)
+        values = [int(v) for v in re.findall(r"=\s*(\d+)", body)]
+        self.assertEqual(values, list(range(len(values))),
+                         "consecutive from 0")
+        self.assertEqual(len(values), len(kb.PANIC_CAUSES))
+
+
+class TreeSettings(unittest.TestCase):
+    def tree(self, cache):
+        tree = kb.Tree.__new__(kb.Tree)
+        tree.cache = cache
+        return tree
+
+    def test_the_environment_overrides_the_cache_even_when_empty(self):
+        tree = self.tree("JLINK_IP:STRING=192.168.4.180\n")
+        with unittest.mock.patch.dict(kb.os.environ, {"JLINK_IP": ""}):
+            self.assertEqual(tree._setting("JLINK_IP"), "")
+        with unittest.mock.patch.dict(kb.os.environ, {}, clear=True):
+            self.assertEqual(tree._setting("JLINK_IP"), "192.168.4.180")
+
+
+class RamImage(unittest.TestCase):
+    """A RAM_ONLY image goes through a printer only when that one starts it (--ram_image)."""
+
+    def tree(self, build, ninja_command=None, script=None):
+        tree = kb.Tree.__new__(kb.Tree)
+        tree.build, tree.target = Path(build), "t"
+        if ninja_command is not None:
+            Path(build, "build.ninja").write_text(
+                "# Custom command for CMakeFiles/log_t\n"
+                "build CMakeFiles/log_t | ${cmake_ninja_workdir}CMakeFiles/log_t: CUSTOM_COMMAND\n"
+                f"  COMMAND = {ninja_command}\n")
+        if script is not None:
+            Path(build, "t_flash.jlink").write_text(script)
+        return tree
+
+    def test_the_log_command_or_the_jlink_script_tells(self):
+        with tempfile.TemporaryDirectory() as b:
+            self.assertFalse(self.tree(b, "cd /x && printer --device D --hex_file t.hex",
+                                       "loadfile t.hex\nr\nh\nr\ng\nq").ram_image())
+        with tempfile.TemporaryDirectory() as b:
+            tree = self.tree(
+                b, "cd /x && printer --device D --ram_image --log_filter f.txt")
+            self.assertTrue(tree.ram_image())
+            self.assertEqual(tree._log_command_values(
+                "--log_filter"), ["f.txt"])
+        with tempfile.TemporaryDirectory() as b:
+            self.assertTrue(self.tree(b, None, "loadfile t.hex\nwreg MSP 0x20082000\n"
+                                      "SetPC 0x20000198\ng\nq").ram_image())
+
+    def guard(self, status, ram_image=True):
+        tree = type("Tree", (), {"ram_image": lambda self: ram_image,
+                                 "build": "b", "target": "t"})()
+        err = io.StringIO()
+        with unittest.mock.patch.object(kb, "request", lambda control, req: status), \
+                contextlib.redirect_stderr(err):
+            try:
+                kb.need_ram_image_printer(tree, Path("control.sock"), "flash")
+            except SystemExit as e:
+                return e.code, err.getvalue()
+        return 0, err.getvalue()
+
+    def test_a_printer_that_starts_ram_images_is_used(self):
+        self.assertEqual(self.guard({"ram_image": True}), (0, ""))
+
+    def test_an_ordinary_image_needs_nothing(self):
+        self.assertEqual(self.guard({}, ram_image=False), (0, ""))
+
+    def test_an_old_printer_is_refused(self):
+        code, text = self.guard({"running": True})
+        self.assertEqual(code, 4)
+        self.assertIn("from before --ram_image", text)
+
+    def test_a_printer_started_without_the_flag_is_refused(self):
+        code, text = self.guard({"ram_image": False})
+        self.assertEqual(code, 4)
+        self.assertIn("started without --ram_image", text)
 
 
 class ChipPlugin(unittest.TestCase):

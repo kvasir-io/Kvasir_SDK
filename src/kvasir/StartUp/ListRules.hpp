@@ -76,13 +76,14 @@ namespace Kvasir { namespace Startup { namespace ListRules {
      || requires { T::initStepInterruptConfig; } || requires { T::initStepPeripheryEnable; };
 
     template<typename T>
-    constexpr bool hasIsr = requires { typename T::Isr; } || requires { T::isr; };
+    constexpr bool hasIsr = requires { typename T::Isr; } || requires { T::isr; }
+                         || requires { typename T::SubIsrs; };   // SharedIsr.hpp
 
     template<typename T>
     constexpr bool hasRuntimeHooks
-      = requires { T::runtimeInit(); } || requires { T::preEnableRuntimeInit(); } || requires {
-            T::primaryPrepare();
-        } || requires { T::primarySync(); } || requires { T::secondarySync(); };
+      = requires { T::runtimeInit(); } || requires { T::preEnableRuntimeInit(); }
+     || requires { T::primaryPrepare(); } || requires { T::primarySync(); }
+     || requires { T::secondarySync(); } || requires { typename T::Extends; };
 
     template<typename T>
     constexpr bool hasResources

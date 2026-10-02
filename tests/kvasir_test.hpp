@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
 #include <print>
 #include <source_location>
@@ -40,31 +41,115 @@ namespace Kvasir { namespace Test {
 
         using Action = std::variant<Read, Write>;
 
+        // A register with state: what it holds, and how a read or a write changes that. An address
+        // with a model answers its reads from the model instead of the readValues queue; the
+        // accesses are recorded either way.
+        struct Model {
+            unsigned value = 0;   // what the register holds
+
+            // Applied in this order on a write: plain bits take the written value, one-to-* bits
+            // are changed by written ones only, read-only bits keep their value, strobes are
+            // never stored.
+            unsigned readOnlyMask    = 0;
+            unsigned oneToClearMask  = 0;
+            unsigned oneToSetMask    = 0;
+            unsigned oneToToggleMask = 0;
+            unsigned selfClearMask   = 0;   // strobes: never stored, always read 0
+            unsigned clearOnReadMask = 0;   // cleared after every read
+
+            // Full control. onRead gets the stored value and returns what the read yields (the
+            // stored value is then run through clearOnReadMask). onWrite gets (stored, written) and
+            // returns the new stored value; when set it replaces the mask logic.
+            std::function<unsigned(unsigned)>           onRead;
+            std::function<unsigned(unsigned, unsigned)> onWrite;
+
+            Model& readOnly(unsigned m) {
+                readOnlyMask |= m;
+                return *this;
+            }
+
+            Model& oneToClear(unsigned m) {
+                oneToClearMask |= m;
+                return *this;
+            }
+
+            Model& oneToSet(unsigned m) {
+                oneToSetMask |= m;
+                return *this;
+            }
+
+            Model& oneToToggle(unsigned m) {
+                oneToToggleMask |= m;
+                return *this;
+            }
+
+            Model& selfClearing(unsigned m) {
+                selfClearMask |= m;
+                return *this;
+            }
+
+            Model& clearOnRead(unsigned m) {
+                clearOnReadMask |= m;
+                return *this;
+            }
+
+            unsigned read() {
+                unsigned const v = onRead ? onRead(value) : value;
+                value &= ~clearOnReadMask;
+                return v;
+            }
+
+            void write(unsigned w) {
+                if(onWrite) {
+                    value = onWrite(value, w);
+                    return;
+                }
+                unsigned const special
+                  = readOnlyMask | oneToClearMask | oneToSetMask | oneToToggleMask | selfClearMask;
+                unsigned v = (value & special) | (w & ~special);
+                v &= ~(w & oneToClearMask);
+                v |= (w & oneToSetMask);
+                v ^= (w & oneToToggleMask);
+                v &= ~selfClearMask;
+                value = v;
+            }
+        };
+
         std::vector<Action> actions;
         std::map<unsigned, std::deque<unsigned>>
           readValues;   // address -> values returned in sequence
+        std::map<unsigned, Model>
+          models;   // address -> model; empty = every read comes from readValues
+
+        // gives the address state from now on (the same model on every call)
+        Model& model(unsigned address) { return models[address]; }
 
         void setReadValue(unsigned address,
                           unsigned value) {
+            refuseModelled(address);
             readValues[address] = {value};
         }
 
         void setReadValues(unsigned             address,
                            std::deque<unsigned> values) {
+            refuseModelled(address);
             readValues[address] = std::move(values);
         }
 
         void reset() {
             actions.clear();
             readValues.clear();
+            models.clear();
         }
 
         template<typename T,
                  unsigned A>
         T read() {
             unsigned returnedValue = 0;
-            // return the next injected value if available, otherwise 0
-            if(auto it = readValues.find(A); it != readValues.end() && !it->second.empty()) {
+            if(auto m = models.find(A); m != models.end()) {
+                returnedValue = m->second.read();
+            } else if(auto it = readValues.find(A); it != readValues.end() && !it->second.empty()) {
+                // the next injected value if available, otherwise 0
                 returnedValue = it->second.front();
                 it->second.pop_front();
             }
@@ -76,6 +161,20 @@ namespace Kvasir { namespace Test {
                  unsigned A>
         void write(T v) {
             actions.push_back(Write{A, static_cast<unsigned>(v)});
+            if(auto m = models.find(A); m != models.end()) {
+                m->second.write(static_cast<unsigned>(v));
+            }
+        }
+
+    private:
+        // a queued read value on a modelled address would never be returned: a test bug
+        void refuseModelled(unsigned address) {
+            if(models.contains(address)) {
+                ++failures;
+                std::print("FAIL [{}] setReadValue on 0x{:02X}, which has a model\n",
+                           currentTest,
+                           address);
+            }
         }
     };
 

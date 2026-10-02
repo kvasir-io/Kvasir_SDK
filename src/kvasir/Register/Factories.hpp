@@ -1,6 +1,5 @@
 #pragma once
 #include "AtomicFactories.hpp"
-#include "IsolatedFactories.hpp"
 #include "Types.hpp"
 #include "Utility.hpp"
 
@@ -71,8 +70,25 @@ namespace Kvasir { namespace Register {
                           "Access violation: the FieldLocation provided is not marked as writable");
         };
 
+        // clear() writes a 0, which a write-one-to-clear or write-one-to-set field ignores: the call
+        // would compile and do nothing. A flag is cleared with reset().
+        template<typename TAddress,
+                 unsigned               Mask,
+                 AccessType             AT,
+                 ReadActionType         RAT,
+                 ModifiedWriteValueType M,
+                 typename TFieldType>
+            requires(M == ModifiedWriteValueType::oneToClear
+                     || M == ModifiedWriteValueType::oneToSet)
+        struct Clear<FieldLocation<TAddress, Mask, Access<AT, RAT, M>, TFieldType>> {
+            static_assert(false,
+                          "Register::clear writes a 0, which a write-one-to-clear or "
+                          "write-one-to-set field ignores: use Register::reset to clear a flag");
+        };
+
         // special case for clearing toggle bits. Writing the value back will clear these, therefore using a xor of 0
-        // will clear.
+        // will clear. Only on a readable register: a write-only toggle register (the RP SIO *_XOR
+        // aliases) cannot be read, and writing it a 0 does nothing.
         template<typename TAddress,
                  unsigned       Mask,
                  AccessType     AT,
@@ -89,21 +105,67 @@ namespace Kvasir { namespace Register {
                    XorLiteralAction<0>> {
             static_assert(accessWritable(AT),
                           "Access violation: the FieldLocation provided is not marked as writable");
+            static_assert(accessReadable(AT),
+                          "Register::clear on a write-only toggle field: it cannot be read back, "
+                          "and a written 0 toggles nothing");
         };
 
         template<typename TLocation>
         using ClearT = typename Clear<TLocation>::type;
+
+        // toggle(): a plain bit is read and written back inverted (GenericReadMaskXorWrite with
+        // the bit's mask); on a one-to-toggle field the hardware does it, a single store of the
+        // bit. (XorLiteralAction<V> on a one-to-toggle field would *force* it to V instead - which
+        // is what clear() uses there.)
+        template<typename TLocation>
+        struct Toggle;
+
+        template<typename TAddress, unsigned Mask, typename Access, typename TFieldType>
+        struct Toggle<FieldLocation<TAddress, Mask, Access, TFieldType>>
+          : Action<FieldLocation<TAddress, Mask, Access, TFieldType>, XorLiteralAction<Mask>> {
+            static_assert(onlyOneBitSet(Mask),
+                          "Register::toggle only works on single bits");
+            static_assert(IsWritable<FieldLocation<TAddress,
+                                                   Mask,
+                                                   Access,
+                                                   TFieldType>>::value
+                            && IsReadable<FieldLocation<TAddress,
+                                                        Mask,
+                                                        Access,
+                                                        TFieldType>>::value,
+                          "Register::toggle reads the bit and writes it back inverted: the field "
+                          "must be readable and writable");
+        };
+
+        template<typename TAddress,
+                 unsigned       Mask,
+                 AccessType     AT,
+                 ReadActionType RAT,
+                 typename TFieldType>
+        struct Toggle<FieldLocation<TAddress,
+                                    Mask,
+                                    Access<AT, RAT, ModifiedWriteValueType::oneToToggle>,
+                                    TFieldType>>
+          : Action<FieldLocation<TAddress,
+                                 Mask,
+                                 Access<AT, RAT, ModifiedWriteValueType::oneToToggle>,
+                                 TFieldType>,
+                   WriteLiteralAction<Mask>> {
+            static_assert(accessWritable(AT),
+                          "Access violation: the FieldLocation provided is not marked as writable");
+        };
+
+        template<typename TLocation>
+        using ToggleT = typename Toggle<TLocation>::type;
 
         template<typename TLocation>
         struct ResetImpl;
 
         template<typename TAddress, unsigned Mask, typename Access, typename TFieldType>
         struct ResetImpl<FieldLocation<TAddress, Mask, Access, TFieldType>> {
-            using type = Action<FieldLocation<TAddress, Mask, Access, TFieldType>,
-                                WriteLiteralAction<(1U << positionOfFirstSetBit(Mask))>>;
-            static_assert(
-              onlyOneBitSet(Mask),
-              "Register::reset only works on single bits that are marked as set to clear");
+            // every bit of the field written as 1: a multi-bit flag field is cleared whole
+            using type
+              = Action<FieldLocation<TAddress, Mask, Access, TFieldType>, WriteLiteralAction<Mask>>;
             static_assert(IsWritable<FieldLocation<TAddress,
                                                    Mask,
                                                    Access,
@@ -165,6 +227,27 @@ namespace Kvasir { namespace Register {
     constexpr MPL::EnableIfT<Detail::IsFieldLocation<T>::value,
                              Detail::ClearT<T>>
     clear(T) {
+        return {};
+    }
+
+    template<typename T>
+    constexpr MPL::EnableIfT<Detail::IsFieldLocation<T>::value,
+                             Detail::ToggleT<T>>
+    toggle(T) {
+        return {};
+    }
+
+    // constrained, unlike set/clear's: Kvasir::Io has a variadic toggle() of pins
+    template<typename T,
+             typename U,
+             typename... Ts>
+        requires(Detail::IsFieldLocation<T>::value && Detail::IsFieldLocation<U>::value
+                 && (Detail::IsFieldLocation<Ts>::value && ...))
+    constexpr decltype(MPL::list(toggle(T{}),
+                                 toggle(U{}),
+                                 toggle(Ts{})...)) toggle(T,
+                                                          U,
+                                                          Ts...) {
         return {};
     }
 

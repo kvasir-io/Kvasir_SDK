@@ -76,7 +76,8 @@ struct SecondaryCore {
                   "SecondaryCore needs a multicore build: pass CORE1_STACK_SIZE to "
                   "kvasir_executable_variants / target_configure_kvasir");
 
-    using PeripheralList = brigand::list<Peripherals...>;
+    // The peripherals plus one generated dispatcher per shared vector (SharedIsr.hpp).
+    using PeripheralList = Detail::WithSharedDispatchers<Peripherals...>;
 
     // The list's shape (ListRules.hpp), the same rules Startup applies to its own list.
     static_assert(ListRules::NoDuplicateEntry<PeripheralList>::value,
@@ -121,9 +122,9 @@ struct SecondaryCore {
 
     [[noreturn]] static void start();
 
-    using IsrList = GetIsrPointersForT<std::addressof(_LINKER_stack1_end_),
-                                       std::addressof(entry),
-                                       Peripherals...>;
+    using IsrList = typename Detail::IsrPointersForList<std::addressof(_LINKER_stack1_end_),
+                                                        std::addressof(entry),
+                                                        PeripheralList>::type;
 
     // gnu::used does not instantiate a class-template member; launch() taking the address
     // for VTOR is what keeps this in the image, and the linker script keeps the section.
@@ -180,6 +181,14 @@ struct SecondaryCore {
 
     // True once start() has run core 1's Startup list and handed over to Main.
     [[nodiscard]] static bool running() { return ready.load(std::memory_order_acquire); }
+
+    // Every function this core's peripherals added to Hook (Hooks.hpp), in list order: call it
+    // from Main for Hook::MainLoop on this core.
+    template<typename Hook,
+             typename... Args>
+    [[gnu::always_inline]] static void run(Args const&... args) {
+        Kvasir::Startup::Detail::runHookOf<Hook>(static_cast<PeripheralList*>(nullptr), args...);
+    }
 
     // Bytes of .stack1 that have ever been written since launch(), from the fill pattern.
     [[nodiscard]] static std::size_t stackHighWater() {
@@ -355,10 +364,10 @@ void SecondaryCore<Main,
     Kvasir::Register::apply(GetPowerClockInitT<Peripherals...>{});
     Kvasir::Register::apply(GetPinInitT<Peripherals...>{});
     Kvasir::Register::apply(GetPeripheryInitT<Peripherals...>{});
-    Kvasir::Register::apply(GetInterruptInitT<Peripherals...>{});
+    Kvasir::Register::apply(Detail::ExpandListT<GetInterruptInitT, PeripheralList>{});
     callPreEnableRuntimeInits<Peripherals...>();
     Kvasir::Nvic::enable_all();
-    Kvasir::Register::apply(GetPeripheryEnableInitT<Peripherals...>{});
+    Kvasir::Register::apply(Detail::ExpandListT<GetPeripheryEnableInitT, PeripheralList>{});
     callRuntimeInits<Peripherals...>();
 
     syncedOk.store(callSecondarySyncs<Peripherals...>(), std::memory_order_release);

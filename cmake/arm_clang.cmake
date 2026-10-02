@@ -257,6 +257,19 @@ set(common_warning_flags
     -Wno-nrvo
     -Wno-unknown-warning-option)
 
+# clang 23 brought -Wlifetime-safety-* into -Weverything; the two suggestion groups only propose
+# [[clang::lifetimebound]] marks (hundreds, mostly in fetched fmt and llvm-libc). The checks that find dangling
+# references stay on. Guarded: clang 22 does not know the names. Asked from the compiler: a toolchain file runs before
+# CMAKE_CXX_COMPILER_VERSION is set.
+execute_process(
+    COMMAND ${clang++} -dumpversion
+    OUTPUT_VARIABLE kvasir_clang_version
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(kvasir_clang_version VERSION_GREATER_EQUAL 23)
+    list(APPEND common_warning_flags -Wno-lifetime-safety-intra-tu-suggestions
+         -Wno-lifetime-safety-intra-tu-constructor-suggestions)
+endif()
+
 set(profile_flags)
 
 # libstdc++ hides hosted headers under __STDC_HOSTED__=0 and clang, unlike gcc, refuses to redefine the macro, so

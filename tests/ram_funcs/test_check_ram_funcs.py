@@ -103,6 +103,22 @@ class CheckRamFuncs(unittest.TestCase):
         self.expect_fail('clang', 5, 'readsFlashTable(int)',
                          'reads flash', 'table')
 
+    # a RAM function calling into a per-core scratch bank (RP2040 SRAM4/5, outside `ram`): the
+    # bank is RAM, followed, and a flash call behind it reported
+    def test_flash_call_behind_scratch_bank_gcc(self):
+        self.expect_fail('gcc', 6, 'callsScratch(int)', 'inScratch(int)',
+                         'reaches flash', 'inFlash(int)')
+
+    def test_flash_call_behind_scratch_bank_clang(self):
+        self.expect_fail('clang', 6, 'callsScratch(int)', 'inScratch(int)',
+                         'reaches flash', 'inFlash(int)')
+
+    def test_scratch_bank_callee_gcc(self):
+        self.expect_pass('gcc', 7)
+
+    def test_scratch_bank_callee_clang(self):
+        self.expect_pass('clang', 7)
+
     # the check reads the source list with llvm-dwarfdump and only notes its absence
     def expect_unmarked_fail(self, toolchain):
         if shutil.which('llvm-dwarfdump') is None:

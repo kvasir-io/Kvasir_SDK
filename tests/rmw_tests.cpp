@@ -183,7 +183,38 @@ static void writeMergeIndependentOfReadPosition() {
     checkActions(expected);
 }
 
+// A key register and a read-with-side-effect register refuse the RMW the
+// executors would do; the check as a trait (a failing static_assert cannot be tested in this TU)
+namespace RmwHazards {
+using Kvasir::Register::Detail::GetAddress;
+using Kvasir::Register::Detail::rmwAllowed;
+static_assert(rmwAllowed<GetAddress<CtrlReg::Addr>,
+                         0x1>(),
+              "a normal register allows it");
+static_assert(!rmwAllowed<GetAddress<KeyReg::Addr>,
+                          0x4>(),
+              "a write without the key may not read");
+static_assert(rmwAllowed<GetAddress<KeyReg::Addr>,
+                         0xFFFF0004>(),
+              "with the key it may");
+static_assert(!rmwAllowed<GetAddress<FifoReg::Addr>,
+                          0xFF>(),
+              "never on a read side effect");
+}   // namespace RmwHazards
+
+// a key register written whole (key + field): one write, no read
+static void keyRegisterWrittenWhole() {
+    test("keyRegisterWrittenWhole");
+    using keyT   = typename decltype(KeyReg::key)::DataType;
+    using resetT = typename decltype(KeyReg::reset)::DataType;
+    apply(write(KeyReg::key, Kvasir::Register::value<keyT, 0x05FAU>()),
+          write(KeyReg::reset, Kvasir::Register::value<resetT, 1U>()));
+    checkActionKinds(
+      "rw");   // bits 15..3, 1..0 are neither ignored nor written: read, key supplied
+}
+
 int main() {
+    keyRegisterWrittenWhole();
     explicitReadPlusRmwWrite<SimpleTestReg>();
     explicitReadPlusRmwWrite<ComplexTestReg>();
 

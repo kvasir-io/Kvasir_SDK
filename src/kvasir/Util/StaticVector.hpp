@@ -1,15 +1,18 @@
 #pragma once
 
 #include <array>
+#include <bit>   // for bit_cast
 #include <cassert>
 #include <cstddef>       // for size_t
 #include <cstdint>       // for fixed-width integer types
 #include <cstdio>        // for assertion diagnostics
+#include <cstring>       // for memset
 #include <functional>    // for less and equal_to
 #include <iterator>      // for reverse_iterator and iterator traits
 #include <limits>        // for numeric_limits
 #include <stdexcept>     // for length_error
 #include <type_traits>   // for aligned_storage and all meta-functions
+#include <utility>       // for forward, move and swap
 
 #define SV_CONCEPT_PP_CAT_(X, Y) X##Y
 #define SV_CONCEPT_PP_CAT(X, Y)  SV_CONCEPT_PP_CAT_(X, Y)
@@ -550,14 +553,36 @@ namespace sv_detail {
             // provided so that `non_trivial const x;` stays well-formed.
             constexpr non_trivial() noexcept {}
 
+            /// A T that is only "non-trivial" because of its assignment operators -- std::pair,
+            /// what every StaticMap stores -- still copies as bytes: an implicit-lifetime type,
+            /// trivially copy/move constructible and trivially destructible. Copying such a map
+            /// element by element through emplace_back was a loop of calls per entry.
+            static constexpr bool BytewiseCopy
+              = std::is_trivially_copy_constructible_v<T> && std::is_trivially_destructible_v<T>;
+            static constexpr bool BytewiseMove
+              = std::is_trivially_move_constructible_v<T> && std::is_trivially_destructible_v<T>;
+
+            void unsafe_copy_bytes(non_trivial const& other) noexcept {
+                std::memcpy(data_, other.data_, sizeof(T) * other.size());
+                unsafe_set_size(other.size());
+            }
+
             non_trivial(non_trivial const& other) noexcept(
               std::is_nothrow_copy_constructible_v<T>) {
-                for(size_type i = 0; i != other.size(); ++i) { emplace_back(other.data()[i]); }
+                if constexpr(BytewiseCopy) {
+                    unsafe_copy_bytes(other);
+                } else {
+                    for(size_type i = 0; i != other.size(); ++i) { emplace_back(other.data()[i]); }
+                }
             }
 
             non_trivial(non_trivial&& other) noexcept(std::is_nothrow_move_constructible_v<T>) {
-                for(size_type i = 0; i != other.size(); ++i) {
-                    emplace_back(std::move(other.data()[i]));
+                if constexpr(BytewiseMove) {
+                    unsafe_copy_bytes(other);
+                } else {
+                    for(size_type i = 0; i != other.size(); ++i) {
+                        emplace_back(std::move(other.data()[i]));
+                    }
                 }
             }
 
@@ -566,7 +591,13 @@ namespace sv_detail {
                 if(this != std::addressof(other)) {
                     unsafe_destroy_all();
                     unsafe_set_size(0);
-                    for(size_type i = 0; i != other.size(); ++i) { emplace_back(other.data()[i]); }
+                    if constexpr(BytewiseCopy) {
+                        unsafe_copy_bytes(other);
+                    } else {
+                        for(size_type i = 0; i != other.size(); ++i) {
+                            emplace_back(other.data()[i]);
+                        }
+                    }
                 }
                 return *this;
             }
@@ -576,8 +607,12 @@ namespace sv_detail {
                 if(this != std::addressof(other)) {
                     unsafe_destroy_all();
                     unsafe_set_size(0);
-                    for(size_type i = 0; i != other.size(); ++i) {
-                        emplace_back(std::move(other.data()[i]));
+                    if constexpr(BytewiseMove) {
+                        unsafe_copy_bytes(other);
+                    } else {
+                        for(size_type i = 0; i != other.size(); ++i) {
+                            emplace_back(std::move(other.data()[i]));
+                        }
                     }
                 }
                 return *this;
@@ -935,6 +970,10 @@ public:
     constexpr void resize(size_type sz,
                           T const&  value) noexcept(std::is_nothrow_copy_constructible_v<T>) {
         if(sz == size()) { return; }
+        if constexpr(trivialResize_) {
+            resizeTrivial_(sz, value);
+            return;
+        }
         if(sz > size()) {
             assert(sz <= capacity()
                    && "StaticVector cannot be resized to a size greater than capacity");
@@ -945,6 +984,33 @@ public:
     }
 
 private:
+    /// A trivial T needs no per-element construction or destruction, so a resize is a fill of
+    /// the new tail and one size update. Appending element by element cost ~100 cycles per
+    /// element on a Cortex-M33 at -Oz -- and aglio grows its byte buffer by a resize per
+    /// serialized field, which made packing a 700-byte response take most of a millisecond.
+    static constexpr bool trivialResize_ = sv_detail::Trivial<T> && !sv_detail::Const<T>;
+
+    constexpr void resizeTrivial_(size_type sz,
+                                  T const&  value) noexcept {
+        assert(sz <= capacity()
+               && "StaticVector cannot be resized to a size greater than capacity");
+        if(sz > size()) {
+            auto const first = end();
+            auto const added = sz - size();
+            unsafe_set_size(sz);
+            if constexpr(sizeof(T) == 1) {
+                // -Oz keeps the loop below a loop, one byte per iteration.
+                if(!std::is_constant_evaluated()) {
+                    std::memset(first, std::bit_cast<unsigned char>(value), added);
+                    return;
+                }
+            }
+            for(auto it = first; it != end(); ++it) { *it = value; }
+        } else {
+            unsafe_set_size(sz);
+        }
+    }
+
     SV_REQUIRES(sv_detail::MoveConstructible<T> or sv_detail::CopyConstructible<T>)
 
     constexpr void emplace_n(size_type n) noexcept(
@@ -964,12 +1030,32 @@ public:
       (sv_detail::MoveConstructible<T> && std::is_nothrow_move_constructible_v<T>)
       || (sv_detail::CopyConstructible<T> && std::is_nothrow_copy_constructible_v<T>)) {
         if(sz == size()) { return; }
+        if constexpr(trivialResize_) {
+            resizeTrivial_(sz, T{});
+            return;
+        }
 
         if(sz > size()) {
             emplace_n(sz);
         } else {
             erase(end() - (size() - sz), end());
         }
+    }
+
+    /// std::string's resize_and_overwrite for a trivial T: \p op(data(), n) may write all \p n
+    /// elements and returns how many to keep, which becomes the size. The elements it had are
+    /// still there when \p op runs; nothing is filled, so what \p op keeps and did not write is
+    /// whatever the storage held.
+    ///
+    /// Contract: `n <= capacity()`, and \p op returns at most \p n.
+    template<typename Op>
+        requires trivialResize_
+    constexpr void resize_and_overwrite(size_type n,
+                                        Op&&      op) {
+        assert(n <= capacity() && "StaticVector cannot be resized to a size greater than capacity");
+        auto const kept = static_cast<size_type>(std::forward<Op>(op)(data(), n));
+        assert(kept <= n && "resize_and_overwrite: op kept more than it was given");
+        unsafe_set_size(kept);
     }
 
     ///@}  // Modifiers

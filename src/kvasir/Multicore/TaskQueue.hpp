@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kvasir/Atomic/Queue.hpp"
+#include "kvasir/StartUp/Hooks.hpp"
 
 #include <array>
 #include <atomic>
@@ -283,6 +284,10 @@ struct TaskQueue {
         detail::sev();
         return true;
     }
+
+    // once per main-loop turn: Startup::run<Kvasir::Hook::MainLoop>() / SecondaryCore::run calls
+    // it (StartUp/Hooks.hpp); a firmware that runs the hook must not also call it by hand
+    using Extends = Kvasir::Startup::Extend<Kvasir::Hook::MainLoop, &TaskQueue::poll>;
 
     // Consumer core: a dedicated worker.
     [[noreturn]] static void run() {

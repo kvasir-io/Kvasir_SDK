@@ -265,7 +265,9 @@ function(
     linker_file
     application
     bootloader
-    core1_stack_size)
+    core1_stack_size
+    core1_stack_in_scratch
+    scratch_banks)
 
     # Compute flags first so they are available for the shared-library key.
     if(optimize STREQUAL size)
@@ -369,6 +371,8 @@ function(
             "${LINKER_PREFIX}--defsym=cmake_stack_size_extra=0"
             "${LINKER_PREFIX}--defsym=cmake_heap_size=${heap_size}"
             "${LINKER_PREFIX}--defsym=cmake_core1_stack_size=${core1_stack_size}"
+            "${LINKER_PREFIX}--defsym=cmake_core1_stack_in_scratch=${core1_stack_in_scratch}"
+            "${LINKER_PREFIX}--defsym=cmake_scratch_banks=${scratch_banks}"
             "${LINKER_PREFIX}--script=${linker_file}"
             "${LINKER_PREFIX}--Map=${CMAKE_CURRENT_BINARY_DIR}/${name}.map")
         add_clean_file(${name} ${CMAKE_CURRENT_BINARY_DIR}/${name}.map)
@@ -381,18 +385,32 @@ function(
 
         target_compile_options(${name} PUBLIC ${optimize_flags} ${sanitize_flags} ${CHIP_OPTIONS})
 
+        # CHIP_LINKER_OPTIONS are bare linker options (`--wrap=...`): the gcc driver needs them behind -Wl, (clang links
+        # with ld.lld directly, LINKER_PREFIX is empty there)
+        set(chip_linker_options ${CHIP_LINKER_OPTIONS})
+        list(TRANSFORM chip_linker_options PREPEND "${LINKER_PREFIX}")
         foreach(current_linker_flag ${linker_flags})
             if(${used_specs} STREQUAL ${SPEC_REPLACEMENT_EMPTY_MARKER})
                 string(REPLACE ${SPEC_REPLACEMENT_STRING} "" current_linker_flag ${current_linker_flag})
             else()
                 string(REPLACE ${SPEC_REPLACEMENT_STRING} ${used_specs} current_linker_flag ${current_linker_flag})
             endif()
-            target_link_options(${name} PUBLIC "${current_linker_flag}" ${CHIP_LINKER_OPTIONS})
+            target_link_options(${name} PUBLIC "${current_linker_flag}" ${chip_linker_options})
         endforeach(current_linker_flag)
 
+        get_target_property(_kvasir_ram_only ${name} KVASIR_RAM_ONLY)
+        if(_kvasir_ram_only)
+            set(_jlink_ram_only RAM_ONLY)
+            # the printer's flash and reset start it in RAM too (uc_log_printer --ram_image)
+            set(_uc_log_ram_image RAM_IMAGE)
+        else()
+            set(_jlink_ram_only "")
+            set(_uc_log_ram_image "")
+        endif()
         if(${application} STREQUAL FALSE)
             target_add_flash_jlink(
                 ${name}
+                ${_jlink_ram_only}
                 TARGET_MPU
                 ${TARGET_MPU}
                 SWD_SPEED
@@ -408,6 +426,7 @@ function(
         else()
             target_add_flash_jlink(
                 ${name}
+                ${_jlink_ram_only}
                 TARGET_MPU
                 ${TARGET_MPU}
                 SWD_SPEED
@@ -432,6 +451,7 @@ function(
         endif()
         target_add_uc_log_rtt_jlink(
             ${name}
+            ${_uc_log_ram_image}
             TARGET_MPU
             ${TARGET_MPU}
             SWD_SPEED
@@ -461,8 +481,8 @@ function(kvasir_executable_variants base_name)
         PARSE_ARGV
         1
         PARSED_ARGS
-        "RAM_ONLY"
-        "OPTIMIZATION;MIN_STACK_SIZE;CORE1_STACK_SIZE;HEAP_SIZE;MIN_LOG_LEVEL;MIN_LOG_LEVEL_DEBUG;MIN_LOG_LEVEL_RELEASE;LOG_FILTER"
+        "RAM_ONLY;SCRATCH_BANKS"
+        "OPTIMIZATION;MIN_STACK_SIZE;CORE1_STACK_SIZE;CORE1_STACK_PLACEMENT;HEAP_SIZE;MIN_LOG_LEVEL;MIN_LOG_LEVEL_DEBUG;MIN_LOG_LEVEL_RELEASE;LOG_FILTER"
         "SOURCES;LIBRARIES;ADDITIONAL_FLAGS;ADDITIONAL_DEBUG_FLAGS;ADDITIONAL_RELEASE_FLAGS;ADDITIONAL_SANITIZE_FLAGS")
 
     if(PARSED_ARGS_UNPARSED_ARGUMENTS)
@@ -488,6 +508,14 @@ function(kvasir_executable_variants base_name)
     set(_core1_stack "")
     if(PARSED_ARGS_CORE1_STACK_SIZE)
         set(_core1_stack CORE1_STACK_SIZE ${PARSED_ARGS_CORE1_STACK_SIZE})
+    endif()
+    if(PARSED_ARGS_CORE1_STACK_PLACEMENT)
+        list(APPEND _core1_stack CORE1_STACK_PLACEMENT ${PARSED_ARGS_CORE1_STACK_PLACEMENT})
+    endif()
+    # Opt-in to the chip's per-core scratch banks for objects (KVASIR_COREn_{DATA,BSS,CODE}); see
+    # target_configure_kvasir.
+    if(PARSED_ARGS_SCRATCH_BANKS)
+        list(APPEND _core1_stack SCRATCH_BANKS)
     endif()
 
     set(_heap "")
@@ -619,8 +647,8 @@ function(target_configure_kvasir target)
         PARSE_ARGV
         1
         PARSED_ARGS
-        "USE_LOG;NOT_USE_ASSERT;ENABLE_SELF_OVERRIDE;USE_SANITIZER;RAM_ONLY"
-        "LOG;MIN_LOG_LEVEL;LOG_FILTER;MIN_STACK_SIZE;CORE1_STACK_SIZE;HEAP_SIZE;OPTIMIZATION_STRATEGY;LINKER_FILE;LINKER_FILE_TEMPLATE;APPLICATION;BOOTLOADER;BOOTLOADER_SIZE"
+        "USE_LOG;NOT_USE_ASSERT;ENABLE_SELF_OVERRIDE;USE_SANITIZER;RAM_ONLY;SCRATCH_BANKS"
+        "LOG;MIN_LOG_LEVEL;LOG_FILTER;MIN_STACK_SIZE;CORE1_STACK_SIZE;CORE1_STACK_PLACEMENT;HEAP_SIZE;OPTIMIZATION_STRATEGY;LINKER_FILE;LINKER_FILE_TEMPLATE;APPLICATION;BOOTLOADER;BOOTLOADER_SIZE"
         "")
 
     if(PARSED_ARGS_UNPARSED_ARGUMENTS)
@@ -661,6 +689,57 @@ function(target_configure_kvasir target)
     endif()
     if(NOT PARSED_ARGS_CORE1_STACK_SIZE STREQUAL "0")
         target_compile_definitions(${target} PUBLIC KVASIR_MULTICORE=1)
+        # the size in bytes, for compile-time checks against it (Fault::Handler's core 1 reserve)
+        if(NOT PARSED_ARGS_CORE1_STACK_SIZE MATCHES "^([0-9]+)([kK]?)$")
+            message(FATAL_ERROR "${target}: CORE1_STACK_SIZE ${PARSED_ARGS_CORE1_STACK_SIZE}: expected <n> or <n>k")
+        endif()
+        if(CMAKE_MATCH_2)
+            math(EXPR _core1_stack_bytes "${CMAKE_MATCH_1} * 1024")
+        else()
+            set(_core1_stack_bytes ${CMAKE_MATCH_1})
+        endif()
+        target_compile_definitions(${target} PUBLIC KVASIR_CORE1_STACK_BYTES=${_core1_stack_bytes})
+    endif()
+
+    # Where core 1's stack lives: `ram` (the default, .stack1 next to core 0's stack) or `scratch` (the chip's core 1
+    # scratch bank, TARGET_CORE1_SCRATCH_SIZE bytes: RP2040 SRAM4). Opt-in: the bank caps the stack at 4 KiB, and a core
+    # 1 overflow on the M0+ then runs silently into the top of striped RAM.
+    set(_core1_stack_in_scratch 0)
+    if(PARSED_ARGS_CORE1_STACK_PLACEMENT AND NOT PARSED_ARGS_CORE1_STACK_PLACEMENT STREQUAL "ram")
+        if(NOT PARSED_ARGS_CORE1_STACK_PLACEMENT STREQUAL "scratch")
+            message(FATAL_ERROR "${target}: CORE1_STACK_PLACEMENT ${PARSED_ARGS_CORE1_STACK_PLACEMENT}: "
+                                "expected ram or scratch")
+        endif()
+        if(PARSED_ARGS_CORE1_STACK_SIZE STREQUAL "0")
+            message(FATAL_ERROR "${target}: CORE1_STACK_PLACEMENT scratch without CORE1_STACK_SIZE")
+        endif()
+        if(NOT TARGET_CORE1_SCRATCH_SIZE)
+            message(FATAL_ERROR "${target}: CORE1_STACK_PLACEMENT scratch: the chip (${TARGET_MPU}) has no core 1 "
+                                "scratch bank (its chip.cmake sets no TARGET_CORE1_SCRATCH_SIZE)")
+        endif()
+        if(_core1_stack_bytes GREATER TARGET_CORE1_SCRATCH_SIZE)
+            message(
+                FATAL_ERROR
+                    "${target}: CORE1_STACK_PLACEMENT scratch: core 1's stack (${_core1_stack_bytes} bytes) "
+                    "does not fit the ${TARGET_CORE1_SCRATCH_SIZE}-byte scratch bank; lower "
+                    "CORE1_STACK_SIZE (SecondaryCore::stackHighWater() says how much is used) or drop "
+                    "CORE1_STACK_PLACEMENT")
+        endif()
+        set(_core1_stack_in_scratch 1)
+        target_compile_definitions(${target} PUBLIC KVASIR_CORE1_STACK_SCRATCH=1)
+    endif()
+
+    # SCRATCH_BANKS: objects in the chip's per-core scratch banks. Defines KVASIR_CORE_SCRATCH, which turns on the
+    # KVASIR_COREn_{DATA,BSS,CODE} attributes (Util/attributes.hpp; empty without it) and the chip's copy/zero of the
+    # banks at boot (Startup::ExtraMemoryInit). Opt-in so that an image without it keeps every byte it had; the chip's
+    # linker script refuses scratch-bank objects in an image without it (cmake_scratch_banks).
+    set(_scratch_banks 0)
+    if(PARSED_ARGS_SCRATCH_BANKS)
+        if(NOT TARGET_CORE1_SCRATCH_SIZE)
+            message(FATAL_ERROR "${target}: SCRATCH_BANKS: the chip (${TARGET_MPU}) has no scratch banks")
+        endif()
+        set(_scratch_banks 1)
+        target_compile_definitions(${target} PUBLIC KVASIR_CORE_SCRATCH=1)
     endif()
 
     if(NOT PARSED_ARGS_HEAP_SIZE)
@@ -724,6 +803,8 @@ function(target_configure_kvasir target)
         endif()
         set(PARSED_ARGS_LINKER_FILE ${LINKER_FILE_RAM_ONLY})
         target_compile_definitions(${target} PUBLIC KVASIR_RAM_ONLY=1)
+        # read by target_kvasir_config_internal: the J-Link script starts the image in RAM instead of resetting
+        set_property(TARGET ${target} PROPERTY KVASIR_RAM_ONLY TRUE)
     elseif(NOT PARSED_ARGS_LINKER_FILE)
         if(PARSED_ARGS_LINKER_FILE_TEMPLATE)
             set(GEN_BOOTLOADER_SIZE ${bootloader_size})
@@ -752,7 +833,9 @@ function(target_configure_kvasir target)
         ${PARSED_ARGS_LINKER_FILE}
         ${PARSED_ARGS_APPLICATION}
         ${PARSED_ARGS_BOOTLOADER}
-        ${PARSED_ARGS_CORE1_STACK_SIZE})
+        ${PARSED_ARGS_CORE1_STACK_SIZE}
+        ${_core1_stack_in_scratch}
+        ${_scratch_banks})
 
     if(NOT PARSED_ARGS_USE_LOG)
         if(PARSED_ARGS_LOG)

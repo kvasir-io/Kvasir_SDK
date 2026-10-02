@@ -1,6 +1,8 @@
 #pragma once
 #include "Types.hpp"
 
+#include <array>
+#include <cstddef>
 #include <limits>
 
 #ifdef KVASIR_REGISTER_MOCK
@@ -76,12 +78,6 @@ namespace Kvasir { namespace Register {
         using GetFieldTypeT = typename GetFieldType<T>::type;
 
         template<typename T>
-        struct IsWriteLiteral : std::false_type {};
-
-        template<typename T>
-        struct IsWriteRuntime : std::false_type {};
-
-        template<typename T>
         struct IsFieldLocation : std::false_type {};
 
         template<typename TAddress, unsigned Mask, typename Access, typename TFieldType>
@@ -154,6 +150,8 @@ namespace Kvasir { namespace Register {
             static constexpr unsigned writeIgnoredIfZeroMask = WIIZ;
             static constexpr unsigned writeIgnoredIfOneMask  = WIIO;
             static constexpr unsigned allBitsSetMask         = std::numeric_limits<TRegType>::max();
+            static constexpr unsigned mustSupplyMask         = TMode::mustSupplyMask;
+            static constexpr bool     readHasSideEffect      = TMode::readHasSideEffect;
 
             static TRegType read() {
 #ifdef KVASIR_REGISTER_MOCK
@@ -182,6 +180,54 @@ namespace Kvasir { namespace Register {
 
         template<typename TFieldLocation, typename TAction>
         struct GetAddress<Action<TFieldLocation, TAction>> : GetAddress<TFieldLocation> {};
+
+        // What can be written to a field without changing it. The same table decides the
+        // generated registers' masks: svd_converter's identityOf (svd_parser.hpp); keep the two in
+        // step. SVD `clear`/`set` stay `none` (the RP2040's SVD uses them for fields whose 0 is a
+        // value too); a self-clearing trigger is `oneToSet` in the SVD.
+        enum class Identity : unsigned char { none, zero, one };
+
+        constexpr Identity identityOf(AccessType             at,
+                                      ModifiedWriteValueType m) {
+            using M = ModifiedWriteValueType;
+            if(at == AccessType::readOnly) { return Identity::zero; }
+            switch(m) {
+            case M::oneToClear:
+            case M::oneToSet:
+            case M::oneToToggle:  return Identity::zero;
+            case M::zeroToClear:
+            case M::zeroToSet:
+            case M::zeroToToggle: return Identity::one;
+            default:              return Identity::none;
+            }
+        }
+
+        template<typename TAccess>
+        inline constexpr Identity identityOfAccess = Identity::none;
+
+        template<AccessType AT, ReadActionType RA, ModifiedWriteValueType M>
+        inline constexpr Identity identityOfAccess<Access<AT, RA, M>> = identityOf(AT, M);
+
+        // A generated register's write-ignored masks follow from its fields: the zero mask is every
+        // bit that is not a field that needs its value (none) or is ignored at one; the one mask
+        // the fields ignored at one. Checked by the generated
+        // headers under KVASIR_REGISTER_VERIFY_MASKS (costly at compile time, no flash).
+        template<typename TAddress,
+                 std::size_t N>
+        constexpr bool masksMatchFields(std::array<unsigned,
+                                                   N> const& masks,
+                                        std::array<Identity,
+                                                   N> const& ids) {
+            unsigned none = 0;
+            unsigned one  = 0;
+            for(std::size_t i = 0; i < N; ++i) {
+                if(ids[i] == Identity::none) { none |= masks[i]; }
+                if(ids[i] == Identity::one) { one |= masks[i]; }
+            }
+            using A = GetAddress<TAddress>;
+            return A::writeIgnoredIfOneMask == one
+                && A::writeIgnoredIfZeroMask == (A::allBitsSetMask & ~none & ~one);
+        }
 
         template<typename T>
         struct GetFieldLocation;

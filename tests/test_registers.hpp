@@ -274,3 +274,103 @@ struct MaskedReg {
       std::uint32_t>
       done{};
 };
+
+// Status register for the register model tests: two plain status bits and a full field
+// spanning the register.
+struct StatusReg {
+    using Addr = Kvasir::Register::Address<0x90, 0x00000000, 0x00000000, std::uint32_t>;
+
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(0, 0),
+                                                     Kvasir::Register::ReadOnlyAccess,
+                                                     std::uint32_t>
+      ready{};
+
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(2, 2),
+                                                     Kvasir::Register::ReadOnlyAccess,
+                                                     std::uint32_t>
+      overflow{};
+
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(31, 0),
+                                                     Kvasir::Register::ReadWriteAccess,
+                                                     std::uint32_t>
+      all{};
+};
+
+// FIFO data register for the register model tests: a read pops, a write pushes. data spans
+// the register, so writing it needs no read; low is a partial field, whose write is a
+// read-modify-write - and that read pops the FIFO.
+struct DataReg {
+    using Addr = Kvasir::Register::Address<0xA0, 0x00000000, 0x00000000, std::uint32_t>;
+
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(31, 0),
+                                                     Kvasir::Register::ReadWriteAccess,
+                                                     std::uint32_t>
+      data{};
+
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(7, 0),
+                                                     Kvasir::Register::ReadWriteAccess,
+                                                     std::uint32_t>
+      low{};
+};
+
+// A two-bit write-one-to-clear flag field beside a plain one, for reset() on a multi-bit field.
+struct FlagPairReg {
+    using Addr = Kvasir::Register::Address<0xB0, 0x00000000, 0x00000000, std::uint32_t>;
+
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(1, 0),
+                                                     Kvasir::Register::ROneToClearAccess,
+                                                     std::uint32_t>
+      pair{};
+
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(7, 4),
+                                                     Kvasir::Register::ReadWriteAccess,
+                                                     std::uint32_t>
+      mode{};
+};
+
+// A key register, AIRCR-like: bits 31..16 must be written with the key and read back as something
+// else, so a partial write that does not name them may not read-modify-write.
+struct KeyReg {
+    using Addr = Kvasir::Register::Address<0xC0,
+                                           0x00000000,
+                                           0x00000000,
+                                           std::uint32_t,
+                                           Kvasir::Register::RmwHazard<0xFFFF0000U, false>>;
+
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(31, 16),
+                                                     Kvasir::Register::ReadWriteAccess,
+                                                     std::uint32_t>
+      key{};
+
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(2, 2),
+                                                     Kvasir::Register::ReadWriteAccess,
+                                                     std::uint32_t>
+      reset{};
+};
+
+// A FIFO data register whose read pops: never read-modify-written.
+struct FifoReg {
+    using Addr = Kvasir::Register::
+      Address<0xD0, 0x00000000, 0x00000000, std::uint32_t, Kvasir::Register::RmwHazard<0, true>>;
+
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(31, 0),
+                                                     Kvasir::Register::ReadWriteAccess,
+                                                     std::uint32_t>
+      all{};
+
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(7, 0),
+                                                     Kvasir::Register::ReadWriteAccess,
+                                                     std::uint32_t>
+      data{};
+};

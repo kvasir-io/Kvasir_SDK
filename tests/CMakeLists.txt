@@ -81,6 +81,17 @@ kvasir_add_test(kvasir_test_register_rmw rmw_tests.cpp)
 kvasir_add_test(kvasir_test_register_sequence_point sequence_point_tests.cpp)
 kvasir_add_test(kvasir_test_register_multi_register multi_register_tests.cpp)
 kvasir_add_test(kvasir_test_register_special_access special_access_tests.cpp)
+# the RP alias backend on the mock (chip_rp_common/RegisterAlias.hpp, reached as rp_common_alias/); only where the
+# chip_rp_common checkout sits next to the SDK, not in the SDK's own CI
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../../chip_rp_common/RegisterAlias.hpp)
+    kvasir_add_test(kvasir_test_register_atomic atomic_tests.cpp)
+    file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/alias_include)
+    file(CREATE_LINK ${CMAKE_CURRENT_SOURCE_DIR}/../../chip_rp_common
+         ${CMAKE_CURRENT_BINARY_DIR}/alias_include/rp_common_alias SYMBOLIC)
+    target_include_directories(kvasir_test_register_atomic PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/alias_include)
+endif()
+kvasir_add_test(kvasir_test_register_model model_tests.cpp)
+kvasir_add_test(kvasir_test_shared_isr shared_isr_tests.cpp)
 kvasir_add_test(kvasir_test_rate_limiter rate_limiter_tests.cpp)
 target_link_libraries(kvasir_test_rate_limiter PRIVATE kvasir::test_support)
 kvasir_add_test(kvasir_test_register_factories factories_tests.cpp)
@@ -90,8 +101,29 @@ kvasir_add_multicore_test(kvasir_test_spinlock spinlock_tests.cpp)
 kvasir_add_multicore_test(kvasir_test_seqlock seqlock_tests.cpp)
 kvasir_add_multicore_test(kvasir_test_queue queue_tests.cpp)
 kvasir_add_multicore_test(kvasir_test_task_queue task_queue_tests.cpp)
+kvasir_add_multicore_test(kvasir_test_critical_section critical_section_tests.cpp)
+kvasir_add_test(kvasir_test_critical_section_injected critical_section_injected_tests.cpp)
 
 kvasir_add_host_test(kvasir_test_util_saturating_value util_saturating_value_tests.cpp)
+kvasir_add_host_test(kvasir_test_util_rollover util_rollover_tests.cpp)
+kvasir_add_host_test(kvasir_test_util_prescaler util_prescaler_tests.cpp)
+# the RP PLL search (chip_rp_common/PllSearch.hpp) against the one it replaced, where the chip_rp_common checkout sits
+# next to the SDK
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../../chip_rp_common/PllSearch.hpp)
+    target_include_directories(kvasir_test_util_prescaler PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../chip_rp_common)
+endif()
+# Prescaler's failures are compile errors with the numbers in them: snippets that must fail, with this compiler
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME kvasir_test_util_prescaler_must_fail
+         COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_LIST_DIR}/prescaler_must_fail/test_prescaler_must_fail.py
+                 ${CMAKE_CXX_COMPILER} ${CMAKE_CURRENT_LIST_DIR}/../src)
+kvasir_add_host_test(kvasir_test_util_periodic util_periodic_tests.cpp)
+kvasir_add_host_test(kvasir_test_hooks hooks_tests.cpp)
+kvasir_add_host_test(kvasir_test_panic panic_tests.cpp)
+kvasir_add_host_test(kvasir_test_announced_reset announced_reset_tests.cpp)
+kvasir_add_host_test(kvasir_test_util_control_pid util_control_pid_tests.cpp)
+kvasir_add_host_test(kvasir_test_util_control_filters util_control_filters_tests.cpp)
+target_link_libraries(kvasir_test_util_periodic PRIVATE kvasir::test_support)
 kvasir_add_host_test(kvasir_test_util_literals util_literals_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_bitfield util_bitfield_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_static_vector util_static_vector_tests.cpp)

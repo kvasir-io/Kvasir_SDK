@@ -1,5 +1,7 @@
 #pragma once
 
+#include "kvasir/StartUp/Hooks.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -29,5 +31,8 @@ struct StackProtector {
             assert(false);
         }
     }
+
+    // A turn in the main loop: Startup::run<Hook::MainLoop>() calls handler() (not by hand too).
+    using Extends = Startup::Extend<Hook::MainLoop, &StackProtector::handler>;
 };
 }   // namespace Kvasir

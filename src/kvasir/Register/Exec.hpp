@@ -12,8 +12,22 @@ namespace Kvasir { namespace Register {
         template<typename TRegisterAction>
         struct RegisterExec;
 
+        // A read-modify-write that writes ClearMask of the register: allowed unless the read has a
+        // side effect or a key bit outside ClearMask would be written back as read.
+        template<typename TAddress,
+                 unsigned ClearMask>
+        constexpr bool rmwAllowed() {
+            return !TAddress::readHasSideEffect && (TAddress::mustSupplyMask & ~ClearMask) == 0;
+        }
+
         template<typename TLocation, unsigned ClearMask, unsigned SetMask>
         struct GenericReadMaskOrWrite {
+            // false when the write covers every bit that is not ignored anyway: one store
+            static constexpr bool needsRead
+              = ((ClearMask | GetAddress<TLocation>::writeIgnoredIfZeroMask)
+                 | (GetAddress<TLocation>::writeIgnoredIfOneMask & ~ClearMask))
+             != GetAddress<TLocation>::allBitsSetMask;
+
             unsigned operator()(unsigned in = 0) {
                 using Address = GetAddress<TLocation>;
                 static constexpr auto clearOrZeroIsNoChangeMask
@@ -29,6 +43,12 @@ namespace Kvasir { namespace Register {
                   bitsWithFixedValues
                   != allBitsSetMask)   // no sense reading if we are going to clear the whole thing any way
                 {
+                    static_assert(
+                      rmwAllowed<Address, ClearMask>(),
+                      "this write reads the register first (a read-modify-write), which "
+                      "the register does not allow: its read has a side effect, or it "
+                      "has key bits the write does not supply - write the whole "
+                      "register, key included (Register::RmwHazard)");
                     i = Address::read();
                     i &= ~(clearOrZeroIsNoChangeMask);
                 }
@@ -53,6 +73,11 @@ namespace Kvasir { namespace Register {
                   = Address::writeIgnoredIfZeroMask & ~ClearMask;
                 static constexpr auto oneIsNoChangeMask
                   = Address::writeIgnoredIfOneMask & ~ClearMask;
+                static_assert(
+                  rmwAllowed<Address, ClearMask>(),
+                  "this write reads the register first (a read-modify-write), which the "
+                  "register does not allow: its read has a side effect, or it has key "
+                  "bits the write does not supply (Register::RmwHazard)");
                 decltype(Address::read()) i = Address::read();
                 i &= ~zeroIsNoChangeMask;
                 i |= oneIsNoChangeMask;
@@ -113,4 +138,45 @@ namespace Kvasir { namespace Register {
 
     template<typename T, typename U>
     struct ExecuteSeam : Detail::RegisterExec<T> {};
+
+    namespace Detail {
+#if defined(__arm__) && !defined(KVASIR_REGISTER_MOCK)
+        // PRIMASK saved, interrupts off, restored: all the Register layer knows about the core
+        struct IrqMasked {
+            unsigned primask;
+
+            IrqMasked() { asm volatile("mrs %0, primask\n cpsid i" : "=r"(primask) : : "memory"); }
+
+            ~IrqMasked() { asm volatile("msr primask, %0" : : "r"(primask) : "memory"); }
+
+            IrqMasked(IrqMasked const&)            = delete;
+            IrqMasked& operator=(IrqMasked const&) = delete;
+        };
+#else
+        struct IrqMasked {};
+#endif
+
+        // Register::atomic's default: the read-modify-write with interrupts masked; a write that
+        // needs no read is one store already and gets no mask
+        template<typename TAddress,
+                 unsigned Mask,
+                 typename Access,
+                 typename FieldType,
+                 unsigned Data>
+        struct RegisterExec<Register::Action<FieldLocation<TAddress, Mask, Access, FieldType>,
+                                             AtomicWriteLiteralAction<Data>>> {
+            using Rmw = GenericReadMaskOrWrite<FieldLocation<TAddress, Mask, Access, FieldType>,
+                                               Mask,
+                                               Data>;
+
+            unsigned operator()(unsigned = 0) {
+                if constexpr(Rmw::needsRead) {
+                    [[maybe_unused]] IrqMasked const guard{};
+                    return Rmw{}();
+                } else {
+                    return Rmw{}();
+                }
+            }
+        };
+    }   // namespace Detail
 }}   // namespace Kvasir::Register

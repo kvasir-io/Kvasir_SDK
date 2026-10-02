@@ -48,9 +48,12 @@ COMMANDS
   stack    B T                                the stack's high-water mark (Kvasir::StackUsage)
   ub       B T                                a sanitize build's report counter
   crash    B T                                the last halt the printer caught, symbolised
-  profile  B T [--seconds S] [--top N] [--inclusive]
+  profile  B T [--seconds S] [--top N] [--inclusive] [--addresses N]
                           where the core spends its time: DWT_PCSR sampled through the printer
-                          (the core keeps running), ranked by function and source line
+                          (the core keeps running), ranked by function (the debug info's and the
+                          ELF symbol's - they differ where the linker folded bodies, --icf) and
+                          source line. PC samples have no callers: a hot shared leaf is found
+                          here, who calls it is not
   chip     B T [CMD ARGS...]                  commands the chip package defines
                                               (<CHIP_ROOT>/tools/kvasir_bench_chip.py); no CMD: list
  wait
@@ -61,11 +64,19 @@ COMMANDS
                           the printer watches the value (~1 ms a look) and answers the moment
  act (changes the board)
   flash    B T [--no-build] [--confirm]       build, then download through the printer; its log
-                                              session survives. No printer: the tree's JLinkExe
+                                              session survives. No printer: the tree's JLinkExe.
+                                              A RAM_ONLY image needs a printer with --ram_image
+                                              (it loads and starts it, no reset; printer start
+                                              passes it): any other one is refused
   reset    B T [--confirm]                    through the printer; answered when the log is back
+                                              (a RAM_ONLY image: loaded again and started)
   snapshot B T [--var SYMBOL]... [--frames N] HALTS about a second: registers, backtrace, vars.
                                               For a hang or a fault, never under host traffic
-  printer start|stop|status [B T]             a headless printer that outlives the shell
+  printer start|stop|status [B T]             a headless printer that outlives the shell. The
+                                              probe is the tree's (JLINK_IP / JLINK_PROBE in its
+                                              cache); the environment overrides it, empty too:
+                                              JLINK_IP= JLINK_PROBE=<serial> for a USB probe
+                                              in a tree set up for a network J-Link
 
 EXIT CODES (the same for every command)
   0  done / found / condition met
@@ -166,15 +177,18 @@ class Tree:
             there = targets_in(self.build)
             die(f"no target '{target}' built in {self.build}"
                 + (f"; built here: {', '.join(there)}" if there else "; build it first"))
-        self.probe = os.environ.get(
-            "JLINK_PROBE") or self._cached("JLINK_PROBE")
-        self.host = os.environ.get("JLINK_IP") or self._cached(
-            "JLINK_IP")   # a network J-Link
+        # The environment wins whenever it sets the variable, empty included: `JLINK_IP=` is how
+        # one call reaches a USB probe in a tree whose cache names a network J-Link.
+        self.probe = self._setting("JLINK_PROBE")
+        self.host = self._setting("JLINK_IP")   # a network J-Link
         self.chip_root = self._cached("CHIP_ROOT")
         # kHz; empty means the probe's maximum, which the DLL clamps 100000 to (cmake/jlink.cmake)
         self.swd_speed = self._cached("SWD_SPEED") or "100000"
         self.device = os.environ.get("JLINK_DEVICE") or self._device()
         self.log_dir = self.build / "rtt_log" / target
+
+    def _setting(self, name: str) -> str:
+        return os.environ[name] if name in os.environ else self._cached(name)
 
     def _cached(self, name: str) -> str:
         m = re.search(rf"^{name}:[A-Za-z]*=(.*)$", self.cache, re.M)
@@ -202,17 +216,30 @@ class Tree:
                 return m.group(1)
         die("cannot tell the J-Link device name; set JLINK_DEVICE")
 
-    def _log_command_values(self, flag: str) -> list[str]:
-        """The values of `flag` in the tree's own `log_<target>` command (build.ninja)."""
+    def _log_command_words(self) -> list[str]:
+        """The tree's own `log_<target>` command (build.ninja), split into words."""
         ninja = self.build / "build.ninja"
         if not ninja.is_file():
             return []
         m = re.search(rf"^# Custom command for CMakeFiles/log_{re.escape(self.target)}\n"
                       r"(?:.*\n)*?  COMMAND = (.*)$", ninja.read_text(errors="replace"), re.M)
-        if not m:
-            return []
-        words = shlex.split(m.group(1))
+        return shlex.split(m.group(1)) if m else []
+
+    def _log_command_values(self, flag: str) -> list[str]:
+        """The values of `flag` in the tree's own `log_<target>` command (build.ninja)."""
+        words = self._log_command_words()
         return [words[i + 1] for i, w in enumerate(words[:-1]) if w == flag]
+
+    def ram_image(self) -> bool:
+        """A RAM_ONLY image: a reset boots flash, never it, so the printer has to load and start
+        it by hand (uc_log_printer --ram_image). The tree's log command says so (uc_log's
+        RAM_IMAGE), and so does its J-Link script, which starts it with SetPC (jlink.cmake) - the
+        script also in a tree whose cmake ran before the log command had the flag."""
+        if "--ram_image" in self._log_command_words():
+            return True
+        script = self.build / f"{self.target}_flash.jlink"
+        return script.is_file() and re.search(r"^SetPC ", script.read_text(errors="replace"),
+                                              re.M) is not None
 
     def pre_reset_commands(self) -> list[str]:
         """The --pre_reset_command lines of the tree's own `log_<target>` command: what the chip
@@ -309,6 +336,8 @@ def printer_start(args) -> None:
            "--build_command", "true", "--log_dir", str(tree.log_dir), "--disable_ui"]
     for line in tree.pre_reset_commands():
         cmd += ["--pre_reset_command", line]
+    if tree.ram_image():
+        cmd += ["--ram_image"]
     if tree.log_filter():
         cmd += ["--log_filter", tree.log_filter()]
     if tree.host:
@@ -518,6 +547,27 @@ def firmware_line(tree: Tree, control: Path) -> str:
     return f"target {status_text(answer)}{note}"
 
 
+def need_ram_image_printer(tree: Tree, control: Path | None, what: str) -> None:
+    """A RAM_ONLY image goes through a printer only if that printer starts it by hand
+    (--ram_image: download, then VTOR/MSP/xPSR/PC from its vector table, no reset). Any other
+    printer resets the target after the download, the boot ROM then boots flash, and the image is
+    lost; its `status` has no `ram_image` (from before the flag) or says false."""
+    if control is None or not tree.ram_image():
+        return
+    try:
+        status = request(control, req_status())
+    except ControlError as e:
+        die(f"status of the printer: {e}")
+    if status.get("ram_image"):
+        return
+    why = (f"a uc_log_printer from before --ram_image: rebuild it (cmake --build {tree.build} "
+           "--target uc_log_printer) and restart it" if "ram_image" not in status else
+           f"started without --ram_image: restart it (printer stop / printer start {tree.build} "
+           f"{tree.target}, or just log after cmake has run again in {tree.build})")
+    refuse(f"{tree.target} is a RAM_ONLY image and the running printer would {what} it with a "
+           f"reset (the boot ROM then runs flash, not the image) - it is {why}")
+
+
 def flash(args) -> None:
     tree = Tree(args.build, args.target)
     confirm_needed(tree, "flash", args.confirm)
@@ -530,6 +580,7 @@ def flash(args) -> None:
             die("the build failed:\n" +
                 "\n".join((bad or built.stdout.splitlines())[-15:]))
     control = control_socket(tree)
+    need_ram_image_printer(tree, control, "flash")
     set_mark(tree, control)
     if control is None:
         done = subprocess.run(["cmake", "--build", str(tree.build), "--target", f"flash_{tree.target}"],
@@ -556,6 +607,7 @@ def reset(args) -> None:
     control = control_socket(tree)
     if control is None:
         die("no printer with a control socket runs for this target (printer start)")
+    need_ram_image_printer(tree, control, "reset")
     set_mark(tree, control)
     try:
         request(control, req_reset(), timeout=40)
@@ -667,11 +719,12 @@ def log(args) -> None:
 # ---- symbols ---------------------------------------------------------------------------------
 
 
-def nm(tree: Tree) -> str:
-    # llvm-nm demangles the kilobyte-long template names GNU nm gives up on.
+def nm(tree: Tree, demangle: bool = True) -> str:
+    # llvm-nm demangles the kilobyte-long template names GNU nm gives up on. Demangled, the
+    # whole table can be huge (i2c_testing hwtest_sanitize: 253 MB, names up to 2 MB).
     tool = shutil.which("llvm-nm") or "arm-none-eabi-nm"
-    return subprocess.run([tool, "-C", "-S", "--defined-only", str(tree.elf)],
-                          capture_output=True, text=True).stdout
+    return subprocess.run([tool, "-C" if demangle else "--no-demangle", "-S", "--defined-only",
+                           str(tree.elf)], capture_output=True, text=True).stdout
 
 
 def symbols(tree: Tree) -> list[tuple[int, int, str]]:
@@ -771,10 +824,37 @@ json.dump(out, open(%(result)r, "w"))
 """
 
 
+_gdb_found: list[str | None] = []
+
+
+def arm_gdb() -> str | None:
+    """The first gdb that runs Python and knows the ARM M profile. arm-none-eabi-gdb has no
+    Python directory of its own and loads the system gdb's (/usr/share/gdb/python): after an
+    update of only the system gdb its Python fails on import, and every script here with it."""
+    if not _gdb_found:
+        found = None
+        for name in ("arm-none-eabi-gdb", "gdb-multiarch", "gdb"):
+            if not shutil.which(name):
+                continue
+            try:
+                probe = subprocess.run(
+                    [name, "-batch", "-nx", "-ex", "set architecture armv6-m",
+                     "-ex", "python import gdb; print('kvasir-gdb-ok')"],
+                    capture_output=True, text=True, timeout=30)
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if "kvasir-gdb-ok" in probe.stdout and "Undefined item" not in probe.stderr:
+                found = name
+                break
+        _gdb_found.append(found)
+    return _gdb_found[0]
+
+
 def decode_typed(tree: Tree, jobs: list[tuple[int, bytes]]) -> list[str | None]:
     """Each (address of a symbol, its bytes) as the ELF's debug info reads it; None where it
     cannot. gdb runs without a target: half a second for the lot."""
-    if not jobs or not shutil.which("arm-none-eabi-gdb"):
+    gdb = arm_gdb()
+    if not jobs or gdb is None:
         return [None] * len(jobs)
     with tempfile.TemporaryDirectory() as tmp:
         jobs_file, result, script = (os.path.join(tmp, n)
@@ -782,7 +862,7 @@ def decode_typed(tree: Tree, jobs: list[tuple[int, bytes]]) -> list[str | None]:
         json.dump([[a, raw.hex()] for a, raw in jobs], open(jobs_file, "w"))
         open(script, "w").write(TYPED_SCRIPT %
                                 {"jobs": jobs_file, "result": result})
-        subprocess.run(["arm-none-eabi-gdb", "-batch", "-nx", str(tree.elf), "-x", script],
+        subprocess.run([gdb, "-batch", "-nx", str(tree.elf), "-x", script],
                        capture_output=True, text=True, timeout=120)
         try:
             return json.load(open(result))
@@ -952,6 +1032,12 @@ def code_ranges(tree: Tree) -> list[tuple[int, int]]:
     return ranges
 
 
+# kvasir/Util/Panic.hpp: Record::Magic and the Cause enumerators, in order
+PANIC_MAGIC = 0x9A41C0DE
+PANIC_CAUSES = ["assertion", "abort", "stack smash", "division by zero", "allocation without a heap",
+                "unhandled interrupt", "undefined behaviour", "fault", "KVASIR_PANIC"]
+
+
 def crash(args) -> None:
     tree = Tree(args.build, args.target)
     check_build(tree, args.stale_ok)
@@ -1006,8 +1092,42 @@ def crash(args) -> None:
         else:
             print(
                 "  the fault record in RAM is empty: this halt was not Kvasir's fault handler")
+    # Kvasir::Panic::lastPanic (kvasir/Util/Panic.hpp): an assert, abort, stack smash, ... ends in
+    # the panic handler, whose halt pc names the handler, not the site; the record has the site
+    panic = [sym for sym in symbols(
+        tree) if sym[2] == "Kvasir::Panic::lastPanic"]
+    if panic and control is not None:
+        # 16 bytes in older images, 20 with `detail` (an unhandled interrupt's exception
+        # number, exit()'s status); the symbol's size says which
+        size = 20 if panic[0][1] >= 20 else 16
+        raw = read_target(control, panic[0][0], size)
+        magic, count, cause, pc = (int.from_bytes(
+            raw[i:i + 4], "little") for i in range(0, 16, 4))
+        detail = int.from_bytes(raw[16:20], "little") if size == 20 else None
+        if magic == PANIC_MAGIC:
+            name = PANIC_CAUSES[cause] if cause < len(
+                PANIC_CAUSES) else f"cause {cause}"
+            # pc is raise()'s return address; after a call that does not return it may point
+            # past the caller's end, into the next function: symbolise the call itself
+            extra = ""
+            if detail is not None and name == "unhandled interrupt":
+                extra = f", exception {detail} = IRQ {detail - 16}"
+            elif detail:
+                extra = f", detail {detail}"
+            if pc == 0:
+                print(f"  the panic record in RAM (the first of {count} panic(s) since a boot line last "
+                      f"reported one): {name}{extra}, no program site")
+            else:
+                site = (pc & ~1) - 2
+                where = addr2line(tree, [site])
+                print(f"  the panic record in RAM (the first of {count} panic(s) since a boot line last "
+                      f"reported one): {name}{extra}, raised by the call before {pc:#010x}  "
+                      f"{where.get(site, '')}")
+    # this run's fault line only (since the last flash/reset): an older boot's COREFAULT in the
+    # printer's history is not this halt's
     fault_lines = subprocess.run([sys.executable, __file__, "log", str(tree.build), tree.target,
-                                  "--grep", "COREFAULT", "--last", "1", "--width", "600"],
+                                  "--grep", "COREFAULT", "--since-mark", "--last", "1",
+                                  "--width", "600"],
                                  capture_output=True, text=True).stdout.splitlines()[:-1]
     for line in fault_lines:
         print("  log: " + line.strip())
@@ -1328,7 +1448,10 @@ def snapshot(args) -> None:
             f.write(GDB_SCRIPT %
                     {"port": port, "frames": args.frames, "vars": wanted})
         t0 = time.time()
-        gdb = subprocess.run(["arm-none-eabi-gdb", "-batch", "-nx", str(tree.elf), "-x", f.name],
+        debugger = arm_gdb()
+        if debugger is None:
+            die("no gdb with Python and ARM support (arm-none-eabi-gdb, gdb-multiarch, gdb)")
+        gdb = subprocess.run([debugger, "-batch", "-nx", str(tree.elf), "-x", f.name],
                              capture_output=True, text=True, timeout=60)
         os.unlink(f.name)
         keep = [l for l in gdb.stdout.splitlines()
@@ -1509,6 +1632,73 @@ def rank_samples(counts: dict[int, int], frames: dict[int, list[dict]], top: int
             "line": [(p, f"{short[f]}:{line}") for p, (f, line) in top_lines]}
 
 
+def code_symbols(tree: Tree) -> list[tuple[int, int, list[str]]]:
+    """The ELF's functions as (start, size, mangled names), sorted by start. Several names at one
+    start are one body the linker folded (--icf) - often unrelated functions that compiled alike.
+    Mangled: demangling the whole table costs hundreds of MB; symbol_names() does the hit ones."""
+    sized: dict[int, tuple[int, list[str]]] = {}
+    # size 0: linker labels (`_LINKER_INTERN_*`), asm without .size
+    labels: dict[int, list[str]] = {}
+    for line in nm(tree, demangle=False).splitlines():
+        m = re.match(r"([0-9a-f]{8}) ([0-9a-f]{8}) [tTwW] (.+)$", line)
+        if not m:
+            continue
+        start, size, name = int(m.group(1), 16), int(
+            m.group(2), 16), m.group(3)
+        if size == 0:
+            labels.setdefault(start, []).append(name)
+        else:
+            old_size, names = sized.get(start, (0, []))
+            sized[start] = (max(old_size, size), names + [name])
+    # A label only names a body where no function of its own starts: next to one it is not a
+    # second function folded into it (main's body shares its start with two linker labels).
+    for start, names in labels.items():
+        sized.setdefault(start, (0, names))
+    return sorted((start, size, names) for start, (size, names) in sized.items())
+
+
+def symbol_at(table: list[tuple[int, int, list[str]]], address: int) -> tuple[int, list[str]] | None:
+    """(start, names) of the function whose body holds @p address, if any."""
+    import bisect
+    i = bisect.bisect_right(table, (address, float("inf"), [])) - 1
+    if i >= 0 and table[i][0] <= address < table[i][0] + max(table[i][1], 2):
+        return table[i][0], table[i][2]
+    return None
+
+
+def symbol_names(table: list[tuple[int, int, list[str]]], addresses: typing.Iterable[int]) -> dict[str, str]:
+    """Mangled -> short name, for the names of every body one of @p addresses lies in only."""
+    wanted = {n for a in addresses if (
+        hit := symbol_at(table, a)) for n in hit[1]}
+    return short_function_names(wanted) if wanted else {}
+
+
+def symbol_name(names: list[str], short: dict[str, str], limit: int = 2) -> str:
+    """A body's names, shortened (@p short, from symbol_names()), the first @p limit of them; a
+    folded one says how many functions share it (counted by full name - shortened, `f<int>` and
+    `f<bool>` are one)."""
+    shown_names = sorted({short.get(n, n) for n in names}, key=len)
+    shown = ", ".join(shown_names[:limit]) + \
+        (", ..." if len(shown_names) > limit else "")
+    return shown + (f"  [{len(set(names))} folded]" if len(set(names)) > 1 else "")
+
+
+def rank_by_symbol(counts: dict[int, int], table: list[tuple[int, int, list[str]]], top: int,
+                   short: dict[str, str] | None = None) -> list[tuple[float, str]]:
+    """Self time by the ELF symbol the PC lies in - the linker's view, which the inline stack of
+    the debug info does not give: under --icf a folded body's line table names whichever of its
+    functions the linker kept, `FPBits::is_neg` for an `optional::has_value`."""
+    import collections
+    if short is None:
+        short = symbol_names(table, counts)
+    total = sum(counts.values()) or 1
+    own: collections.Counter = collections.Counter()
+    for address, n in counts.items():
+        hit = symbol_at(table, address)
+        own[symbol_name(hit[1], short) if hit else "??"] += n
+    return [(100 * n / total, k) for k, n in own.most_common(top)]
+
+
 def profile(args) -> None:
     """DWT_PCSR sampled through the printer while the core runs, symbolised with inlined frames."""
     tree = Tree(args.build, args.target)
@@ -1542,16 +1732,28 @@ def profile(args) -> None:
         lo <= a < hi for lo, hi in ranges))
     frames = symbolize(tree.elf, counts)
     ranked = rank_samples(counts, frames, args.top)
+    table = code_symbols(tree)
+    short = symbol_names(table, counts)
+    ranked["symbol"] = rank_by_symbol(counts, table, args.top, short)
     print(f"{total} samples over {args.seconds:g} s ({total / args.seconds:,.0f}/s)"
           + (f", {none} without a PC (0xFFFFFFFF)" if none else "")
           + (f", {outside} outside the ELF's code" if outside else ""))
-    for title, key in (("self", "self"), ("inclusive, over the inline stack", "inclusive"),
-                       ("source lines", "line")):
+    for title, key in (("self", "self"), ("self, by ELF symbol (folded bodies say so)", "symbol"),
+                       ("inclusive, over the inline stack", "inclusive"), ("source lines", "line")):
         if key == "inclusive" and not args.inclusive:
             continue
         print(f"-- {title}")
         for p, name in ranked[key]:
             print(f"{p:6.1f} %  {name}")
+    if args.addresses:
+        print("-- addresses: symbol+offset | the debug info's innermost frame")
+        for address, n in counts.most_common(args.addresses):
+            hit = symbol_at(table, address)
+            where = f"{symbol_name(hit[1], short, 1)}+{address - hit[0]:#x}" if hit else "??"
+            frame = (frames.get(address) or [
+                     {"FunctionName": "??", "FileName": "", "Line": 0}])[0]
+            print(f"{100 * n / total:6.1f} %  {address:#010x}  {where} | "
+                  f"{frame['FunctionName']} {Path(frame['FileName']).name}:{frame['Line']}")
 
 
 # ---- chip commands ---------------------------------------------------------------------------
@@ -1800,6 +2002,8 @@ def main() -> None:
     p.add_argument("--top", type=int, default=30)
     p.add_argument("--inclusive", action="store_true",
                    help="also rank by inclusive time over the inline stack")
+    p.add_argument("--addresses", type=int, default=0, metavar="N",
+                   help="also list the N hottest PCs, each with its ELF symbol and debug-info frame")
     p.add_argument("--stale-ok", action="store_true",
                    help="read symbols even if the board runs another build")
     p.set_defaults(fn=profile)

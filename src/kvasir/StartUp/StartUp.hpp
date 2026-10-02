@@ -1,14 +1,18 @@
 #pragma once
 
+#include "kvasir/Common/Core.hpp"
 #include "kvasir/Common/Interrupt.hpp"
 #include "kvasir/Common/Tags.hpp"
 #include "kvasir/Mpl/Algorithm.hpp"
 #include "kvasir/Mpl/Utility.hpp"
 #include "kvasir/Register/Register.hpp"
+#include "kvasir/StartUp/Hooks.hpp"
 #include "kvasir/StartUp/IsrProfiler.hpp"
 #include "kvasir/StartUp/LinkerSymbols.hpp"
 #include "kvasir/StartUp/ListRules.hpp"
 #include "kvasir/StartUp/Resources.hpp"
+#include "kvasir/StartUp/SharedIsr.hpp"
+#include "kvasir/Util/Panic.hpp"
 #include "kvasir/Util/attributes.hpp"
 #include "kvasir/Util/ubsan.hpp"
 #include "uc_log/uc_log.hpp"
@@ -27,6 +31,18 @@ extern "C" {
 extern int                                 main();
 }
 #pragma GCC diagnostic pop
+
+#ifdef __arm__
+extern "C" {
+// The value every -fstack-protector function copies onto its stack on entry and compares on exit.
+// In .noInit: neither initMemory() nor a reset touches it, so a protected function that is on the
+// stack while .data/.bss are set up (the clock init) still finds the value it started with. Seeded
+// once per boot by core 0 (Startup::Detail::seedStackGuard); volatile for the reason
+// Fault::lastFault is (LTO narrows an uninitialised object otherwise). A wild write that hits it
+// shows up as canary failures in unrelated functions: peek it and compare with its boot value.
+[[gnu::used, gnu::section(".noInit")]] inline std::uint32_t volatile __stack_chk_guard;
+}
+#endif
 
 namespace Kvasir { namespace Startup {
     namespace Detail {
@@ -229,6 +245,29 @@ namespace Kvasir { namespace Startup {
 
     template<typename... Ts>
     using GetIsrPointersT = typename GetIsrPointers<Ts...>::type;
+
+    namespace Detail {
+        // A template applied to the elements of a brigand::list: Startup and SecondaryCore work on
+        // their peripherals plus the generated shared-vector dispatchers (SharedIsr.hpp).
+        template<template<typename...> class F, typename List>
+        struct ExpandList;
+
+        template<template<typename...> class F, typename... Ts>
+        struct ExpandList<F, brigand::list<Ts...>> {
+            using type = F<Ts...>;
+        };
+
+        template<template<typename...> class F, typename List>
+        using ExpandListT = typename ExpandList<F, List>::type;
+
+        template<Nvic::IsrFunctionPointer StackEnd, Nvic::IsrFunctionPointer Reset, typename List>
+        struct IsrPointersForList;
+
+        template<Nvic::IsrFunctionPointer StackEnd, Nvic::IsrFunctionPointer Reset, typename... Ts>
+        struct IsrPointersForList<StackEnd, Reset, brigand::list<Ts...>> {
+            using type = GetIsrPointersForT<StackEnd, Reset, Ts...>;
+        };
+    }   // namespace Detail
 
     // Defined in SecondaryCore.hpp, included at the end of this file. Declared here so the
     // guards in Startup can recognise one in a peripheral list.
@@ -692,6 +731,18 @@ namespace Kvasir { namespace Startup {
 
     namespace Detail {
 
+        // Once per boot on core 0, while no protected function that will return is on the stack
+        // (ResetISR never returns and this inlines into it). Core 1 shares the guard and never
+        // seeds. The low byte is zero: a terminator, so an unbounded string copy cannot write the
+        // canary back.
+        [[gnu::always_inline,
+          gnu::no_stack_protector]] inline void
+        seedStackGuard() {
+#ifdef __arm__
+            __stack_chk_guard = StackGuardEntropy<Kvasir::Tag::User>{}() & 0xFFFFFF00U;
+#endif
+        }
+
         struct NoOpStartupHook {
             [[gnu::always_inline]] void operator()() const noexcept {}
         };
@@ -700,12 +751,44 @@ namespace Kvasir { namespace Startup {
         // before any ISR fires — used by StartupWithProfiling to enable the
         // DWT cycle counter; NoOpStartupHook for plain Startup.
         template<typename ClockSettings, typename... Peripherals>
+        struct StartupImpl;
+
+        template<typename ClockSettings, typename List>
+        struct StartupImplOf;
+
+        template<typename ClockSettings, typename... Ts>
+        struct StartupImplOf<ClockSettings, brigand::list<Ts...>> {
+            using type = StartupImpl<ClockSettings, Ts...>;
+        };
+
+        // An image does not always start from a clean reset: a RAM image the debugger starts, or an
+        // application a bootloader jumps into, inherits whatever ran before (e.g. the RP2040 boot ROM's
+        // USB interrupt, enabled and pending). Every NVIC enable and pending bit is cleared before
+        // anything else; Startup enables what the list claims. Armv6-M: one NVIC_ICER / NVIC_ICPR (DDI0419E B3.4, 0xE000E180 / 0xE000E280); Armv8-M:
+        // NVIC_ICERn / NVIC_ICPRn, n = 0..15, "always implemented" (DDI0553B.y D1.2.183/184).
+        inline void disableAllInterrupts() {
+#ifdef __arm__
+    #if defined(__ARM_ARCH_6M__)
+            constexpr std::uint32_t Words = 1;
+    #else
+            constexpr std::uint32_t Words = 16;
+    #endif
+            for(std::uint32_t n = 0; n != Words; ++n) {
+                *reinterpret_cast<std::uint32_t volatile*>(0xE000E180U + 4U * n) = 0xFFFFFFFFU;
+                *reinterpret_cast<std::uint32_t volatile*>(0xE000E280U + 4U * n) = 0xFFFFFFFFU;
+            }
+            asm volatile("dsb\n isb" ::: "memory");
+#endif
+        }
+
+        template<typename ClockSettings, typename... Peripherals>
         struct StartupImpl {
             template<typename Hook = NoOpStartupHook>
             [[noreturn,
               gnu::always_inline]] static void
             ResetISR() {
                 FirstInitStep<Kvasir::Tag::User>{}();
+                Detail::disableAllInterrupts();
                 Hook{}();
 
                 Kvasir::Register::apply(GetEarlyInitT<Peripherals...>{});
@@ -713,6 +796,10 @@ namespace Kvasir { namespace Startup {
                 ClockSettings::coreClockInit();
 
                 initMemory();
+                ExtraMemoryInit<Kvasir::Tag::User>{}();   // the chip's extra RAM sections, if any
+
+                // after the clocks (a chip's entropy may need them), before any constructor
+                Detail::seedStackGuard();
 
                 callGlobalConstructors();
 
@@ -769,6 +856,16 @@ namespace Kvasir { namespace Startup {
       typename GetIsrPointersWithProfiling<Policy, TimeSource, Ts...>::type;
 
     namespace Detail {
+        template<typename Policy, typename TimeSource, typename List>
+        struct ProfiledIsrPointersOf;
+
+        template<typename Policy, typename TimeSource, typename... Ts>
+        struct ProfiledIsrPointersOf<Policy, TimeSource, brigand::list<Ts...>> {
+            using type = GetIsrPointersWithProfilingT<Policy, TimeSource, Ts...>;
+        };
+    }   // namespace Detail
+
+    namespace Detail {
         template<typename Primary, typename... Ts>
         struct BothCoresReports {
             static constexpr bool value
@@ -785,6 +882,10 @@ namespace Kvasir { namespace Startup {
 
     template<typename ClockSettings, typename... Peripherals>
     struct Startup {
+        // The peripherals plus one generated dispatcher per vector their SubIsrs share
+        // (SharedIsr.hpp); the list itself when none declares a SubIsr.
+        using AllPeripherals = Detail::WithSharedDispatchers<Peripherals...>;
+
         // The list's shape (ListRules.hpp), before anything reads it.
         static_assert(ListRules::NoDuplicateEntry<brigand::list<Peripherals...>>::value,
                       "a peripheral is listed twice in one Startup list: its init steps would "
@@ -842,11 +943,11 @@ namespace Kvasir { namespace Startup {
         // names the index and the list in the instantiation trail. The plain asserts after
         // them are the same rules and only fire if a report did not.
         static_assert(Detail::InterruptReports<Startup,
-                                               brigand::list<Peripherals...>>::value);
+                                               AllPeripherals>::value);
         static_assert(
           ListRules::EnabledLinesHandled<
-            typename ListRules::EnabledInterruptsIn<brigand::list<Peripherals...>>::type,
-            typename Detail::IsrsOf<brigand::list<Peripherals...>>::type>::value,
+            typename ListRules::EnabledInterruptsIn<AllPeripherals>::type,
+            typename Detail::IsrsOf<AllPeripherals>::type>::value,
           "an init step enables an interrupt line for which nothing in this core's Startup "
           "list installs an Isr (see the Report above for the index)");
 
@@ -857,9 +958,9 @@ namespace Kvasir { namespace Startup {
                       "nothing with a runtimeInit may follow a SecondaryCore: it would run "
                       "concurrently with the other core's main - list the SecondaryCore last");
 
-        static_assert(Detail::BothCoresReports<brigand::list<Peripherals...>,
+        static_assert(Detail::BothCoresReports<AllPeripherals,
                                                Peripherals...>::value);
-        static_assert(Detail::NoVectorOnBothCores<brigand::list<Peripherals...>,
+        static_assert(Detail::NoVectorOnBothCores<AllPeripherals,
                                                   Peripherals...>::value,
                       "an interrupt is installed in both cores' vector tables (see the Report "
                       "above for the index): list the peripheral on one core");
@@ -884,12 +985,21 @@ namespace Kvasir { namespace Startup {
                       "a literal");
 
         [[gnu::used, gnu::section(".core_vectors")]] static constexpr Kvasir::Startup::
-          NvicVectorTable<Kvasir::Startup::GetIsrPointersT<Peripherals...>> nvicIsrVectors{};
+          NvicVectorTable<Detail::ExpandListT<Kvasir::Startup::GetIsrPointersT, AllPeripherals>>
+            nvicIsrVectors{};
 
         [[noreturn,
           gnu::always_inline]] static void
         ResetISR() {
-            Detail::StartupImpl<ClockSettings, Peripherals...>::ResetISR();
+            Detail::StartupImplOf<ClockSettings, AllPeripherals>::type::ResetISR();
+        }
+
+        // Every function the listed peripherals added to Hook (their `Extends`, Hooks.hpp), in
+        // list order. A hook nobody extends is an empty call.
+        template<typename Hook,
+                 typename... Args>
+        [[gnu::always_inline]] static void run(Args const&... args) {
+            Detail::runHookOf<Hook>(static_cast<brigand::list<Peripherals...>*>(nullptr), args...);
         }
     };
 
@@ -913,18 +1023,25 @@ namespace Kvasir { namespace Startup {
              typename TimeSource>
     struct StartupWithProfiling<Startup<ClockSettings, Peripherals...>, ProfilePolicy, TimeSource> {
         [[gnu::used, gnu::section(".core_vectors")]] static constexpr Kvasir::Startup::
-          NvicVectorTable<GetIsrPointersWithProfilingT<ProfilePolicy, TimeSource, Peripherals...>>
+          NvicVectorTable<typename Detail::ProfiledIsrPointersOf<
+            ProfilePolicy,
+            TimeSource,
+            typename Startup<ClockSettings, Peripherals...>::AllPeripherals>::type>
             nvicIsrVectors{};
 
         [[noreturn,
           gnu::always_inline]] static void
         ResetISR() {
-            Detail::StartupImpl<ClockSettings, Peripherals...>::template ResetISR<
-              EnableTimeSourceHook<TimeSource>>();
+            Detail::StartupImplOf<ClockSettings,
+                                  typename Startup<ClockSettings, Peripherals...>::AllPeripherals>::
+              type::template ResetISR<EnableTimeSourceHook<TimeSource>>();
         }
 
         // The full compiled ISR list (wrappers + plain Isr entries)
-        using IsrList = GetIsrPointersWithProfilingT<ProfilePolicy, TimeSource, Peripherals...>;
+        using IsrList = typename Detail::ProfiledIsrPointersOf<
+          ProfilePolicy,
+          TimeSource,
+          typename Startup<ClockSettings, Peripherals...>::AllPeripherals>::type;
 
         // Only the IsrProfileWrapper entries
         using ProfiledWrapperList = FilterWrappersT<IsrList>;
@@ -1002,6 +1119,27 @@ void log_assert([[maybe_unused]] int         line,
 
 }   // namespace uc_log
 
+namespace Kvasir::Panic {
+// The one definition (this header is the TU with main's): noinline so the return address is the
+// caller's, the handler looked up in dispatch<>'s instantiation, after the application's.
+[[noreturn,
+  gnu::noinline,
+  gnu::used]] void
+raise(Cause cause) {
+    Detail::dispatch(Info{cause, reinterpret_cast<std::uint32_t>(__builtin_return_address(0))});
+}
+
+// A library function's panic on its caller's behalf: the site the caller passes (Panic.hpp).
+[[noreturn,
+  gnu::noinline,
+  gnu::used]] void
+raiseAt(Cause         cause,
+        std::uint32_t pc,
+        std::uint32_t detail) {
+    Detail::dispatch(Info{cause, pc, detail});
+}
+}   // namespace Kvasir::Panic
+
     // newlib's assert() pulls stdio/_write/_sbrk and libstdc++'s __throw_* pull abort -> malloc;
     // strong definitions here keep those archive members out. gnu::noreturn, not [[noreturn]]:
     // the standard attribute must be on newlib's first declaration.
@@ -1014,7 +1152,8 @@ __assert_func(char const* file,
               char const* /*func*/,
               char const* expr) {
     uc_log::log_assert(line, file, expr);
-    while(true) { asm volatile("bkpt 5" : : :); }
+    Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::assertion,
+                           reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
 }
 
 [[gnu::noreturn,
@@ -1022,7 +1161,8 @@ __assert_func(char const* file,
 abort() {
     UC_LOG_SCOPE_MODULE("assert");
     UC_LOG_C("abort() called (libstdc++ __throw_* or libc)");
-    while(true) { asm volatile("bkpt 5" : : :); }
+    Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::abort,
+                           reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
 }
 
 void _exit(int);   // newlib declares it in <unistd.h>, which is not included here
@@ -1044,6 +1184,38 @@ extern "C" {
 // third-party static destructors; noexcept as llvm-libc declares it
 extern "C" {
 [[gnu::used]] int atexit(void (*)()) noexcept { return 0; }
+
+// llvm-libc's baremetal build has no abort(). The same end as newlib's.
+[[gnu::noreturn,
+  gnu::used]] void
+abort() noexcept {
+    UC_LOG_SCOPE_MODULE("assert");
+    UC_LOG_C("abort() called");
+    Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::abort,
+                           reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
+}
+
+// Nor exit() / _Exit().
+// A firmware has nowhere to return to: the same end as abort(), with the status in the line.
+[[gnu::noreturn,
+  gnu::used]] void
+exit(int status) noexcept {
+    UC_LOG_SCOPE_MODULE("assert");
+    UC_LOG_C("exit({}) called", status);
+    Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::abort,
+                           reinterpret_cast<std::uint32_t>(__builtin_return_address(0)),
+                           static_cast<std::uint32_t>(status));
+}
+
+[[gnu::noreturn,
+  gnu::used]] void
+_Exit(int status) noexcept {
+    UC_LOG_SCOPE_MODULE("assert");
+    UC_LOG_C("_Exit({}) called", status);
+    Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::abort,
+                           reinterpret_cast<std::uint32_t>(__builtin_return_address(0)),
+                           static_cast<std::uint32_t>(status));
+}
 }
     #endif
     #if defined(KVASIR_HEAP) && defined(LIBC_NAMESPACE)
@@ -1094,7 +1266,7 @@ long                   __llvm_libc_stdio_write(void*,
 __llvm_libc_exit(int status) {
     UC_LOG_SCOPE_MODULE("libc");
     UC_LOG_C("libc exit({})", status);
-    while(true) { asm volatile("bkpt 5" : : :); }
+    Kvasir::Panic::raise(Kvasir::Panic::Cause::abort);
 }
 }
     #endif
@@ -1108,7 +1280,8 @@ __glibcxx_assert_fail(char const* file,
                       char const* /*func*/,
                       char const* cond) noexcept {
     uc_log::log_assert(line, file, cond);
-    while(true) { asm volatile("bkpt 5" : : :); }
+    Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::assertion,
+                           reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
 }
 }   // namespace std
     #endif
@@ -1198,22 +1371,25 @@ extern "C" {
 
 [[gnu::used]] inline void __aeabi_unwind_cpp_pr2() {}
 
-[[gnu::used]] inline constexpr std::uint32_t __stack_chk_guard{0xdeadc0de};
-
 [[noreturn,
   gnu::used]] inline void
 __stack_chk_fail() {
-    assert(false);
+    UC_LOG_SCOPE_MODULE("assert");
+    UC_LOG_C("stack smashed: a -fstack-protector canary was overwritten");
+    Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::stackSmash,
+                           reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
 }
 }
 
 [[noreturn]] inline void Kvasir::Nvic::DefaultIsrs::onIsr() {
-    UC_LOG_C("unhandled interrupt fired, IRQ={}", []() {
-        std::uint32_t ipsr_val{};
-        asm volatile("mrs %0, ipsr" : "=r"(ipsr_val));
-        return static_cast<std::int32_t>(ipsr_val) - 16;
-    }());
-    while(true) { asm volatile("bkpt 7" : : :); }
+    std::uint32_t ipsr{};
+    asm volatile("mrs %0, ipsr" : "=r"(ipsr));
+    auto const irq = static_cast<std::int32_t>(ipsr) - 16;
+    UC_LOG_C("unhandled interrupt fired, IRQ={}", irq);
+    // no program site caused it (pc 0): the record names the interrupt instead - the exception
+    // number in detail, IRQ = detail - 16, a negative IRQ a system exception (IPSR, Armv6-M ARM
+    // DDI0419E B1.4.2 / Armv8-M ARM DDI0553B.y D1.2.137)
+    Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::unhandledInterrupt, 0, ipsr);
 }
 
     #define KVASIR_START(Startup)                        \
@@ -1233,7 +1409,13 @@ __aeabi_idiv0(int);
 [[noreturn,
   gnu::used]] inline int
 __aeabi_idiv0(int) {
+#ifdef __arm__
+    UC_LOG_C("integer division by zero");
+    Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::divideByZero,
+                           reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
+#else
     assert(false);
+#endif
 }
 
 [[noreturn,
@@ -1243,7 +1425,13 @@ __aeabi_ldiv0(long long);
 [[noreturn,
   gnu::used]] inline long long
 __aeabi_ldiv0(long long) {
+#ifdef __arm__
+    UC_LOG_C("64-bit integer division by zero");
+    Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::divideByZero,
+                           reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
+#else
     assert(false);
+#endif
 }
 }
 
@@ -1267,13 +1455,25 @@ void operator delete[](void*,
     #pragma GCC diagnostic ignored "-Wmissing-noreturn"
 
 void* operator new(std::size_t) {
+    #ifdef __arm__
+    UC_LOG_C("operator new without a heap (HEAP_SIZE)");
+    Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::allocation,
+                           reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
+    #else
     assert(false);
     __builtin_trap();
+    #endif
 }
 
 void* operator new[](std::size_t) {
+    #ifdef __arm__
+    UC_LOG_C("operator new[] without a heap (HEAP_SIZE)");
+    Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::allocation,
+                           reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
+    #else
     assert(false);
     __builtin_trap();
+    #endif
 }
 
     #pragma GCC diagnostic pop

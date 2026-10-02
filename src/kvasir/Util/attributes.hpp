@@ -26,12 +26,52 @@
           gnu::no_sanitize("undefined", "bounds-strict"), gnu::no_stack_protector
     #define KVASIR_RAM_FUNC_INLINE_ATTRIBUTES                              \
         gnu::always_inline, gnu::no_sanitize("undefined", "bounds-strict")
-    #define KVASIR_RESETISR_ATTRIBUTES noreturn, gnu::naked
+    // not naked: gcc builds no frame for a naked function (its manual allows only basic asm in
+    // one), and ResetISR is the whole start-up in C++ - its locals would lie above the initial SP,
+    // in core 1's stack on a multicore image. SP comes from the vector table.
+    #define KVASIR_RESETISR_ATTRIBUTES noreturn
     #define KVASIR_ALWAYS_INLINE       gnu::always_inline
     // gcc has no no_destroy; the atexit() registration lands in StartUp.hpp's stub instead
     #define KVASIR_NO_DESTROY
     // gcc has no unsigned-overflow sanitizer; naming it anyway earns a -Wattributes
     #define KVASIR_NO_SANITIZE_UNSIGNED_OVERFLOW
+#endif
+
+// Per-core memory: the RP2040's SRAM4 (core 1, "scratch_x") and SRAM5 (core 0, "scratch_y"), banks
+// outside the striped main RAM that the datasheet offers "for per-core purposes, e.g. stack and
+// frequently-executed code" (RP2040 datasheet 2.6.2). The chip package defines KVASIR_CORE_SCRATCH
+// when its linker script has the sections; elsewhere these expand to nothing and the object stays
+// in .data/.bss/.text. Placement only: every bus master can still read and write the bank.
+//   [[KVASIR_CORE1_BSS]]  static std::array<std::int32_t, 64> taps;   // zeroed at boot
+//   [[KVASIR_CORE0_DATA]] static std::uint32_t index{1};              // copied from flash at boot
+//   [[KVASIR_CORE1_CODE]] void sampleIsr() { ... }                    // copied from flash at boot
+// _CODE is a speed placement, not a RAM function: it may call flash (each call goes through a
+// linker veneer, flash is out of BL range) and is not checked or exempted like
+// KVASIR_RAM_FUNC_ATTRIBUTES. No const objects in _DATA (a read-only object in a writable section
+// is a section type conflict).
+#if defined(KVASIR_CORE_SCRATCH)
+    // the ".bss." prefix makes the section NOBITS: it costs no flash
+    #define KVASIR_CORE0_BSS  gnu::section(".bss.scratch_y")
+    #define KVASIR_CORE1_BSS  gnu::section(".bss.scratch_x")
+    #define KVASIR_CORE0_DATA gnu::section(".scratch_y.data")
+    #define KVASIR_CORE1_DATA gnu::section(".scratch_x.data")
+    #ifdef __clang__
+        #define KVASIR_CORE0_CODE gnu::section(".scratch_y.text"), gnu::noinline
+        #define KVASIR_CORE1_CODE gnu::section(".scratch_x.text"), gnu::noinline
+    #else
+        // as KVASIR_RAM_FUNC_ATTRIBUTES: gcc's LTO keeps the section only with noipa
+        #define KVASIR_CORE0_CODE                                                      \
+            gnu::section(".scratch_y.text"), gnu::noinline, gnu::long_call, gnu::noipa
+        #define KVASIR_CORE1_CODE                                                      \
+            gnu::section(".scratch_x.text"), gnu::noinline, gnu::long_call, gnu::noipa
+    #endif
+#else
+    #define KVASIR_CORE0_BSS
+    #define KVASIR_CORE1_BSS
+    #define KVASIR_CORE0_DATA
+    #define KVASIR_CORE1_DATA
+    #define KVASIR_CORE0_CODE
+    #define KVASIR_CORE1_CODE
 #endif
 
 // The first statement of every KVASIR_RAM_FUNC_ATTRIBUTES function. It costs no instruction: a label

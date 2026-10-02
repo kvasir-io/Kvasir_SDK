@@ -7,7 +7,7 @@ SECTIONS {
         INCLUDE common_vectors_body.inc.ld
     } > ram
 
-    .noInitLowRam (NOLOAD) : AT(.) {
+    .noInitLowRam (NOLOAD) : AT(ADDR(.noInitLowRam)) {
         INCLUDE common_noInitLowRam_body.inc.ld
     } > ram
 
@@ -19,23 +19,23 @@ SECTIONS {
         INCLUDE common_data_body.inc.ld
     } > ram
 
-    .bss (NOLOAD) : AT(.) {
+    .bss (NOLOAD) : AT(ADDR(.bss)) {
         INCLUDE common_bss_body.inc.ld
     } > ram
 
-    .noInit (NOLOAD) : AT(.) {
+    .noInit (NOLOAD) : AT(ADDR(.noInit)) {
         INCLUDE common_noInit_body.inc.ld
     } > ram
 
-    .stack (NOLOAD) : AT(.) {
+    .stack (NOLOAD) : AT(ADDR(.stack)) {
         INCLUDE common_stack_body.inc.ld
     } > ram
 
-    .stack1 (NOLOAD) : AT(.) {
+    .stack1 (NOLOAD) : AT(ADDR(.stack1)) {
         INCLUDE common_stack1_body.inc.ld
     } > ram
 
-    .heap (NOLOAD) : AT(.) {
+    .heap (NOLOAD) : AT(ADDR(.heap)) {
         INCLUDE common_heap_body.inc.ld
     } > ram
 }

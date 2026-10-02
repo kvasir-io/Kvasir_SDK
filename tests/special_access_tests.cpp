@@ -216,6 +216,65 @@ static void clearTogglePreservesPlainNeighbors() {
     });
 }
 
+// reset on a two-bit flag field clears both bits: every bit of the field written as 1
+static void resetMultiBitFlag() {
+    test("resetMultiBitFlag");
+
+    recorder.setReadValue(FlagPairReg::Addr::value, 0x53);
+
+    apply(reset(FlagPairReg::pair));
+
+    checkActions({
+      R{FlagPairReg::Addr::value, 0x53},
+      W{FlagPairReg::Addr::value, 0x53}
+    });
+}
+
+// the identity table (svd_converter's identityOf is the same)
+namespace IdentityTable {
+using Kvasir::Register::AccessType;
+using Kvasir::Register::ModifiedWriteValueType;
+using Kvasir::Register::Detail::Identity;
+using Kvasir::Register::Detail::identityOf;
+static_assert(identityOf(AccessType::readOnly,
+                         ModifiedWriteValueType::normal)
+              == Identity::zero);
+static_assert(identityOf(AccessType::readWrite,
+                         ModifiedWriteValueType::oneToClear)
+              == Identity::zero);
+static_assert(identityOf(AccessType::writeOnly,
+                         ModifiedWriteValueType::oneToToggle)
+              == Identity::zero);
+static_assert(identityOf(AccessType::readWrite,
+                         ModifiedWriteValueType::zeroToClear)
+              == Identity::one);
+static_assert(identityOf(AccessType::readWrite,
+                         ModifiedWriteValueType::normal)
+              == Identity::none);
+static_assert(identityOf(AccessType::writeOnly,
+                         ModifiedWriteValueType::normal)
+              == Identity::none);
+static_assert(
+  Kvasir::Register::Detail::identityOfAccess<std::remove_cvref_t<decltype(CtrlReg::flag)>::Access>
+  == Identity::zero);
+
+// MaskedReg's masks follow from its fields when bits 7..4 are a zero-to-* field (identity one);
+// as a plain field they do not
+constexpr std::array<unsigned, 4> maskedFields{0x3, 0xC, 0xF0, 0x100};
+constexpr std::array<Identity, 4> maskedIds{Identity::none,
+                                            Identity::none,
+                                            Identity::one,
+                                            Identity::zero};
+constexpr std::array<Identity, 4> maskedIdsPlain{Identity::none,
+                                                 Identity::none,
+                                                 Identity::none,
+                                                 Identity::zero};
+static_assert(Kvasir::Register::Detail::masksMatchFields<MaskedReg::Addr>(maskedFields,
+                                                                          maskedIds));
+static_assert(!Kvasir::Register::Detail::masksMatchFields<MaskedReg::Addr>(maskedFields,
+                                                                           maskedIdsPlain));
+}   // namespace IdentityTable
+
 int main() {
     setSingleBit();
     clearSingleBit();
@@ -229,6 +288,7 @@ int main() {
     maskedRegPartialWrite();
     maskedRegResetW1cFlag();
     maskedRegCompileTimeWrite();
+    resetMultiBitFlag();
 
     if(Kvasir::Test::failures != 0) {
         std::print("{} checks failed\n", Kvasir::Test::failures);

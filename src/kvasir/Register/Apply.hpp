@@ -84,10 +84,35 @@ namespace Kvasir { namespace Register {
         template<typename L, unsigned V>
         struct ActionExecRank<Action<L, XorLiteralAction<V>>> : Int<2> {};
 
-        template<typename L>
-        struct ActionExecRank<Action<L, XorAction>> : Int<2> {};
-
         // predicate returning result of left < right for RegisterOptions
+        // Two writes in one step that cover the same bits of a register, at least one of them a
+        // runtime value: the merged write is the OR of both, which is never what was meant. Bits the
+        // register ignores a zero on are exempt (two pins' runtime masks into one SET register).
+        template<typename TAddress,
+                 unsigned Mask1,
+                 unsigned Mask2>
+        constexpr bool runtimeDisjoint() {
+            return (Mask1 & Mask2 & ~GetAddress<TAddress>::writeIgnoredIfZeroMask) == 0;
+        }
+
+        // A literal and a runtime write of the same bits merge into the OR of both: right only when
+        // the literal writes no 1 there (overrideDefaultsRuntime merges a field's 0 default with its
+        // runtime value - that is fine; write(F, value<2>()), write(F, x) is not).
+        template<typename TAddress,
+                 unsigned LiteralValue,
+                 unsigned RuntimeMask>
+        constexpr bool literalLeavesRuntimeBits() {
+            return (LiteralValue & RuntimeMask & ~GetAddress<TAddress>::writeIgnoredIfZeroMask)
+                == 0;
+        }
+
+        // A merged action addresses several fields at once: it has no single access kind and no
+        // field type, only the register's. Nothing downstream reads either from it (the executors
+        // take the masks and the value).
+        template<typename TAddress, unsigned Mask>
+        using MergedLocation
+          = FieldLocation<TAddress, Mask, ReadWriteAccess, typename TAddress::RegType>;
+
         template<typename TLeft, typename TRight>
         struct IndexedActionLess;
 
@@ -157,13 +182,8 @@ namespace Kvasir { namespace Register {
                         Us...>>
           : MergeRegisterActions<
               brigand::list<Ts...>,
-              brigand::list<IndexedAction<Action<FieldLocation<TAddress,
-                                                               (Mask1 | Mask2),   // merge
-                                                               TAccess1>,         // dont care,
-                                                 // plausibility check has
-                                                 // already been done
+              brigand::list<IndexedAction<Action<MergedLocation<TAddress, (Mask1 | Mask2)>,
                                                  TActionTemplate<(Value1 | Value2)>   // merge
-                                                 // TODO implement register type here
                                                  >,
                                           TInputs1...,
                                           TInputs2...>,   // concatenate
@@ -202,17 +222,11 @@ namespace Kvasir { namespace Register {
             Us...>>
           : MergeRegisterActions<
               brigand::list<Ts...>,
-              brigand::list<IndexedAction<Action<FieldLocation<TAddress,
-                                                               (Mask1 | Mask2),   // merge
-                                                               TAccess1>,         // dont care,
-                                                 // plausibility check
-                                                 // has already been done
-                                                 ReadAction
-                                                 // TODO implement register type here
-                                                 >,
-                                          TInputs1...,
-                                          TInputs2...>,   // concatenate
-                            Us...>                        // pass through rest
+              brigand::list<
+                IndexedAction<Action<MergedLocation<TAddress, (Mask1 | Mask2)>, ReadAction>,
+                              TInputs1...,
+                              TInputs2...>,   // concatenate
+                Us...>                        // pass through rest
               > {};
 
         // Indexed Write
@@ -238,18 +252,20 @@ namespace Kvasir { namespace Register {
                         Us...>>
           : MergeRegisterActions<
               brigand::list<Ts...>,
-              brigand::list<IndexedAction<Action<FieldLocation<TAddress,
-                                                               (Mask1 | Mask2),   // merge
-                                                               TAccess1>,         // dont care,
-                                                 // plausibility check
-                                                 // has already been done
-                                                 WriteAction
-                                                 // TODO implement register type here
-                                                 >,
-                                          TInputs1...,
-                                          TInputs2...>,   // concatenate
-                            Us...>                        // pass through rest
-              > {};
+              brigand::list<
+                IndexedAction<Action<MergedLocation<TAddress, (Mask1 | Mask2)>, WriteAction>,
+                              TInputs1...,
+                              TInputs2...>,   // concatenate
+                Us...>                        // pass through rest
+              > {
+            static_assert(
+              runtimeDisjoint<TAddress,
+                              Mask1,
+                              Mask2>(),
+              "two writes in one apply() cover the same bits of one register and at "
+              "least one of them is a runtime value: the result would be the OR of both "
+              "(separate them with a sequencePoint if both are meant)");
+        };
 
         // Indexed Write CompileTime + Runtime
         template<typename TAddress,
@@ -276,18 +292,20 @@ namespace Kvasir { namespace Register {
                         Us...>>
           : MergeRegisterActions<
               brigand::list<Ts...>,
-              brigand::list<IndexedAction<Action<FieldLocation<TAddress,
-                                                               (Mask1 | Mask2),   // merge
-                                                               TAccess1>,         // dont care,
-                                                 // plausibility check
-                                                 // has already been done
-                                                 WriteRuntimeAndLiteralAction<Value1>
-                                                 // TODO implement register type here
-                                                 >,
+              brigand::list<IndexedAction<Action<MergedLocation<TAddress, (Mask1 | Mask2)>,
+                                                 WriteRuntimeAndLiteralAction<Value1>>,
                                           TInputs1...,
                                           TInputs2...>,   // concatenate
                             Us...>                        // pass through rest
-              > {};
+              > {
+            static_assert(
+              literalLeavesRuntimeBits<TAddress,
+                                       Value1,
+                                       Mask2>(),
+              "a literal and a runtime write in one apply() cover the same bits and the "
+              "literal writes ones there: the result would be the OR of both (separate "
+              "them with a sequencePoint if both are meant)");
+        };
 
         // Indexed Write Runtime + CompileTime
         template<typename TAddress,
@@ -314,18 +332,20 @@ namespace Kvasir { namespace Register {
                         Us...>>
           : MergeRegisterActions<
               brigand::list<Ts...>,
-              brigand::list<IndexedAction<Action<FieldLocation<TAddress,
-                                                               (Mask1 | Mask2),   // merge
-                                                               TAccess1>,         // dont care,
-                                                 // plausibility check
-                                                 // has already been done
-                                                 WriteRuntimeAndLiteralAction<Value2>
-                                                 // TODO implement register type here
-                                                 >,
+              brigand::list<IndexedAction<Action<MergedLocation<TAddress, (Mask1 | Mask2)>,
+                                                 WriteRuntimeAndLiteralAction<Value2>>,
                                           TInputs1...,
                                           TInputs2...>,   // concatenate
                             Us...>                        // pass through rest
-              > {};
+              > {
+            static_assert(
+              literalLeavesRuntimeBits<TAddress,
+                                       Value2,
+                                       Mask1>(),
+              "a literal and a runtime write in one apply() cover the same bits and the "
+              "literal writes ones there: the result would be the OR of both (separate "
+              "them with a sequencePoint if both are meant)");
+        };
 
         // Indexed WriteRuntimeAndLiteral + WriteLiteral
         template<typename TAddress,
@@ -353,14 +373,8 @@ namespace Kvasir { namespace Register {
                         Us...>>
           : MergeRegisterActions<
               brigand::list<Ts...>,
-              brigand::list<IndexedAction<Action<FieldLocation<TAddress,
-                                                               (Mask1 | Mask2),   // merge
-                                                               TAccess1>,         // dont care,
-                                                 // plausibility check
-                                                 // has already been done
-                                                 WriteRuntimeAndLiteralAction<(Value1 | Value2)>
-                                                 // TODO implement register type here
-                                                 >,
+              brigand::list<IndexedAction<Action<MergedLocation<TAddress, (Mask1 | Mask2)>,
+                                                 WriteRuntimeAndLiteralAction<(Value1 | Value2)>>,
                                           TInputs1...,
                                           TInputs2...>,   // concatenate
                             Us...>                        // pass through rest
@@ -395,17 +409,12 @@ namespace Kvasir { namespace Register {
           brigand::list<
             Action<FieldLocation<TAddress, Mask2, TAccess2, TFieldType2>, TActionTemplate<Value2>>,
             Us...>>
-          : MergeRegisterActions<
-              brigand::list<Ts...>,
-              brigand::list<Action<FieldLocation<TAddress,
-                                                 (Mask1 | Mask2),   // merge
-                                                 TAccess1>,   // dont care, plausibility check has
-                                                              // already been done
-                                   TActionTemplate<(Value1 | Value2)>   // merge
-                                   // TODO implement register type here
-                                   >,
-                            Us...>   // pass through rest
-              > {
+          : MergeRegisterActions<brigand::list<Ts...>,
+                                 brigand::list<Action<MergedLocation<TAddress, (Mask1 | Mask2)>,
+                                                      TActionTemplate<(Value1 | Value2)>   // merge
+                                                      >,
+                                               Us...>   // pass through rest
+                                 > {
             static_assert(literalsAgree<Mask1,
                                         Value1,
                                         Mask2,
@@ -475,24 +484,6 @@ namespace Kvasir { namespace Register {
           TopLevel,
           Action<FieldLocation<TAddress, Mask, TAccess, TR>, WriteAction>,
           Int<Index>> {
-            static_assert(
-              TopLevel,
-              "runtime values can only be executed in an apply, they cannot be stored in a list");
-            using type
-              = IndexedAction<Action<FieldLocation<TAddress, Mask, TAccess, TR>, WriteAction>,
-                              brigand::size_t<static_cast<std::size_t>(Index)>>;
-        };
-
-        // special case where there actually is expected input
-        template<bool TopLevel,
-                 typename TAddress,
-                 unsigned Mask,
-                 typename TAccess,
-                 typename TR,
-                 int Index>
-        struct MakeIndexedActionImpl<TopLevel,
-                                     Action<FieldLocation<TAddress, Mask, TAccess, TR>, XorAction>,
-                                     Int<Index>> {
             static_assert(
               TopLevel,
               "runtime values can only be executed in an apply, they cannot be stored in a list");
@@ -718,9 +709,9 @@ namespace Kvasir { namespace Register {
     // if apply contains reads return a FieldTuple
     template<typename... Args>
     [[gnu::always_inline]]
-    inline typename std::enable_if<(brigand::size<Detail::GetReadsT<brigand::list<Args...>>>::value
-                                    != 0),
-                                   Detail::GetReturnType<Args...>>::type apply(Args... args) {
+    inline
+    typename std::enable_if<(brigand::size<Detail::GetReadsT<brigand::list<Args...>>>::value != 0),
+                            Detail::GetReturnType<Args...>>::type apply(Args... args) {
         static_assert(Detail::ArgsToApplyArePlausible<Args...>::value,
                       "one of the supplied arguments is not supported");
         using IndexedActions   = brigand::transform<brigand::list<Args...>,

@@ -1,5 +1,5 @@
 #pragma once
-
+#include "kvasir/Util/Panic.hpp"
 #include "uc_log/uc_log.hpp"
 
 #include <cstdint>
@@ -76,13 +76,27 @@ extern "C" {
 
 [[gnu::used]] inline void __ubsan_handle_negate_overflow_minimal() { UBSAN_REPORT(); }
 
-[[gnu::used]] inline void __ubsan_handle_builtin_unreachable_minimal() { UBSAN_REPORT(); }
+// unreachable and missing_return cannot go on: clang emits the call and nothing after it, so a
+// handler that returned would run into whatever function the linker put next. They report and panic.
+[[gnu::used,
+  noreturn]] inline void
+__ubsan_handle_builtin_unreachable_minimal() {
+    UBSAN_REPORT();
+    ::Kvasir::Panic::raiseAt(::Kvasir::Panic::Cause::undefinedBehaviour,
+                             reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
+}
 
 [[gnu::used]] inline void __ubsan_handle_out_of_bounds_minimal() { UBSAN_REPORT(); }
 
 [[gnu::used]] inline void __ubsan_handle_function_type_mismatch_minimal() { UBSAN_REPORT(); }
 
-[[gnu::used]] inline void __ubsan_handle_missing_return_minimal() { UBSAN_REPORT(); }
+[[gnu::used,
+  noreturn]] inline void
+__ubsan_handle_missing_return_minimal() {
+    UBSAN_REPORT();
+    ::Kvasir::Panic::raiseAt(::Kvasir::Panic::Cause::undefinedBehaviour,
+                             reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
+}
 
 [[gnu::used]] inline void __ubsan_handle_float_cast_overflow_minimal() { UBSAN_REPORT(); }
 
@@ -186,14 +200,16 @@ KVASIR_UBSAN_GCC(alignment_assumption,
   noreturn]] inline void
 __ubsan_handle_builtin_unreachable(UbsanSourceLocation const* data) {
     ::Kvasir::Ubsan::ubsanReport("builtin_unreachable", data, __builtin_return_address(0));
-    while(true) { asm volatile("bkpt 6" : : :); }
+    ::Kvasir::Panic::raiseAt(::Kvasir::Panic::Cause::undefinedBehaviour,
+                             reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
 }
 
 [[gnu::used,
   noreturn]] inline void
 __ubsan_handle_missing_return(UbsanSourceLocation const* data) {
     ::Kvasir::Ubsan::ubsanReport("missing_return", data, __builtin_return_address(0));
-    while(true) { asm volatile("bkpt 6" : : :); }
+    ::Kvasir::Panic::raiseAt(::Kvasir::Panic::Cause::undefinedBehaviour,
+                             reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
 }
 }
 #endif

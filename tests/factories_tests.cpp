@@ -475,26 +475,48 @@ static void readThenWriteSameRegister() {
     CHECK_EQ(writtenValue(CtrlReg::Addr::value) & 0x3U, 0x3U);
 }
 
-// ===========================================================================
-// Note on AtomicFactories.hpp and IsolatedFactories.hpp -- deliberately untested
-//
-// Register::atomic() and Register::isolated() cannot currently be called at all, so there
-// is no behaviour to pin down:
-//
-//   * every overload is constrained on Detail::IsWriteLiteral<T> or Detail::IsWriteRuntime<T>,
-//     and both of those traits are declared only as a primary template deriving from
-//     std::false_type. There is no specialisation anywhere in the tree, so the constraint
-//     is false for every T and all overloads are removed from the overload set.
-//   * two of the four atomic() overloads additionally declare template parameters (U, Ts...)
-//     that appear nowhere in the parameter list, so they could never be deduced even if the
-//     constraint held.
-//   * all of them return void and have empty bodies. AtomicFactories.hpp says as much:
-//     "warning these are still a work in progress!".
-//
-// Tests should be added here once the traits are specialised and the functions do something.
-// ===========================================================================
+// toggle on a plain bit: read, the bit inverted, write
+static void togglePlainBit() {
+    test("togglePlainBit");
+    recorder.setReadValue(CtrlReg::Addr::value, 0xAC);
+    apply(toggle(CtrlReg::en));
+    checkActions({
+      R{CtrlReg::Addr::value, 0xAC},
+      W{CtrlReg::Addr::value, 0xAD}
+    });
+    recorder.reset();
+    recorder.setReadValue(CtrlReg::Addr::value, 0xAD);
+    apply(toggle(CtrlReg::en));
+    checkActions({
+      R{CtrlReg::Addr::value, 0xAD},
+      W{CtrlReg::Addr::value, 0xAC}
+    });
+}
+
+// toggle on a one-to-toggle bit: one store of the bit, no read
+static void toggleToggleBit() {
+    test("toggleToggleBit");
+    apply(toggle(ToggleReg::pin5));
+    checkActions({
+      W{ToggleReg::Addr::value, 1U << 5}
+    });
+}
+
+// two plain bits of one register: one read, one write
+static void toggleMerges() {
+    test("toggleMerges");
+    recorder.setReadValue(CtrlReg::Addr::value, 0x01);
+    apply(toggle(CtrlReg::en, CtrlReg::irq));
+    checkActions({
+      R{CtrlReg::Addr::value, 0x01},
+      W{CtrlReg::Addr::value, 0x02}
+    });
+}
 
 int main() {
+    togglePlainBit();
+    toggleToggleBit();
+    toggleMerges();
     variadicSet();
     variadicClear();
     variadicRead();

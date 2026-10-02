@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <iterator>
 #include <numeric>
 #include <type_traits>
@@ -24,10 +25,10 @@ namespace {
 // an element type that is not trivially destructible and keeps a ledger of every
 // construction and destruction, so leaks and double destroys are detectable
 struct Tracked {
-    static inline int constructed = 0;
-    static inline int destroyed   = 0;
-    static inline int copies      = 0;
-    static inline int moves       = 0;
+    static inline int                  constructed = 0;
+    static inline int                  destroyed   = 0;
+    [[maybe_unused]] static inline int copies      = 0;   // counted, no test reads them yet
+    [[maybe_unused]] static inline int moves       = 0;
 
     static void reset() {
         constructed = 0;
@@ -569,6 +570,100 @@ static void noLeaks(char const* name,
     }
 }
 
+// A one-byte T grows by memset rather than element by element; the values have to be the same.
+static void byteResize() {
+    Kvasir::Test::test("byteResize");
+
+    StaticVector<std::byte, 16> v;
+    v.push_back(std::byte{1});
+    v.push_back(std::byte{2});
+    v.resize(6);
+    CHECK_EQ(v.size(), 6U);
+    CHECK(v[0] == std::byte{1} && v[1] == std::byte{2});
+    CHECK(std::all_of(v.begin() + 2, v.end(), [](std::byte b) { return b == std::byte{0}; }));
+
+    v.resize(16, std::byte{0xA5});
+    CHECK_EQ(v.size(), 16U);
+    CHECK(std::all_of(v.begin() + 6, v.end(), [](std::byte b) { return b == std::byte{0xA5}; }));
+    CHECK(v[5] == std::byte{0});
+
+    v.resize(1);
+    CHECK_EQ(v.size(), 1U);
+    CHECK(v[0] == std::byte{1});
+}
+
+// resize_and_overwrite hands out the whole room, keeps what op says, and fills nothing.
+static void resizeAndOverwrite() {
+    Kvasir::Test::test("resizeAndOverwrite");
+
+    StaticVector<std::byte, 16> v;
+    v.resize(16, std::byte{0xEE});
+    v.resize(2);
+    v[0] = std::byte{1};
+    v[1] = std::byte{2};
+
+    v.resize_and_overwrite(16, [](std::byte* p, std::size_t n) {
+        CHECK_EQ(n, 16U);
+        CHECK(p[0] == std::byte{1} && p[1] == std::byte{2});
+        p[2] = std::byte{3};
+        return std::size_t{5};
+    });
+    CHECK_EQ(v.size(), 5U);
+    CHECK(v[0] == std::byte{1} && v[1] == std::byte{2} && v[2] == std::byte{3});
+    CHECK(v[3] == std::byte{0xEE} && v[4] == std::byte{0xEE});   // not filled
+
+    v.resize_and_overwrite(3, [](std::byte*, std::size_t n) { return n; });
+    CHECK_EQ(v.size(), 3U);
+    v.resize_and_overwrite(16, [](std::byte*, std::size_t) { return std::size_t{0}; });
+    CHECK(v.empty());
+}
+
+// std::pair is not trivially copyable (its assignments are user provided), so it lives in the
+// non_trivial storage -- which copies and moves it as bytes, since its constructors are trivial.
+static void pairCopiesAsBytes() {
+    Kvasir::Test::test("pairCopiesAsBytes");
+    using P = std::pair<int, short>;
+    static_assert(!std::is_trivially_copyable_v<P>);
+    static_assert(std::is_trivially_copy_constructible_v<P> && std::is_trivially_destructible_v<P>);
+
+    auto const pairs = [](auto const& v) {
+        std::vector<P> out(v.begin(), v.end());
+        return out;
+    };
+    std::vector<P> const want{
+      {1, 10},
+      {2, 20},
+      {3, 30}
+    };
+
+    StaticVector<P, 8> a;
+    for(auto const& p : want) { a.push_back(p); }
+
+    StaticVector<P, 8> b{a};
+    CHECK(pairs(b) == want);
+    CHECK(pairs(a) == want);
+
+    StaticVector<P, 8> c;
+    c.push_back(P{9, 90});
+    c = a;
+    CHECK(pairs(c) == want);
+
+    StaticVector<P, 8> d{std::move(b)};
+    CHECK(pairs(d) == want);
+
+    StaticVector<P, 8> e;
+    e.push_back(P{7, 70});
+    e.push_back(P{8, 80});
+    e.push_back(P{9, 90});
+    e.push_back(P{6, 60});
+    e = std::move(c);
+    CHECK(pairs(e) == want);
+
+    StaticVector<P, 8> empty;
+    e = empty;
+    CHECK(e.empty());
+}
+
 // destroying a vector must destroy exactly the elements it holds, no more and no fewer
 static void destructorDestroysElements() {
     Kvasir::Test::test("destructorDestroysElements");
@@ -757,6 +852,9 @@ int main() {
     noLeaks("comparisons<Tracked>", &comparisons<Tracked>);
     noLeaks("fillToCapacity<Tracked>", &fillToCapacity<Tracked>);
 
+    byteResize();
+    resizeAndOverwrite();
+    pairCopiesAsBytes();
     destructorDestroysElements();
     zeroCapacity();
     initializerList();

@@ -98,8 +98,10 @@ class Elf:
 
 class Regions:
     """Where RAM and flash are: the linker's _LINKER_INTERN_{ram,rom}_{start,end}_ (the memory
-    regions of Kvasir_SDK linker/common*.ld), else - an image linked by another script - the
-    section flags (writable = RAM, loaded read-only = flash). A RAM-only image has no flash."""
+    regions of Kvasir_SDK linker/common*.ld), plus the per-core scratch banks a chip script adds
+    (_LINKER_INTERN_scratch_{x,y}_{start,end}_, chip_rp2040: SRAM4/5) as RAM; else - an image
+    linked by another script - the section flags (writable = RAM, loaded read-only = flash). A
+    RAM-only image has no flash."""
 
     def __init__(self, elf):
         symbols = {s['name']: s['value'] for s in elf.symbols}
@@ -109,12 +111,14 @@ class Regions:
             start = symbols.get(f'_LINKER_INTERN_{name}_start_')
             end = symbols.get(f'_LINKER_INTERN_{name}_end_')
             return (start, end) if start is not None and end is not None else None
-        self.ram, self.flash = region('ram'), region('rom')
-        self.from_symbols = self.ram is not None
+        self.flash = region('rom')
+        self.ram = [r for r in (region('ram'), region(
+            'scratch_x'), region('scratch_y')) if r]
+        self.from_symbols = region('ram') is not None
 
     def is_ram(self, address):
         if self.from_symbols:
-            return self.ram[0] <= address < self.ram[1]
+            return any(start <= address < end for start, end in self.ram)
         sec = self.elf.section_at(address)
         return sec is not None and bool(sec['flags'] & SHF_WRITE)
 

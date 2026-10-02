@@ -12,24 +12,23 @@ namespace Kvasir { namespace Register {
 
     static constexpr SequencePoint sequencePoint{};
 
-    template<int I>
-    struct IsolatedByte {
-        static constexpr int value = I;
-        using type                 = IsolatedByte<I>;
+    // A register a partial write may read-modify-write.
+    struct NormalMode {
+        static constexpr unsigned mustSupplyMask    = 0;
+        static constexpr bool     readHasSideEffect = false;
     };
 
-    namespace Isolated {
-        static constexpr IsolatedByte<0> byte0{};
-        static constexpr IsolatedByte<1> byte1{};
-        static constexpr IsolatedByte<2> byte2{};
-        static constexpr IsolatedByte<3> byte3{};
-    }   // namespace Isolated
-
-    struct PushableMode {};
-
-    struct NormalMode {};
-
-    struct SpecialReadMode {};
+    // A register a read-modify-write would corrupt:
+    // MustSupply - bits that read back something other than what must be written (a key: SCB
+    // AIRCR.VECTKEY reads 0xFA05, needs 0x05FA), so every write names them; ReadSideEffect - a read
+    // pops or clears something (I2C IC_DATA_CMD pops the RX FIFO), so only whole-register writes.
+    // The generator emits it from the SVD: a field whose writeConstraint is a range of one value is
+    // a key, a field with a readAction makes the register's read a side effect.
+    template<unsigned MustSupply, bool ReadSideEffect>
+    struct RmwHazard {
+        static constexpr unsigned mustSupplyMask    = MustSupply;
+        static constexpr bool     readHasSideEffect = ReadSideEffect;
+    };
 
     template<unsigned A,
              unsigned WriteIgnoredIfZeroMask = 0,
@@ -57,6 +56,14 @@ namespace Kvasir { namespace Register {
         unsigned                  value_;
     };
 
+    // A literal write that must not lose a concurrent update of another field of the register
+    // (Register::atomic, AtomicFactories.hpp). How is the chip's business (ExecuteSeam: the RP
+    // set/clear/xor aliases); the default masks interrupts around the read-modify-write.
+    template<unsigned I>
+    struct AtomicWriteLiteralAction {
+        static constexpr unsigned value = I;
+    };
+
     // write a run time known value
     struct WriteAction {
         unsigned value_;
@@ -69,11 +76,6 @@ namespace Kvasir { namespace Register {
     template<unsigned I>
     struct XorLiteralAction {
         static constexpr unsigned value = I;
-    };
-
-    // xor a run time known value
-    struct XorAction {
-        unsigned value_;
     };
 
     template<typename TLocation, typename TAction>

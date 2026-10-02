@@ -227,8 +227,16 @@ _LINKER_heap_end_         = _LINKER_INTERN_heap_end_;
 _LINKER_stack_start_      = _LINKER_INTERN_stack_start_;
 _LINKER_stack_end_        = _LINKER_INTERN_stack_end_;
 
-_LINKER_stack1_start_     = _LINKER_INTERN_stack1_start_;
-_LINKER_stack1_end_       = _LINKER_INTERN_stack1_end_;
+/* Core 1's stack: .stack1 in ram, or with CORE1_STACK_PLACEMENT scratch (cmake_core1_stack_in_scratch, util.cmake)
+   the part of the chip's core 1 scratch bank its linker script reserves (_LINKER_INTERN_stack1_scratch_*). A chip
+   without a scratch bank defines neither; the PROVIDEs keep the expression linkable and the ASSERT refuses the
+   placement there (util.cmake refuses it first, from TARGET_CORE1_SCRATCH_SIZE). */
+PROVIDE(_LINKER_INTERN_stack1_scratch_start_ = 0);
+PROVIDE(_LINKER_INTERN_stack1_scratch_end_ = 0);
+ASSERT( !cmake_core1_stack_in_scratch || _LINKER_INTERN_stack1_scratch_end_ - _LINKER_INTERN_stack1_scratch_start_ >= cmake_core1_stack_size,
+        "ERROR: CORE1_STACK_PLACEMENT scratch, but the chip's linker script has no core 1 scratch stack");
+_LINKER_stack1_start_     = cmake_core1_stack_in_scratch ? _LINKER_INTERN_stack1_scratch_start_ : _LINKER_INTERN_stack1_start_;
+_LINKER_stack1_end_       = cmake_core1_stack_in_scratch ? _LINKER_INTERN_stack1_scratch_end_ : _LINKER_INTERN_stack1_end_;
 
 _LINKER_init_array_start_ = _LINKER_INTERN_init_array_start_;
 _LINKER_init_array_end_   = _LINKER_INTERN_init_array_end_;

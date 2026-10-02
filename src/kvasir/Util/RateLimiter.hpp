@@ -182,6 +182,39 @@ private:
     std::uint32_t gap_{0};   // first occurrence is always reported
 };
 
+// A RateLimiter's interface with nothing behind it: never allows, holds no state. What a
+// limiter that exists only for log lines becomes when logging is compiled out.
+template<typename Clock, RateLimiterConfig Cfg = RateLimiterConfig{}>
+struct NoRateLimiter {
+    using tp = typename Clock::time_point;
+
+    constexpr RateLimitDecision allow(std::uint32_t,
+                                      tp) const {
+        return {};
+    }
+
+    constexpr RateLimitDecision allow(std::uint32_t = 0) const { return {}; }
+
+    constexpr std::uint32_t takeSummary(tp) const { return 0; }
+
+    constexpr std::uint32_t suppressed() const { return 0; }
+
+    constexpr void reset() const {}
+};
+
+// A limiter whose only job is to thin out log lines: a RateLimiter while logging is compiled in
+// (USE_UC_LOG), an empty NoRateLimiter otherwise - declare it [[no_unique_address]] and it costs
+// no RAM either (56 bytes a limiter with the default config and an 8-byte time_point). A host test
+// that counts limited log lines without uc_log defines KVASIR_LOG_KEEP_LIMITERS to keep them.
+#if defined(USE_UC_LOG) || defined(KVASIR_LOG_KEEP_LIMITERS)
+inline constexpr bool LogLimitersKept = true;
+#else
+inline constexpr bool LogLimitersKept = false;
+#endif
+template<typename Clock, RateLimiterConfig Cfg = RateLimiterConfig{}>
+using LogRateLimiter
+  = std::conditional_t<LogLimitersKept, RateLimiter<Clock, Cfg>, NoRateLimiter<Clock, Cfg>>;
+
 }   // namespace Kvasir
 
 #if __has_include("remote_fmt/remote_fmt.hpp")
@@ -211,11 +244,23 @@ struct remote_fmt::formatter<Kvasir::Suppressed> {
     //   -> "i2c0 abort ... (+199 not logged)"  when 199 were suppressed before it
     //
     // `fmt` must be a string literal (it is concatenated with the count placeholder).
-    #define KVASIR_LOG_LIMITED(decision, LOG, fmt, ...)                \
-        do {                                                           \
-            if(auto const kvasir_limited_ = (decision)) {              \
-                LOG(fmt "{}" __VA_OPT__(, ) __VA_ARGS__,               \
-                    ::Kvasir::Suppressed{kvasir_limited_.suppressed}); \
-            }                                                          \
-        } while(false)
+    #if defined(USE_UC_LOG)
+        #define KVASIR_LOG_LIMITED(decision, LOG, fmt, ...)                \
+            do {                                                           \
+                if(auto const kvasir_limited_ = (decision)) {              \
+                    LOG(fmt "{}" __VA_OPT__(, ) __VA_ARGS__,               \
+                        ::Kvasir::Suppressed{kvasir_limited_.suppressed}); \
+                }                                                          \
+            } while(false)
+    #else
+        // Logging compiled out: the decision is never evaluated (a LogRateLimiter is empty then,
+        // and a real limiter's bookkeeping would be work for nothing), only named in an
+        // unevaluated sizeof so what it mentions still counts as used; the line goes to LOG,
+        // which touches its arguments without evaluating them either.
+        #define KVASIR_LOG_LIMITED(decision, LOG, fmt, ...)                       \
+            do {                                                                  \
+                static_cast<void>(sizeof(decision));                              \
+                LOG(fmt "{}" __VA_OPT__(, ) __VA_ARGS__, ::Kvasir::Suppressed{}); \
+            } while(false)
+    #endif
 #endif
