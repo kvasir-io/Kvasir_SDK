@@ -153,10 +153,8 @@
  *   - Flash config: stack placed EARLY (after .noInitLowRam, before .data)
  *   - RAM-only: stack placed LATE (after .noInit, before .heap)
  *
- * Two-Stage Linking (../cmake/tools/two_stage_link.py):
- *   Stage 1: Link with cmake_stack_size_extra=0, measure actual section sizes
- *   Stage 2: Calculate remaining RAM, set cmake_stack_size_extra, relink
- *   Result: Stack grows to fill all available RAM after other sections
+ * Stack Size (common_stack_body.inc.ld):
+ *   The stack grows to fill all RAM the other sections leave (_LINKER_INTERN_stack_extra_ below).
  *
  * SAFETY FEATURES:
  *   - Fill pattern 0xFFDEFFDE (ARM "udf #255") triggers HardFault on runaway code
@@ -196,6 +194,15 @@ PROVIDE(__exidx_end = 0);
 
 _LINKER_INTERN_min_stack_size_ = cmake_min_stack_size;
 
+/* The stack (common_stack_body.inc.ld) takes the RAM the other sections leave: cmake_ram_size minus the other RAM
+   sections (_LINKER_INTERN_ram_other_size_, common_ram.ld / common_ram_only.ld), the minimum stack, the heap and a
+   1/256 margin; the linker resolves the forward references. Top level, not inside .stack: GNU ld makes a symbol
+   assigned inside an output section relative to that section. Linker arithmetic is unsigned: when that much is not
+   left the extra is 0, so an overflow reads "section ... will not fit in region 'ram'", and the assert below catches
+   the case where everything fits but the margin does not. */
+_LINKER_INTERN_ram_wanted_  = _LINKER_INTERN_ram_other_size_ + cmake_min_stack_size + cmake_heap_size + cmake_ram_size / 256;
+_LINKER_INTERN_stack_extra_ = _LINKER_INTERN_ram_wanted_ <= cmake_ram_size ? cmake_ram_size - _LINKER_INTERN_ram_wanted_ : 0;
+
 /* ROM/Flash symbols defined in configuration-specific files */
 /* RAM definitions */
 _LINKER_INTERN_ram_start_   = ORIGIN(ram);
@@ -212,11 +219,21 @@ ASSERT( _LINKER_INTERN_data_start_flash_ == 0 || _LINKER_INTERN_data_end_flash_ 
 
 ASSERT( _LINKER_INTERN_min_stack_size_ <= _LINKER_INTERN_stack_size_ - _LINKER_INTERN_stackProtector_size_,"ERROR: not enough space for stack");
 
+/* common_stack_body.inc.ld: the sections, MIN_STACK_SIZE, HEAP_SIZE and the RAM/256 margin must fit in RAM */
+ASSERT( _LINKER_INTERN_ram_wanted_ <= cmake_ram_size,
+        "ERROR: not enough RAM: the sections, the minimum stack, the heap and a RAM/256 margin do not fit");
+
 /* A secondary core's vector table in the image means a SecondaryCore is in use; it needs a
    stack, and a zero-sized one would overflow on the first push. */
 ASSERT( _LINKER_INTERN_core1_vectors_end_ == _LINKER_INTERN_core1_vectors_start_ || cmake_core1_stack_size >= 1024,
         "ERROR: a SecondaryCore is linked but CORE1_STACK_SIZE is not set (needs at least 1k)");
 /*ASSERT(_LINKER_INTERN_init_array_start_ ==  _LINKER_INTERN_init_array_end_,"ERROR: global init stuff not supported");*/
+
+/* ResetISR is named by the Startup's reset entry (StartUp.hpp nameResetEntry), which exists only
+   when main.cpp instantiates the Startup's vector table. Without it --entry=ResetISR is only a
+   warning and the image has no vector table. */
+ASSERT( DEFINED(ResetISR),
+        "ERROR: no vector table - main.cpp needs `template struct Kvasir::Startup::Start<Startup>;`");
 
 /* Low RAM check (only if noInitLowRam section exists) */
 ASSERT( !DEFINED(_LINKER_INTERN_noInitLowRam_end_) || 0xffff > _LINKER_INTERN_noInitLowRam_end_ - _LINKER_INTERN_ram_start_, "ERROR: low RAM too full");

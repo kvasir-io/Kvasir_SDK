@@ -130,9 +130,49 @@ namespace Kvasir { namespace Startup { namespace ListRules {
     template<typename List>
     struct NoDuplicateEntry;
 
+    namespace Detail {
+        // The first T for which Pred::template holds<T>, or void: a rule's offender, for its compile error.
+        template<typename Pred, typename... Ts>
+        struct FirstWhere {
+            using type = void;
+        };
+
+        template<typename Pred, typename T, typename... Ts>
+        struct FirstWhere<Pred, T, Ts...>
+          : std::conditional_t<Pred::template holds<T>,
+                               std::type_identity<T>,
+                               FirstWhere<Pred, Ts...>> {};
+
+        template<typename List>
+        struct DuplicateIn {
+            template<typename T>
+            static constexpr bool holds = countSame<T>(List{}) > 1;
+        };
+
+        template<template<typename> class IsSecondaryCore>
+        struct NotAPeripheral {
+            template<typename T>
+            static constexpr bool holds = !(isPeripheral<T> || IsSecondaryCore<T>::value);
+        };
+
+        struct IsLaunchTimeout {
+            template<typename T>
+            static constexpr bool holds = requires { T::isLaunchTimeout; };
+        };
+
+        struct IsClockSettings {
+            template<typename T>
+            static constexpr bool holds
+              = requires { T::coreClockInit(); } || requires { T::peripheryClockInit(); };
+        };
+    }   // namespace Detail
+
     template<typename... Ts>
     struct NoDuplicateEntry<brigand::list<Ts...>>
-      : std::bool_constant<((Detail::countSame<Ts>(brigand::list<Ts...>{}) == 1) && ...)> {};
+      : std::bool_constant<((Detail::countSame<Ts>(brigand::list<Ts...>{}) == 1) && ...)> {
+        using Duplicate =
+          typename Detail::FirstWhere<Detail::DuplicateIn<brigand::list<Ts...>>, Ts...>::type;
+    };
 
     // IsSecondaryCore: the chip-agnostic predicate from StartUp.hpp, passed in so a test can
     // substitute its own.
@@ -141,7 +181,10 @@ namespace Kvasir { namespace Startup { namespace ListRules {
 
     template<template<typename> class IsSecondaryCore, typename... Ts>
     struct AllArePeripherals<IsSecondaryCore, brigand::list<Ts...>>
-      : std::bool_constant<((isPeripheral<Ts> || IsSecondaryCore<Ts>::value) && ...)> {};
+      : std::bool_constant<((isPeripheral<Ts> || IsSecondaryCore<Ts>::value) && ...)> {
+        using NotAPeripheral =
+          typename Detail::FirstWhere<Detail::NotAPeripheral<IsSecondaryCore>, Ts...>::type;
+    };
 
     template<template<typename> class IsSecondaryCore, typename List>
     struct AtMostOneSecondary;
@@ -164,7 +207,9 @@ namespace Kvasir { namespace Startup { namespace ListRules {
     template<typename... Ts>
     struct NoLaunchTimeoutIn<brigand::list<Ts...>>
       : std::bool_constant<(!requires {
-        Ts::isLaunchTimeout; } && ...)> {};
+        Ts::isLaunchTimeout; } && ...)> {
+        using LaunchTimeout = typename Detail::FirstWhere<Detail::IsLaunchTimeout, Ts...>::type;
+    };
 
     template<typename List>
     struct NoClockSettingsIn;
@@ -175,7 +220,9 @@ namespace Kvasir { namespace Startup { namespace ListRules {
           !(requires {
         Ts::coreClockInit(); } || requires {
             Ts::peripheryClockInit(); })
-          && ...)> {};
+          && ...)> {
+        using ClockSettings = typename Detail::FirstWhere<Detail::IsClockSettings, Ts...>::type;
+    };
 
     // Traits: the chip's InterruptOffsetTraits (begin, end, disabled); IsrList: Nvic::Isr
     // types, each with an IType::value.

@@ -1,0 +1,4 @@
+#pragma once
+// freestanding stand-in for the test image (no C++ library for bare metal here)
+#include <stddef.h>
+namespace std { using ::size_t; }

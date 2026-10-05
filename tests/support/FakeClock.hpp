@@ -15,6 +15,8 @@ struct FakeClockT {
     using time_point = std::chrono::time_point<FakeClockT, duration>;
 
     static inline time_point current{};
+    static constexpr bool    runsAsleep
+      = true;   // Kvasir::Executor: a sleep moves it (support/FakeWake.hpp)
 
     static time_point now() { return current; }
 

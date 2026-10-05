@@ -219,13 +219,18 @@ void atomic_store_block(void volatile*       ptr,
     *reinterpret_cast<T volatile*>(ptr) = val;
 }
 
+// A plain atomic store (a flag's clear(), a std::atomic store()) is an inline str on these cores
+// and does not take ShimLock: a write here can land after another core's store and undo it. So an
+// exchange that changes nothing writes nothing - a Spinlock waiter's test_and_set on a held flag
+// (read 1, write 1) must not put back the 1 its owner's unlock has just cleared, or the flag stays
+// held by nobody. A store that races any other read-modify-write here can still be lost.
 template<typename T>
 T atomic_exchange_block(void volatile*       ptr,
                         T                    val,
                         [[maybe_unused]] int memorder) {
     ShimLock guard;
-    T        old                        = *reinterpret_cast<T volatile*>(ptr);
-    *reinterpret_cast<T volatile*>(ptr) = val;
+    T        old = *reinterpret_cast<T volatile*>(ptr);
+    if(old != val) { *reinterpret_cast<T volatile*>(ptr) = val; }
     return old;
 }
 

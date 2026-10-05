@@ -19,8 +19,10 @@ namespace Kvasir::Atomic {
 // ahead. With it: exact counts, every time.
 //
 // On the RP2040, which has no exclusives, the flag's test_and_set goes through the atomic
-// shim, whose cross-core lock is an SIO spinlock (chip/CrossCoreLock.hpp): correct, and a
-// few times slower than the inline ldaexb/strexb.
+// shim, whose cross-core lock is an SIO spinlock (chip/CrossCoreLock.hpp), while unlock()'s
+// clear() is a plain store outside that lock. Correct because the shim's exchange writes only
+// when the value changes: a waiter never writes 1 over a flag its owner has just cleared
+// (detail/arm_Common_atomic.hpp). A few times slower than the inline ldaexb/strexb.
 //
 // Satisfies Lockable: use it with std::lock_guard or std::scoped_lock.
 //

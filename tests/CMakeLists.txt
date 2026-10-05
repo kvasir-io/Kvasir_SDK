@@ -91,6 +91,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../../chip_rp_common/RegisterAlias.hpp)
     target_include_directories(kvasir_test_register_atomic PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/alias_include)
 endif()
 kvasir_add_test(kvasir_test_register_model model_tests.cpp)
+kvasir_add_test(kvasir_test_register_wait register_wait_tests.cpp)
 kvasir_add_test(kvasir_test_shared_isr shared_isr_tests.cpp)
 kvasir_add_test(kvasir_test_rate_limiter rate_limiter_tests.cpp)
 target_link_libraries(kvasir_test_rate_limiter PRIVATE kvasir::test_support)
@@ -100,12 +101,47 @@ kvasir_add_test(kvasir_test_io io_tests.cpp)
 kvasir_add_multicore_test(kvasir_test_spinlock spinlock_tests.cpp)
 kvasir_add_multicore_test(kvasir_test_seqlock seqlock_tests.cpp)
 kvasir_add_multicore_test(kvasir_test_queue queue_tests.cpp)
+kvasir_add_multicore_test(kvasir_test_bip_buffer bip_buffer_tests.cpp)
 kvasir_add_multicore_test(kvasir_test_task_queue task_queue_tests.cpp)
 kvasir_add_multicore_test(kvasir_test_critical_section critical_section_tests.cpp)
 kvasir_add_test(kvasir_test_critical_section_injected critical_section_injected_tests.cpp)
 
 kvasir_add_host_test(kvasir_test_util_saturating_value util_saturating_value_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_rollover util_rollover_tests.cpp)
+kvasir_add_host_test(kvasir_test_util_crc util_crc_tests.cpp)
+kvasir_add_host_test(kvasir_test_persistent persistent_tests.cpp)
+kvasir_add_host_test(kvasir_test_crash_record crash_record_tests.cpp)
+kvasir_add_host_test(kvasir_test_boot_guard boot_guard_tests.cpp)
+kvasir_add_host_test(kvasir_test_health health_tests.cpp)
+kvasir_add_host_test(kvasir_test_image_check image_check_tests.cpp)
+kvasir_add_host_test(kvasir_test_cell_store cell_store_tests.cpp)
+kvasir_add_host_test(kvasir_test_executor executor_tests.cpp)
+kvasir_add_host_test(kvasir_test_loop_profiler loop_profiler_tests.cpp)
+target_compile_definitions(kvasir_test_image_check PRIVATE KVASIR_IMAGE_CRC_TEST=1)
+# Util/Check.hpp without USE_UC_LOG: the checks themselves, their log lines in the never-evaluated form
+kvasir_add_host_test(kvasir_test_check check_tests.cpp)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME kvasir_test_check_must_fail
+         COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_LIST_DIR}/check_must_fail/test_check_must_fail.py
+                 ${CMAKE_CXX_COMPILER} ${CMAKE_CURRENT_LIST_DIR}/../src)
+add_test(NAME kvasir_test_cell_store_must_fail
+         COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_LIST_DIR}/cell_store_must_fail/test_cell_store_must_fail.py
+                 ${CMAKE_CXX_COMPILER} ${CMAKE_CURRENT_LIST_DIR}/../src ${CMAKE_CURRENT_LIST_DIR})
+# Crc32 against the copies that stay outside the SDK: uc_log's (nested here, absent in a checkout without its
+# submodules) and fs's log store (only where the fs checkout sits next to the SDK)
+set(_crc_uc_log ${CMAKE_CURRENT_SOURCE_DIR}/../uc_log/src/uc_log/detail/HexImage.hpp)
+set(_crc_fs ${CMAKE_CURRENT_SOURCE_DIR}/../../fs/src/fs/log/Store.hpp)
+if(EXISTS ${_crc_uc_log} OR EXISTS ${_crc_fs})
+    kvasir_add_host_test(kvasir_test_util_crc_cross util_crc_cross_tests.cpp)
+    if(EXISTS ${_crc_uc_log})
+        target_include_directories(kvasir_test_util_crc_cross PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../uc_log/src)
+        target_compile_definitions(kvasir_test_util_crc_cross PRIVATE KVASIR_CRC_CROSS_UC_LOG=1)
+    endif()
+    if(EXISTS ${_crc_fs})
+        target_include_directories(kvasir_test_util_crc_cross PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../fs/src)
+        target_compile_definitions(kvasir_test_util_crc_cross PRIVATE KVASIR_CRC_CROSS_FS=1)
+    endif()
+endif()
 kvasir_add_host_test(kvasir_test_util_prescaler util_prescaler_tests.cpp)
 # the RP PLL search (chip_rp_common/PllSearch.hpp) against the one it replaced, where the chip_rp_common checkout sits
 # next to the SDK
@@ -116,6 +152,16 @@ endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME kvasir_test_util_prescaler_must_fail
          COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_LIST_DIR}/prescaler_must_fail/test_prescaler_must_fail.py
+                 ${CMAKE_CXX_COMPILER} ${CMAKE_CURRENT_LIST_DIR}/../src)
+# Named compile errors (Util/Diagnostic.hpp, Register/Diagnostic.hpp, the Startup reports): snippets that must fail with
+# the register, field or resource named, with this compiler
+add_test(NAME kvasir_test_diagnostics_must_fail
+         COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_LIST_DIR}/diagnostics_must_fail/test_diagnostics_must_fail.py
+                 ${CMAKE_CXX_COMPILER} ${CMAKE_CURRENT_LIST_DIR}/../src ${CMAKE_CURRENT_LIST_DIR})
+kvasir_add_host_test(kvasir_test_diagnostic diagnostic_tests.cpp)
+# Crc's refusals (a wrong check value, a table size, resume where refin != refout), with this compiler
+add_test(NAME kvasir_test_util_crc_must_fail
+         COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_LIST_DIR}/crc_must_fail/test_crc_must_fail.py
                  ${CMAKE_CXX_COMPILER} ${CMAKE_CURRENT_LIST_DIR}/../src)
 kvasir_add_host_test(kvasir_test_util_periodic util_periodic_tests.cpp)
 kvasir_add_host_test(kvasir_test_hooks hooks_tests.cpp)
@@ -147,6 +193,7 @@ set(KVASIR_NON_SELF_CONTAINED_HEADERS
     kvasir/Atomic/detail/arm_Clang_atomic.hpp # needs core/Nvic.hpp from a chip file
     kvasir/Atomic/detail/arm_GCC_atomic.hpp # needs core/Nvic.hpp from a chip file
     kvasir/Util/FaultHandler.hpp # needs core/Fault.hpp from a chip file
+    kvasir/Util/BootGuard.hpp # includes FaultHandler.hpp (chip file); its pure part, BootGuardRules.hpp, is tested
     kvasir/Util/BootLog.hpp # includes FaultHandler.hpp (chip file), uc_log and the generated cmake_git_version header
     kvasir/Util/ubsan.hpp # needs the remote_fmt _sc literal
     kvasir/StartUp/StartUp.hpp # needs uc_log and a chip file
@@ -186,5 +233,14 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME kvasir_test_check_ram_funcs COMMAND ${Python3_EXECUTABLE}
                                                   ${CMAKE_CURRENT_LIST_DIR}/ram_funcs/test_check_ram_funcs.py)
 
+# linker/common_stack_body.inc.ld: the stack fills what RAM the other sections leave, in one link, with lld and GNU ld
+# (a missing linker is a skip inside the test)
+add_test(NAME kvasir_test_stack_fill COMMAND ${Python3_EXECUTABLE} -B
+                                             ${CMAKE_CURRENT_LIST_DIR}/stack_fill/test_stack_fill.py)
+
 add_test(NAME kvasir_test_bench_tool COMMAND ${Python3_EXECUTABLE}
                                              ${CMAKE_CURRENT_LIST_DIR}/../tools/test_kvasir_bench.py)
+
+# cmake/tools/patch_image_crc.py on ARM images built here (a missing toolchain is a skip inside the test)
+add_test(NAME kvasir_test_patch_image_crc COMMAND ${Python3_EXECUTABLE} -B
+                                                  ${CMAKE_CURRENT_LIST_DIR}/image_crc/test_patch_image_crc.py)

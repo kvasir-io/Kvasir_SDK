@@ -48,3 +48,10 @@ _LINKER_INTERN_data_end_flash_ = 0;
 _LINKER_INTERN_rom_start_   = 0;
 _LINKER_INTERN_rom_size_    = 0;
 _LINKER_INTERN_rom_end_     = 0;
+
+/* The stack fills what RAM is left (common_stack_body.inc.ld): the sizes of every other section in region ram.
+   A chip whose script puts a section of its own into ram (chip_rp2040's RAM-only .boot2) sets
+   _LINKER_INTERN_chip_ram_other_size_ BEFORE it includes this file. */
+PROVIDE(_LINKER_INTERN_chip_ram_other_size_ = 0);
+_LINKER_INTERN_ram_other_size_ = SIZEOF(.vectors) + SIZEOF(.noInitLowRam) + SIZEOF(.text) + SIZEOF(.data) + SIZEOF(.bss) + SIZEOF(.noInit) + SIZEOF(.stack1)
+                               + _LINKER_INTERN_chip_ram_other_size_;

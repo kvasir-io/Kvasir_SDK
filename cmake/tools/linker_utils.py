@@ -1,6 +1,6 @@
 """
 Shared utilities for linker script parsing and memory analysis.
-Used by two_stage_link.py and pretty_size.py.
+Used by pretty_size.py.
 """
 
 import re

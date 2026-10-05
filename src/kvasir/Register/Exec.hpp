@@ -1,4 +1,5 @@
 #pragma once
+#include "Diagnostic.hpp"
 #include "Types.hpp"
 #include "Utility.hpp"
 #include "kvasir/Mpl/Algorithm.hpp"
@@ -13,20 +14,24 @@ namespace Kvasir { namespace Register {
         struct RegisterExec;
 
         // A read-modify-write that writes ClearMask of the register: allowed unless the read has a
-        // side effect or a key bit outside ClearMask would be written back as read.
+        // side effect, or a key bit or an unclassified write-only bit outside ClearMask would be written
+        // back as read.
         template<typename TAddress,
                  unsigned ClearMask>
         constexpr bool rmwAllowed() {
-            return !TAddress::readHasSideEffect && (TAddress::mustSupplyMask & ~ClearMask) == 0;
+            return !TAddress::readHasSideEffect && (TAddress::mustSupplyMask & ~ClearMask) == 0
+                && (TAddress::writeOnlyNoIdentityMask & ~ClearMask) == 0;
         }
 
         template<typename TLocation, unsigned ClearMask, unsigned SetMask>
         struct GenericReadMaskOrWrite {
             // false when the write covers every bit that is not ignored anyway: one store
+            // a write-only register is never read: nothing in it reads back
             static constexpr bool needsRead
-              = ((ClearMask | GetAddress<TLocation>::writeIgnoredIfZeroMask)
+              = !GetAddress<TLocation>::writeOnlyRegister
+             && ((ClearMask | GetAddress<TLocation>::writeIgnoredIfZeroMask)
                  | (GetAddress<TLocation>::writeIgnoredIfOneMask & ~ClearMask))
-             != GetAddress<TLocation>::allBitsSetMask;
+                  != GetAddress<TLocation>::allBitsSetMask;
 
             unsigned operator()(unsigned in = 0) {
                 using Address = GetAddress<TLocation>;
@@ -39,12 +44,12 @@ namespace Kvasir { namespace Register {
                   = oneIsNoChangeMask | clearOrZeroIsNoChangeMask;
                 static constexpr auto     allBitsSetMask = Address::allBitsSetMask;
                 decltype(Address::read()) i              = 0;
-                if constexpr(
-                  bitsWithFixedValues
-                  != allBitsSetMask)   // no sense reading if we are going to clear the whole thing any way
-                {
-                    static_assert(
-                      rmwAllowed<Address, ClearMask>(),
+                // no sense reading if we are going to clear the whole thing any way, nor a register with
+                // nothing to read
+                if constexpr(bitsWithFixedValues != allBitsSetMask && !Address::writeOnlyRegister) {
+                    KVASIR_STATIC_ASSERT(
+                      (rmwAllowed<Address, ClearMask>()),
+                      (Diagnostic::RmwRefused<Address, ClearMask>),
                       "this write reads the register first (a read-modify-write), which "
                       "the register does not allow: its read has a side effect, or it "
                       "has key bits the write does not supply - write the whole "
@@ -74,7 +79,12 @@ namespace Kvasir { namespace Register {
                 static constexpr auto oneIsNoChangeMask
                   = Address::writeIgnoredIfOneMask & ~ClearMask;
                 static_assert(
-                  rmwAllowed<Address, ClearMask>(),
+                  !Address::writeOnlyRegister,
+                  "a toggle needs the current value, and this register cannot be read (no readable "
+                  "field: Register::WriteOnlyRegister)");
+                KVASIR_STATIC_ASSERT(
+                  (rmwAllowed<Address, ClearMask>()),
+                  (Diagnostic::RmwRefused<Address, ClearMask>),
                   "this write reads the register first (a read-modify-write), which the "
                   "register does not allow: its read has a side effect, or it has key "
                   "bits the write does not supply (Register::RmwHazard)");
@@ -96,8 +106,11 @@ namespace Kvasir { namespace Register {
         struct RegisterExec<Register::Action<FieldLocation<TAddress, Mask, Access, FieldType>,
                                              WriteLiteralAction<Data>>>
           : GenericReadMaskOrWrite<FieldLocation<TAddress, Mask, Access, FieldType>, Mask, Data> {
-            static_assert((Data & (~Mask)) == 0,
-                          "bad mask");
+            KVASIR_STATIC_ASSERT(((Data & (~Mask)) == 0),
+                                 (Diagnostic::BadMask<TAddress,
+                                                      Mask,
+                                                      Data>),
+                                 "bad mask");
         };
 
         template<typename TAddress,
@@ -108,8 +121,11 @@ namespace Kvasir { namespace Register {
         struct RegisterExec<Register::Action<FieldLocation<TAddress, Mask, Access, FieldType>,
                                              WriteRuntimeAndLiteralAction<Data>>>
           : GenericReadMaskOrWrite<FieldLocation<TAddress, Mask, Access, FieldType>, Mask, Data> {
-            static_assert((Data & (~Mask)) == 0,
-                          "bad mask");
+            KVASIR_STATIC_ASSERT(((Data & (~Mask)) == 0),
+                                 (Diagnostic::BadMask<TAddress,
+                                                      Mask,
+                                                      Data>),
+                                 "bad mask");
         };
 
         template<typename TAddress, unsigned Mask, typename Access, typename FieldType>
@@ -131,8 +147,11 @@ namespace Kvasir { namespace Register {
         struct RegisterExec<Register::Action<FieldLocation<TAddress, Mask, Access, FieldType>,
                                              XorLiteralAction<Data>>>
           : GenericReadMaskXorWrite<FieldLocation<TAddress, Mask, Access, FieldType>, Mask, Data> {
-            static_assert((Data & (~Mask)) == 0,
-                          "bad mask");
+            KVASIR_STATIC_ASSERT(((Data & (~Mask)) == 0),
+                                 (Diagnostic::BadMask<TAddress,
+                                                      Mask,
+                                                      Data>),
+                                 "bad mask");
         };
     }   // namespace Detail
 

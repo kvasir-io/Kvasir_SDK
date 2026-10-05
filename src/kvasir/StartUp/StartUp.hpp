@@ -12,6 +12,7 @@
 #include "kvasir/StartUp/ListRules.hpp"
 #include "kvasir/StartUp/Resources.hpp"
 #include "kvasir/StartUp/SharedIsr.hpp"
+#include "kvasir/Util/ImageDescriptor.hpp"
 #include "kvasir/Util/Panic.hpp"
 #include "kvasir/Util/attributes.hpp"
 #include "kvasir/Util/ubsan.hpp"
@@ -27,8 +28,7 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
 extern "C" {
-[[KVASIR_RESETISR_ATTRIBUTES]] extern void ResetISR();
-extern int                                 main();
+extern int main();
 }
 #pragma GCC diagnostic pop
 
@@ -222,15 +222,18 @@ namespace Kvasir { namespace Startup {
           Nvic::InterruptOffsetTraits<void>::begin,
           brigand::list<Nvic::Isr<StackEnd, Nvic::Index<0>>, Nvic::Isr<Reset, Nvic::Index<0>>>,
           brigand::flatten<brigand::list<typename Detail::ExtractIsr<Ts>::type...>>> {
+        // named constants: a short "due to requirement" line (the reports name the index)
+        static constexpr bool uniqueIsrIndexes = Detail::UniqueIsrIndexes<
+          brigand::flatten<brigand::list<typename Detail::ExtractIsr<Ts>::type...>>>::value;
+        static constexpr bool isrIndexesValid = ListRules::IsrIndexesValid<
+          Nvic::InterruptOffsetTraits<void>,
+          brigand::flatten<brigand::list<typename Detail::ExtractIsr<Ts>::type...>>>::value;
         static_assert(
-          Detail::UniqueIsrIndexes<
-            brigand::flatten<brigand::list<typename Detail::ExtractIsr<Ts>::type...>>>::value,
+          uniqueIsrIndexes,
           "two peripherals in one Startup list claim the same interrupt vector: only the "
           "first would ever run (two DmaBase instances need an interruptInstance each)");
         static_assert(
-          ListRules::IsrIndexesValid<
-            Nvic::InterruptOffsetTraits<void>,
-            brigand::flatten<brigand::list<typename Detail::ExtractIsr<Ts>::type...>>>::value,
+          isrIndexesValid,
           "a peripheral installs an Isr on an index the chip's vector table does not have "
           "(outside InterruptOffsetTraits::begin..end, or a disabled index): it would be "
           "silently absent from the table");
@@ -239,12 +242,12 @@ namespace Kvasir { namespace Startup {
     template<Nvic::IsrFunctionPointer StackEnd, Nvic::IsrFunctionPointer Reset, typename... Ts>
     using GetIsrPointersForT = typename GetIsrPointersFor<StackEnd, Reset, Ts...>::type;
 
-    template<typename... Ts>
-    struct GetIsrPointers
-      : GetIsrPointersFor<std::addressof(_LINKER_stack_end_), ResetISR, Ts...> {};
-
-    template<typename... Ts>
-    using GetIsrPointersT = typename GetIsrPointers<Ts...>::type;
+    // The boot core's table: the linker's stack and the Startup's own reset entry.
+    template<Nvic::IsrFunctionPointer Reset>
+    struct BootIsrPointers {
+        template<typename... Ts>
+        using type = GetIsrPointersForT<std::addressof(_LINKER_stack_end_), Reset, Ts...>;
+    };
 
     namespace Detail {
         // A template applied to the elements of a brigand::list: Startup and SecondaryCore work on
@@ -344,10 +347,50 @@ namespace Kvasir { namespace Startup {
             using type = ResourceCheck<Ls...>;
         };
 
+        // The list rules' messages with their first offender (ListRules.hpp), built only when one fails.
+        struct DuplicateEntryRule {
+            static constexpr std::string_view message
+              = "a peripheral is listed twice in one Startup list (its init steps would run twice)";
+        };
+
+        struct NotAPeripheralRule {
+            static constexpr std::string_view message
+              = "a type in the Startup list is not a peripheral (no init step, Isr, runtime hook, "
+                "Provides/Claims "
+                "or SecondaryCore): a driver's Config listed instead of the driver, or a typo'd "
+                "alias - it would "
+                "contribute nothing";
+        };
+
+        struct LaunchTimeoutRule {
+            static constexpr std::string_view message
+              = "a LaunchTimeout in the primary Startup list is ignored: it belongs in the "
+                "SecondaryCore's list "
+                "whose launch it bounds";
+        };
+
+        struct ClockSettingsRule {
+            static constexpr std::string_view message
+              = "a ClockSettings among the peripherals: its clock init never runs there (Startup's "
+                "first argument "
+                "is the one that does)";
+        };
+
+        template<typename Rule, typename Offender>
+        struct ListRuleText {
+            consteval Kvasir::Diagnostic::Text operator()() const {
+                Kvasir::Diagnostic::Text t;
+                t << Rule::message << ": ";
+                Kvasir::Diagnostic::appendType<Offender>(t);
+                return t;
+            }
+        };
+
         // The interrupt rules' reports (Diagnostics::Report, Resources.hpp): each names the
         // index in its instantiation. `Where` is the list's marker type, Startup or a
         // SecondaryCore, so the trail also says which core.
         struct VectorTwice {
+            static constexpr auto             kind = Diagnostics::NumberKind::interrupt;
             static constexpr std::string_view message
               = "two peripherals in one Startup list claim the same interrupt vector: only "
                 "the first would ever run (two DmaBase instances need an interruptInstance "
@@ -355,6 +398,7 @@ namespace Kvasir { namespace Startup {
         };
 
         struct VectorOnBothCores {
+            static constexpr auto             kind = Diagnostics::NumberKind::interrupt;
             static constexpr std::string_view message
               = "an interrupt is installed in both cores' vector tables: the ISR would run "
                 "on both cores at once (only the SIO, IO_BANK0 and core-exception vectors "
@@ -362,6 +406,7 @@ namespace Kvasir { namespace Startup {
         };
 
         struct VectorOutOfTable {
+            static constexpr auto             kind = Diagnostics::NumberKind::interrupt;
             static constexpr std::string_view message
               = "a peripheral installs an Isr on an index the chip's vector table does not "
                 "have (outside InterruptOffsetTraits::begin..end, or a disabled index): it "
@@ -369,6 +414,7 @@ namespace Kvasir { namespace Startup {
         };
 
         struct EnabledUnhandled {
+            static constexpr auto             kind = Diagnostics::NumberKind::interrupt;
             static constexpr std::string_view message
               = "an init step enables an interrupt line for which nothing in this core's "
                 "list installs an Isr: the line would fire into the unhandled-interrupt "
@@ -379,6 +425,7 @@ namespace Kvasir { namespace Startup {
         // An entry's ISR-context contract (ListRules.hpp: IsrContractHolds) against the enabled
         // interrupts, reported per (entry, index).
         struct IsrLevelUnserved {
+            static constexpr auto             kind = Diagnostics::NumberKind::interrupt;
             static constexpr std::string_view message
               = "an interrupt is enabled at a priority level this entry has no ISR context "
                 "for: an ISR at that level could preempt another ISR's log record on a ring "
@@ -389,6 +436,7 @@ namespace Kvasir { namespace Startup {
         };
 
         struct IsrLevelsDiffer {
+            static constexpr auto             kind = Diagnostics::NumberKind::interrupt;
             static constexpr std::string_view message
               = "enabled interrupts that may log use more than one priority level, and this "
                 "entry keeps one ISR context for all of them: an ISR at the higher level "
@@ -399,6 +447,7 @@ namespace Kvasir { namespace Startup {
         };
 
         struct IsrLevelUnknown {
+            static constexpr auto             kind = Diagnostics::NumberKind::interrupt;
             static constexpr std::string_view message
               = "an init step writes this interrupt's priority in a form the check cannot "
                 "read (a run-time value, a toggle, or a literal over part of the priority "
@@ -781,6 +830,17 @@ namespace Kvasir { namespace Startup {
 #endif
         }
 
+        // Gives the reset entry - a member function of the firmware's Startup type - the name
+        // ResetISR in the image, for `--entry=ResetISR` (compiler_common.cmake), debuggers and
+        // backtraces. Only directives, no instruction. Two Startups in one image are a duplicate
+        // symbol at link time.
+        template<Nvic::IsrFunctionPointer Reset>
+        [[gnu::always_inline]] inline void nameResetEntry() {
+#ifdef __arm__
+            asm(".globl ResetISR\n\t.thumb_set ResetISR, %c0" ::"i"(Reset));
+#endif
+        }
+
         template<typename ClockSettings, typename... Peripherals>
         struct StartupImpl {
             template<typename Hook = NoOpStartupHook>
@@ -826,42 +886,51 @@ namespace Kvasir { namespace Startup {
 
     // ISR pointer builder with profiling transformation applied to the
     // peripheral ISR list before it reaches CompileIsrPointerList.
-    // Stack-end and ResetISR seed entries bypass transformation.
-    template<typename Policy, typename TimeSource, typename... Ts>
+    // Stack-end and reset seed entries bypass transformation.
+    template<Nvic::IsrFunctionPointer Reset, typename Policy, typename TimeSource, typename... Ts>
     struct GetIsrPointersWithProfiling
       : Detail::CompileIsrPointerList<
           Nvic::InterruptOffsetTraits<void>::begin,
           brigand::list<Nvic::Isr<std::addressof(_LINKER_stack_end_), Nvic::Index<0>>,
-                        Nvic::Isr<ResetISR, Nvic::Index<0>>>,
+                        Nvic::Isr<Reset, Nvic::Index<0>>>,
           typename TransformIsrList<
             Policy,
             TimeSource,
             brigand::flatten<brigand::list<typename Detail::ExtractIsr<Ts>::type...>>>::type> {
+        // named constants: a short "due to requirement" line (the reports name the index)
+        static constexpr bool uniqueIsrIndexes = Detail::UniqueIsrIndexes<
+          brigand::flatten<brigand::list<typename Detail::ExtractIsr<Ts>::type...>>>::value;
+        static constexpr bool isrIndexesValid = ListRules::IsrIndexesValid<
+          Nvic::InterruptOffsetTraits<void>,
+          brigand::flatten<brigand::list<typename Detail::ExtractIsr<Ts>::type...>>>::value;
         static_assert(
-          Detail::UniqueIsrIndexes<
-            brigand::flatten<brigand::list<typename Detail::ExtractIsr<Ts>::type...>>>::value,
+          uniqueIsrIndexes,
           "two peripherals in one Startup list claim the same interrupt vector: only the "
           "first would ever run (two DmaBase instances need an interruptInstance each)");
         static_assert(
-          ListRules::IsrIndexesValid<
-            Nvic::InterruptOffsetTraits<void>,
-            brigand::flatten<brigand::list<typename Detail::ExtractIsr<Ts>::type...>>>::value,
+          isrIndexesValid,
           "a peripheral installs an Isr on an index the chip's vector table does not have "
           "(outside InterruptOffsetTraits::begin..end, or a disabled index): it would be "
           "silently absent from the table");
     };
 
-    template<typename Policy, typename TimeSource, typename... Ts>
+    template<Nvic::IsrFunctionPointer Reset, typename Policy, typename TimeSource, typename... Ts>
     using GetIsrPointersWithProfilingT =
-      typename GetIsrPointersWithProfiling<Policy, TimeSource, Ts...>::type;
+      typename GetIsrPointersWithProfiling<Reset, Policy, TimeSource, Ts...>::type;
 
     namespace Detail {
-        template<typename Policy, typename TimeSource, typename List>
+        template<Nvic::IsrFunctionPointer Reset,
+                 typename Policy,
+                 typename TimeSource,
+                 typename List>
         struct ProfiledIsrPointersOf;
 
-        template<typename Policy, typename TimeSource, typename... Ts>
-        struct ProfiledIsrPointersOf<Policy, TimeSource, brigand::list<Ts...>> {
-            using type = GetIsrPointersWithProfilingT<Policy, TimeSource, Ts...>;
+        template<Nvic::IsrFunctionPointer Reset,
+                 typename Policy,
+                 typename TimeSource,
+                 typename... Ts>
+        struct ProfiledIsrPointersOf<Reset, Policy, TimeSource, brigand::list<Ts...>> {
+            using type = GetIsrPointersWithProfilingT<Reset, Policy, TimeSource, Ts...>;
         };
     }   // namespace Detail
 
@@ -886,25 +955,44 @@ namespace Kvasir { namespace Startup {
         // (SharedIsr.hpp); the list itself when none declares a SubIsr.
         using AllPeripherals = Detail::WithSharedDispatchers<Peripherals...>;
 
-        // The list's shape (ListRules.hpp), before anything reads it.
-        static_assert(ListRules::NoDuplicateEntry<brigand::list<Peripherals...>>::value,
-                      "a peripheral is listed twice in one Startup list: its init steps would "
-                      "run twice");
-        static_assert(
-          ListRules::AllArePeripherals<Detail::IsSecondaryCore,
-                                       brigand::list<Peripherals...>>::value,
+        // The list's shape (ListRules.hpp), before anything reads it. Each message names the entry.
+        using NoDuplicates_ = ListRules::NoDuplicateEntry<brigand::list<Peripherals...>>;
+        static constexpr bool noDuplicateEntry = NoDuplicates_::value;
+        KVASIR_STATIC_ASSERT(
+          noDuplicateEntry,
+          (Detail::ListRuleText<Detail::DuplicateEntryRule,
+                                typename NoDuplicates_::Duplicate>),
+          "a peripheral is listed twice in one Startup list: its init steps would "
+          "run twice");
+        using AllPeripherals_
+          = ListRules::AllArePeripherals<Detail::IsSecondaryCore, brigand::list<Peripherals...>>;
+        static constexpr bool allArePeripherals = AllPeripherals_::value;
+        KVASIR_STATIC_ASSERT(
+          allArePeripherals,
+          (Detail::ListRuleText<Detail::NotAPeripheralRule,
+                                typename AllPeripherals_::NotAPeripheral>),
           "a type in the Startup list is not a peripheral (no init step, Isr, runtime hook, "
           "Provides/Claims or SecondaryCore): a driver's Config listed instead of the driver, "
           "or a typo'd alias - it would contribute nothing");
         static_assert(ListRules::AtMostOneSecondary<Detail::IsSecondaryCore,
                                                     brigand::list<Peripherals...>>::value,
                       "two SecondaryCores in one Startup list: the chip has one other core");
-        static_assert(ListRules::NoLaunchTimeoutIn<brigand::list<Peripherals...>>::value,
-                      "a LaunchTimeout in the primary Startup list is ignored: it belongs in the "
-                      "SecondaryCore's list whose launch it bounds");
-        static_assert(ListRules::NoClockSettingsIn<brigand::list<Peripherals...>>::value,
-                      "a ClockSettings among the peripherals: its clock init never runs there "
-                      "(Startup's first argument is the one that does)");
+        using NoLaunchTimeout_ = ListRules::NoLaunchTimeoutIn<brigand::list<Peripherals...>>;
+        static constexpr bool noLaunchTimeout = NoLaunchTimeout_::value;
+        KVASIR_STATIC_ASSERT(
+          noLaunchTimeout,
+          (Detail::ListRuleText<Detail::LaunchTimeoutRule,
+                                typename NoLaunchTimeout_::LaunchTimeout>),
+          "a LaunchTimeout in the primary Startup list is ignored: it belongs in the "
+          "SecondaryCore's list whose launch it bounds");
+        using NoClockSettings_ = ListRules::NoClockSettingsIn<brigand::list<Peripherals...>>;
+        static constexpr bool noClockSettings = NoClockSettings_::value;
+        KVASIR_STATIC_ASSERT(
+          noClockSettings,
+          (Detail::ListRuleText<Detail::ClockSettingsRule,
+                                typename NoClockSettings_::ClockSettings>),
+          "a ClockSettings among the peripherals: its clock init never runs there "
+          "(Startup's first argument is the one that does)");
 
         // Resources (Resources.hpp): what each peripheral provides and claims, checked over
         // this list and every SecondaryCore's list together. ClockSettings is in core 0's
@@ -925,17 +1013,23 @@ namespace Kvasir { namespace Startup {
           "a SecondaryCore's peripheral needs a core 0 peripheral whose init has not run by "
           "the launch: list it before the SecondaryCore (ClockSync's Reference, "
           "LaunchTimeout's clock)");
-        static_assert(Resources::noDoubleClaim,
+        static constexpr bool noDoubleClaim_
+          = Resources::noDoubleClaim;   // a short "due to requirement" line
+        static_assert(noDoubleClaim_,
                       "a hardware resource is claimed by two peripherals (see the Report above)");
-        static_assert(Resources::noDoubleProvide,
+        static constexpr bool noDoubleProvide_ = Resources::noDoubleProvide;
+        static_assert(noDoubleProvide_,
                       "a hardware resource is provided by two peripherals (see the Report above)");
-        static_assert(Resources::claimsProvided,
+        static constexpr bool claimsProvided_ = Resources::claimsProvided;
+        static_assert(claimsProvided_,
                       "a peripheral claims a hardware resource nothing provides (see the Report "
                       "above)");
-        static_assert(Resources::claimsLocal,
+        static constexpr bool claimsLocal_ = Resources::claimsLocal;
+        static_assert(claimsLocal_,
                       "a peripheral claims a hardware resource the other core's list provides "
                       "(see the Report above)");
-        static_assert(Resources::coreAffinityHonoured,
+        static constexpr bool coreAffinityHonoured_ = Resources::coreAffinityHonoured;
+        static_assert(coreAffinityHonoured_,
                       "a peripheral that belongs to one core (its startupCore) is listed for "
                       "the other (see the Report above)");
 
@@ -984,15 +1078,26 @@ namespace Kvasir { namespace Startup {
                       "the masked-record mode, or, for an unknown level, set the priority with "
                       "a literal");
 
-        [[gnu::used, gnu::section(".core_vectors")]] static constexpr Kvasir::Startup::
-          NvicVectorTable<Detail::ExpandListT<Kvasir::Startup::GetIsrPointersT, AllPeripherals>>
-            nvicIsrVectors{};
-
-        [[noreturn,
-          gnu::always_inline]] static void
+        // The reset entry (vector table word 1), named ResetISR in the image.
+        [[KVASIR_RESETISR_ATTRIBUTES,
+          gnu::noinline]] static void
         ResetISR() {
+            Detail::nameResetEntry<&ResetISR>();
             Detail::StartupImplOf<ClockSettings, AllPeripherals>::type::ResetISR();
         }
+
+        [[gnu::used, gnu::section(".core_vectors")]] static constexpr Kvasir::Startup::
+          NvicVectorTable<Detail::ExpandListT<BootIsrPointers<&ResetISR>::template type,
+                                              AllPeripherals>> nvicIsrVectors{};
+
+        // Every Extend the listed peripherals of both cores (a SecondaryCore's list included) added to Hook, in list
+        // order, as a brigand::list: what a component that needs the list itself reads (Health::Supervisor).
+        template<typename Hook>
+        using ExtendsOn = typename Detail::FilterExtends<
+          Hook,
+          typename Detail::AllExtendsOfList<brigand::flatten<brigand::list<
+            Peripherals...,
+            typename Detail::SecondaryPeripherals<Peripherals>::type...>>>::type>::type;
 
         // Every function the listed peripherals added to Hook (their `Extends`, Hooks.hpp), in
         // list order. A hook nobody extends is an empty call.
@@ -1001,6 +1106,18 @@ namespace Kvasir { namespace Startup {
         [[gnu::always_inline]] static void run(Args const&... args) {
             Detail::runHookOf<Hook>(static_cast<brigand::list<Peripherals...>*>(nullptr), args...);
         }
+
+        // The same calls as run<Hook>(), and when the loop is next needed: the earliest of what the functions
+        // returned (Hooks.hpp Kvasir::Turn). For a loop that sleeps (Util/Executor.hpp).
+        template<typename Hook,
+                 typename... Args>
+        [[gnu::always_inline]] static Kvasir::Turn runTurn(Args const&... args) {
+            return Detail::runTurnOf<Hook>(static_cast<brigand::list<Peripherals...>*>(nullptr),
+                                           args...);
+        }
+
+        // This core's list, for Executor::adopt and its boot report.
+        using LocalPeripherals = brigand::list<Peripherals...>;
     };
 
     template<typename TimeSource>
@@ -1022,23 +1139,27 @@ namespace Kvasir { namespace Startup {
              typename ProfilePolicy,
              typename TimeSource>
     struct StartupWithProfiling<Startup<ClockSettings, Peripherals...>, ProfilePolicy, TimeSource> {
-        [[gnu::used, gnu::section(".core_vectors")]] static constexpr Kvasir::Startup::
-          NvicVectorTable<typename Detail::ProfiledIsrPointersOf<
-            ProfilePolicy,
-            TimeSource,
-            typename Startup<ClockSettings, Peripherals...>::AllPeripherals>::type>
-            nvicIsrVectors{};
-
-        [[noreturn,
-          gnu::always_inline]] static void
+        // The reset entry (vector table word 1), named ResetISR in the image.
+        [[KVASIR_RESETISR_ATTRIBUTES,
+          gnu::noinline]] static void
         ResetISR() {
+            Detail::nameResetEntry<&ResetISR>();
             Detail::StartupImplOf<ClockSettings,
                                   typename Startup<ClockSettings, Peripherals...>::AllPeripherals>::
               type::template ResetISR<EnableTimeSourceHook<TimeSource>>();
         }
 
+        [[gnu::used, gnu::section(".core_vectors")]] static constexpr Kvasir::Startup::
+          NvicVectorTable<typename Detail::ProfiledIsrPointersOf<
+            &ResetISR,
+            ProfilePolicy,
+            TimeSource,
+            typename Startup<ClockSettings, Peripherals...>::AllPeripherals>::type>
+            nvicIsrVectors{};
+
         // The full compiled ISR list (wrappers + plain Isr entries)
         using IsrList = typename Detail::ProfiledIsrPointersOf<
+          &ResetISR,
           ProfilePolicy,
           TimeSource,
           typename Startup<ClockSettings, Peripherals...>::AllPeripherals>::type;
@@ -1392,14 +1513,22 @@ __stack_chk_fail() {
     Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::unhandledInterrupt, 0, ipsr);
 }
 
-    #define KVASIR_START(Startup)                        \
-        [[KVASIR_RESETISR_ATTRIBUTES]] void ResetISR() { \
-            (void)Startup::nvicIsrVectors.data[1];       \
-            Startup::ResetISR();                         \
-        }
-#else
-    #define KVASIR_START(Startup)   // TODO
 #endif
+
+namespace Kvasir::Startup {
+// The one line of a firmware that names its Startup type, after the type:
+//     template struct Kvasir::Startup::Start<Startup>;
+// The explicit instantiation instantiates `vectors`, which odr-uses the vector table (a
+// static member of a class template exists only once something uses it) and through it
+// the reset entry. Forgetting it leaves the image without a vector table, which the link
+// refuses (common.ld asserts that ResetISR is defined).
+template<typename S>
+struct Start {
+#ifdef __arm__
+    static constexpr auto const* vectors = std::addressof(S::nvicIsrVectors);
+#endif
+};
+}   // namespace Kvasir::Startup
 
 extern "C" {
 [[noreturn,

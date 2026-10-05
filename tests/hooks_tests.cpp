@@ -1,5 +1,5 @@
 // Tests for kvasir/StartUp/Hooks.hpp: functions peripherals add to named hooks, run in list order
-// by one call. Startup itself does not instantiate on the host (KVASIR_START is a no-op there), so
+// by one call. Startup itself does not instantiate on the host (`Kvasir::Startup::Start` is empty there), so
 // this drives Detail::runHookOf with an explicit list, which is all Startup::run does.
 #include "kvasir/StartUp/Hooks.hpp"
 

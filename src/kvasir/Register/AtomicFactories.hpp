@@ -1,4 +1,5 @@
 #pragma once
+#include "Diagnostic.hpp"
 #include "Utility.hpp"
 
 // Register::atomic(set(A::x), clear(A::y), write(B::f, value<3>())): literal writes that must not
@@ -21,8 +22,10 @@ namespace Kvasir { namespace Register {
         struct MakeAtomic<Action<L, WriteLiteralAction<V>>> {
             // An alias write of a one-to-* field's bit clears or toggles it (RP2350), a set of it
             // does nothing: reset() is the way to clear a flag.
-            static_assert(
-              identityOfAccess<typename L::Access> != Identity::zero,
+            KVASIR_STATIC_ASSERT(
+              (identityOfAccess<typename L::Access> != Identity::zero),
+              (Diagnostic::AtomicOnFlag<GetAddress<L>,
+                                        L::Mask>),
               "Register::atomic on a one-to-clear/one-to-set/one-to-toggle or read-only "
               "field: use reset() for a flag");
             using type = Action<L, AtomicWriteLiteralAction<V>>;

@@ -45,10 +45,35 @@ void capacity() {
     CHECK(q.pop_into(v) && v == 3);
     CHECK(!q.pop_into(v));
 }
+
+void forEachQueued() {
+    Kvasir::Test::test(
+      "forEachQueued: oldest first across the wrap, writes through the reference, nothing when "
+      "empty");
+    Kvasir::Atomic::Queue<int, 4, Kvasir::Atomic::OverFlowPolicyIgnore> q{};
+    int                                                                 visits = 0;
+    q.forEachQueued([&](int&) { ++visits; });
+    CHECK(visits == 0);
+    int v{};
+    q.push(1);
+    q.push(2);
+    CHECK(q.pop_into(v) && q.pop_into(v));   // head and tail at 2: the next three wrap
+    q.push(3);
+    q.push(4);
+    q.push(5);
+    int seen[3]{};
+    q.forEachQueued([&](int& x) {
+        seen[visits++] = x;
+        x *= 10;
+    });
+    CHECK(visits == 3 && seen[0] == 3 && seen[1] == 4 && seen[2] == 5);
+    CHECK(q.pop_into(v) && v == 30 && q.pop_into(v) && v == 40 && q.pop_into(v) && v == 50);
+}
 }   // namespace
 
 int main() {
     inOrderAcrossThreads();
     capacity();
+    forEachQueued();
     return Kvasir::Test::finish();
 }

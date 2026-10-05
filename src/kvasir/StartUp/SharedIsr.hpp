@@ -20,6 +20,7 @@
 // (the line stays asserted). A handler that enables or disables a sibling sees the status read at
 // entry. Children are tested one after the other: meant for a handful per vector, not for 48.
 #include "kvasir/Common/Interrupt.hpp"
+#include "kvasir/Register/Diagnostic.hpp"
 #include "kvasir/Register/Register.hpp"
 
 #include <memory>
@@ -163,11 +164,15 @@ namespace SharedIsrDetail {
 
     template<auto F>
     struct Clear<Nvic::ClearFirst<F>> {
-        static_assert(isWriteOneToClear<FieldOf<F>>(),
-                      "ClearFirst names a field that is not write-one-to-clear in the "
-                      "generated header (its bits are not in the register's "
-                      "write-ignored-if-zero mask): writing 1 to it would not clear it, and "
-                      "the write would not be a single store");
+        KVASIR_STATIC_ASSERT((isWriteOneToClear<FieldOf<F>>()),
+                             (::Kvasir::Register::Diagnostic::NotWriteOneToClear<
+                               ::Kvasir::Register::Detail::GetAddress<FieldOf<F>>,
+                               FieldOf<F>::Mask,
+                               'F'>),
+                             "ClearFirst names a field that is not write-one-to-clear in the "
+                             "generated header (its bits are not in the register's "
+                             "write-ignored-if-zero mask): writing 1 to it would not clear it, and "
+                             "the write would not be a single store");
 
         [[gnu::always_inline]] static void before() { Register::apply(writeOnes<FieldOf<F>>()); }
 
@@ -176,11 +181,16 @@ namespace SharedIsrDetail {
 
     template<auto F>
     struct Clear<Nvic::ClearLast<F>> {
-        static_assert(isWriteOneToClear<FieldOf<F>>(),
-                      "ClearLast names a field that is not write-one-to-clear in the generated "
-                      "header (its bits are not in the register's write-ignored-if-zero mask): "
-                      "writing 1 to it would not clear it, and the write would not be a single "
-                      "store");
+        KVASIR_STATIC_ASSERT(
+          (isWriteOneToClear<FieldOf<F>>()),
+          (::Kvasir::Register::Diagnostic::NotWriteOneToClear<
+            ::Kvasir::Register::Detail::GetAddress<FieldOf<F>>,
+            FieldOf<F>::Mask,
+            'L'>),
+          "ClearLast names a field that is not write-one-to-clear in the generated "
+          "header (its bits are not in the register's write-ignored-if-zero mask): "
+          "writing 1 to it would not clear it, and the write would not be a single "
+          "store");
 
         [[gnu::always_inline]] static void before() {}
 

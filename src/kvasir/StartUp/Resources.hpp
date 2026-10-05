@@ -64,9 +64,12 @@
 // tested in tests/resources_tests.cpp.
 
 #include "kvasir/Mpl/Types.hpp"
+#include "kvasir/StartUp/InterruptNames.hpp"
+#include "kvasir/Util/Diagnostic.hpp"
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -695,14 +698,96 @@ namespace Kvasir { namespace Startup {
         template<typename>
         struct AlwaysFalse : std::false_type {};
 
-        // Instantiated only for an offender: the assert always fires, and the trail says
-        // for whom. `Extra` carries what the rule is about beyond the peripheral: the
-        // resource, or the core it should be on, or an interrupt index.
+        // What a rule's number is (Extra = std::integral_constant<int, N>): a rule says so with
+        // `static constexpr NumberKind kind`.
+        enum class NumberKind : std::uint8_t { plain, interrupt, core };
+
+        template<typename Rule>
+        constexpr NumberKind numberKindOf = [] {
+            if constexpr(requires { Rule::kind; }) {
+                return Rule::kind;
+            } else {
+                return NumberKind::plain;
+            }
+        }();
+
+        // ": Io pin 0.25", ": interrupt 37 (I2C1_IRQ)", ": core 1"
+        template<typename Rule, typename Extra>
+        struct DescribeExtra {
+            static constexpr void into(Kvasir::Diagnostic::Text& t) {
+                if constexpr(!std::is_void_v<Extra>) {
+                    t << ": ";
+                    Kvasir::Diagnostic::appendType<Extra>(t);
+                }
+            }
+        };
+
+        constexpr void appendId(Kvasir::Diagnostic::Text& t,
+                                unsigned long long        id) {
+            t << ".";
+            t.dec(id);
+        }
+
+        template<typename Rule, typename Tag, unsigned long long First, unsigned long long... Ids>
+        struct DescribeExtra<Rule, Detail::ResourceT<Tag, First, Ids...>> {
+            static constexpr void into(Kvasir::Diagnostic::Text& t) {
+                t << ": ";
+                if constexpr(requires { Tag::describeAs; }) {
+                    t << std::string_view{Tag::describeAs};
+                } else {
+                    Kvasir::Diagnostic::appendType<Tag>(t);
+                }
+                t << " ";
+                t.dec(First);
+                (appendId(t, Ids), ...);
+            }
+        };
+
+        template<typename Rule, typename T, T N>
+        struct DescribeExtra<Rule, std::integral_constant<T, N>> {
+            static constexpr void into(Kvasir::Diagnostic::Text& t) {
+                constexpr auto kind = numberKindOf<Rule>;
+                t << (kind == NumberKind::interrupt ? ": interrupt "
+                      : kind == NumberKind::core    ? ": core "
+                                                    : ": ");
+                t.sdec(static_cast<std::int64_t>(N));
+                if constexpr(kind == NumberKind::interrupt) {
+                    constexpr std::string_view name = interruptName(static_cast<int>(N));
+                    if constexpr(!name.empty()) { t << " (" << name << ")"; }
+                }
+            }
+        };
+
+        // The report's text, built only when it fires (Kvasir::Diagnostic::lazy): the rule, what
+        // it is about, the peripheral, and the tag's own note.
+        template<typename Rule, typename Peripheral, typename Extra>
+        struct ReportText {
+            consteval Kvasir::Diagnostic::Text operator()() const {
+                Kvasir::Diagnostic::Text t;
+                t << Rule::message;
+                DescribeExtra<Rule, Extra>::into(t);
+                t << " - ";
+                Kvasir::Diagnostic::appendType<Peripheral>(t);
+                constexpr std::string_view tag = tagMessage<typename TagOf<Extra>::type>;
+                if constexpr(!tag.empty()) { t << " (" << tag << ")"; }
+                return t;
+            }
+        };
+
+        // Instantiated only for an offender: the assert always fires, its message names the
+        // peripheral and what the rule is about, and the trail says the same. `Extra` carries
+        // what the rule is about beyond the peripheral: the resource, or the core it should be
+        // on, or an interrupt index. Each offender is its own report: a resource two
+        // peripherals provide is two errors, one per provider.
         template<typename Rule, typename Peripheral, typename Extra = void>
         struct Report {
-            static_assert(AlwaysFalse<Report>::value,
-                          Message<Rule,
-                                  Extra>{});
+            static constexpr bool fires = AlwaysFalse<Report>::value;
+            KVASIR_STATIC_ASSERT(fires,
+                                 (ReportText<Rule,
+                                             Peripheral,
+                                             Extra>),
+                                 (Message<Rule,
+                                          Extra>{}));
         };
 
         template<typename Rule, typename Offenders>
@@ -825,6 +910,7 @@ namespace Kvasir { namespace Startup {
         };
 
         struct Affinity {
+            static constexpr auto             kind = NumberKind::core;
             static constexpr std::string_view message
               = "a peripheral that belongs to one core (its startupCore) is listed for the "
                 "other";

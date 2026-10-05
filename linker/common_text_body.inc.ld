@@ -13,6 +13,9 @@ __start___lcxx_override = .;
 __stop___lcxx_override = .;
 *(SORT_BY_ALIGNMENT(.rodata*))
 . = ALIGN(4);
+/* The image CRC descriptor (IMAGE_CRC), patched after the link by cmake/tools/patch_image_crc.py: 80 bytes, 4-aligned,
+   so the init array stays aligned. */
+KEEP(*(.kvasir_image_crc))
 _LINKER_INTERN_init_array_start_ = .;
 . = ALIGN(4);
 KEEP(*(SORT_BY_INIT_PRIORITY(.init_array*)))

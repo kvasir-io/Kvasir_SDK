@@ -153,6 +153,17 @@ namespace Kvasir { namespace Atomic {
             }
         }
 
+        // Visit every queued element, oldest first, by reference (a cancellable bus marks one cancelled in place).
+        // Only with the producer and the consumer both excluded (the bus's interrupt masked): it reads head and tail
+        // once and walks between them.
+        template<typename F>
+        void forEachQueued(F&& f) {
+            auto const tail = tail_.load(load_memory_order);
+            for(auto i = head_.load(load_memory_order); i != tail; i = next(i)) {
+                f(data_[i]);   //NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
+            }
+        }
+
         bool pop_into(TDataType& out) {
             auto const tail = tail_.load(load_memory_order);
             auto const head = head_.load(load_memory_order);

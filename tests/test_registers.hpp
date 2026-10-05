@@ -357,6 +357,47 @@ struct KeyReg {
       reset{};
 };
 
+// A register with no readable field (svd_converter --write-only-registers=derived), BSRR-like: a partial write
+// never reads it and writes the bits it does not name as 0.
+struct SetResetReg {
+    using Addr = Kvasir::Register::
+      Address<0xE0, 0x00000000, 0x00000000, std::uint32_t, Kvasir::Register::WriteOnlyRegister<>>;
+
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(5, 5),
+                                                     Kvasir::Register::WriteOnlyAccess,
+                                                     std::uint32_t>
+      bs5{};
+
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(21, 21),
+                                                     Kvasir::Register::WriteOnlyAccess,
+                                                     std::uint32_t>
+      br5{};
+};
+
+// A control register with an unclassified write-only bit 11 (like FLASH_ACR.ICRST), with --write-only-mask: a partial
+// write must name it, like a key.
+struct IcrstReg {
+    using Addr = Kvasir::Register::Address<0xE4,
+                                           0x00000000,
+                                           0x00000000,
+                                           std::uint32_t,
+                                           Kvasir::Register::RmwHazard<0, false, void, 0x800>>;
+
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(3, 0),
+                                                     Kvasir::Register::ReadWriteAccess,
+                                                     std::uint32_t>
+      latency{};
+
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(11, 11),
+                                                     Kvasir::Register::WriteOnlyAccess,
+                                                     std::uint32_t>
+      icrst{};
+};
+
 // A FIFO data register whose read pops: never read-modify-written.
 struct FifoReg {
     using Addr = Kvasir::Register::

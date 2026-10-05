@@ -190,6 +190,16 @@ struct SecondaryCore {
         Kvasir::Startup::Detail::runHookOf<Hook>(static_cast<PeripheralList*>(nullptr), args...);
     }
 
+    // run<Hook>() plus when the loop is next needed (Hooks.hpp Kvasir::Turn), for a loop that sleeps.
+    template<typename Hook,
+             typename... Args>
+    [[gnu::always_inline]] static Kvasir::Turn runTurn(Args const&... args) {
+        return Kvasir::Startup::Detail::runTurnOf<Hook>(static_cast<PeripheralList*>(nullptr),
+                                                        args...);
+    }
+
+    using LocalPeripherals = PeripheralList;
+
     // Bytes of .stack1 that have ever been written since launch(), from the fill pattern.
     [[nodiscard]] static std::size_t stackHighWater() {
         auto const* p   = stackBegin();

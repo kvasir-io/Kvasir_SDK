@@ -30,3 +30,10 @@ SECTIONS {
         INCLUDE common_heap_body.inc.ld
     } > ram
 }
+
+/* The stack fills what RAM is left (common_stack_body.inc.ld): the sizes of every other section in region ram.
+   A chip whose script puts a section of its own into ram (chip_rp2040's RAM-only .boot2) sets
+   _LINKER_INTERN_chip_ram_other_size_ BEFORE it includes this file. */
+PROVIDE(_LINKER_INTERN_chip_ram_other_size_ = 0);
+_LINKER_INTERN_ram_other_size_ = SIZEOF(.noInitLowRam) + SIZEOF(.stack1) + SIZEOF(.data) + SIZEOF(.bss) + SIZEOF(.noInit)
+                               + _LINKER_INTERN_chip_ram_other_size_;

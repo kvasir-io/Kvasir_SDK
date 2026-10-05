@@ -14,8 +14,18 @@ namespace Kvasir { namespace Register {
 
     // A register a partial write may read-modify-write.
     struct NormalMode {
-        static constexpr unsigned mustSupplyMask    = 0;
-        static constexpr bool     readHasSideEffect = false;
+        static constexpr unsigned mustSupplyMask          = 0;
+        static constexpr bool     readHasSideEffect       = false;
+        static constexpr unsigned writeOnlyNoIdentityMask = 0;
+        static constexpr bool     writeOnlyRegister       = false;
+        using Register = void;   // for compile errors only (Register/Diagnostic.hpp)
+    };
+
+    // A normal register that names itself for compile errors: svd_converter's NAMED_REGISTERS option
+    // (off by default, it lengthens every Address type).
+    template<typename TRegister>
+    struct Named : NormalMode {
+        using Register = TRegister;
     };
 
     // A register a read-modify-write would corrupt:
@@ -24,10 +34,29 @@ namespace Kvasir { namespace Register {
     // pops or clears something (I2C IC_DATA_CMD pops the RX FIFO), so only whole-register writes.
     // The generator emits it from the SVD: a field whose writeConstraint is a range of one value is
     // a key, a field with a readAction makes the register's read a side effect.
-    template<unsigned MustSupply, bool ReadSideEffect>
+    // TRegister: the generated register struct itself (an incomplete type there, which a template argument may be),
+    // read only when a compile error names the register and its fields.
+    // WriteOnlyNoIdentity: write-only bits that a read cannot give back and that nobody classified (svd_converter
+    // --write-only-mask): a partial write must name them, like a key.
+    template<unsigned MustSupply,
+             bool     ReadSideEffect,
+             typename TRegister           = void,
+             unsigned WriteOnlyNoIdentity = 0>
     struct RmwHazard {
-        static constexpr unsigned mustSupplyMask    = MustSupply;
-        static constexpr bool     readHasSideEffect = ReadSideEffect;
+        static constexpr unsigned mustSupplyMask          = MustSupply;
+        static constexpr bool     readHasSideEffect       = ReadSideEffect;
+        static constexpr unsigned writeOnlyNoIdentityMask = WriteOnlyNoIdentity;
+        static constexpr bool     writeOnlyRegister       = false;
+        using Register                                    = TRegister;
+    };
+
+    // A register with no readable field (svd_converter --write-only-registers=derived): a partial write never reads it
+    // - there is nothing to keep - and writes the bits it does not name as 0, as a FULLREGISTER write of the same
+    // value would.
+    template<typename TRegister = void>
+    struct WriteOnlyRegister : NormalMode {
+        static constexpr bool writeOnlyRegister = true;
+        using Register                          = TRegister;
     };
 
     template<unsigned A,
@@ -38,6 +67,7 @@ namespace Kvasir { namespace Register {
     struct Address {
         using type    = Address<A, WriteIgnoredIfZeroMask, WriteIgnoredIfOneMask, TRegType, TMode>;
         using RegType = TRegType;
+        using Mode    = TMode;
         static constexpr unsigned value = A;
         static_assert(A % sizeof(TRegType) == 0,
                       "register address is not aligned to the register's width");

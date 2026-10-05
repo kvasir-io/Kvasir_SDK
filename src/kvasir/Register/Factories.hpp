@@ -1,5 +1,6 @@
 #pragma once
 #include "AtomicFactories.hpp"
+#include "Diagnostic.hpp"
 #include "Types.hpp"
 #include "Utility.hpp"
 
@@ -19,15 +20,22 @@ namespace Kvasir { namespace Register {
         struct Write<FieldLocation<TAddress, Mask, Access, TFieldType>, Value>
           : Action<FieldLocation<TAddress, Mask, Access, TFieldType>,
                    WriteLiteralAction<(Value << positionOfFirstSetBit(Mask))>> {
-            static_assert(IsWritable<FieldLocation<TAddress,
-                                                   Mask,
-                                                   Access,
-                                                   TFieldType>>::value,
-                          "Access violation: the FieldLocation provided is not marked as writable");
-            static_assert(literalFits(Mask,
-                                      Value),
-                          "literal does not fit the field: bits above the field's width would be "
-                          "shifted out and silently lost");
+            KVASIR_STATIC_ASSERT(
+              (IsWritable<FieldLocation<TAddress,
+                                        Mask,
+                                        Access,
+                                        TFieldType>>::value),
+              (Diagnostic::NotWritable<TAddress,
+                                       Mask>),
+              "Access violation: the FieldLocation provided is not marked as writable");
+            KVASIR_STATIC_ASSERT(
+              (literalFits(Mask,
+                           Value)),
+              (Diagnostic::LiteralTooWide<TAddress,
+                                          Mask,
+                                          Value>),
+              "literal does not fit the field: bits above the field's width would be "
+              "shifted out and silently lost");
         };
 
         template<typename TLocation, unsigned Value>
@@ -39,15 +47,21 @@ namespace Kvasir { namespace Register {
         template<typename TAddress, unsigned Mask, typename Access, typename TFieldType>
         struct Set<FieldLocation<TAddress, Mask, Access, TFieldType>>
           : Action<FieldLocation<TAddress, Mask, Access, TFieldType>, WriteLiteralAction<Mask>> {
-            static_assert(
-              onlyOneBitSet(Mask),
+            KVASIR_STATIC_ASSERT(
+              (onlyOneBitSet(Mask)),
+              (Diagnostic::NotSingleBit<TAddress,
+                                        Mask,
+                                        's'>),
               "Register::set only works on single bits. Use Register::write to write values to "
               "wider bit fields");
-            static_assert(IsWritable<FieldLocation<TAddress,
-                                                   Mask,
-                                                   Access,
-                                                   TFieldType>>::value,
-                          "Access violation: the FieldLocation provided is not marked as writable");
+            KVASIR_STATIC_ASSERT(
+              (IsWritable<FieldLocation<TAddress,
+                                        Mask,
+                                        Access,
+                                        TFieldType>>::value),
+              (Diagnostic::NotWritable<TAddress,
+                                       Mask>),
+              "Access violation: the FieldLocation provided is not marked as writable");
         };
 
         template<typename TLocation>
@@ -59,15 +73,21 @@ namespace Kvasir { namespace Register {
         template<typename TAddress, unsigned Mask, typename Access, typename TFieldType>
         struct Clear<FieldLocation<TAddress, Mask, Access, TFieldType>>
           : Action<FieldLocation<TAddress, Mask, Access, TFieldType>, WriteLiteralAction<0>> {
-            static_assert(
-              onlyOneBitSet(Mask),
+            KVASIR_STATIC_ASSERT(
+              (onlyOneBitSet(Mask)),
+              (Diagnostic::NotSingleBit<TAddress,
+                                        Mask,
+                                        'c'>),
               "Register::clear only works on single bits. Use Register::write to write values to "
               "wider bit fields");
-            static_assert(IsWritable<FieldLocation<TAddress,
-                                                   Mask,
-                                                   Access,
-                                                   TFieldType>>::value,
-                          "Access violation: the FieldLocation provided is not marked as writable");
+            KVASIR_STATIC_ASSERT(
+              (IsWritable<FieldLocation<TAddress,
+                                        Mask,
+                                        Access,
+                                        TFieldType>>::value),
+              (Diagnostic::NotWritable<TAddress,
+                                       Mask>),
+              "Access violation: the FieldLocation provided is not marked as writable");
         };
 
         // clear() writes a 0, which a write-one-to-clear or write-one-to-set field ignores: the call
@@ -81,9 +101,12 @@ namespace Kvasir { namespace Register {
             requires(M == ModifiedWriteValueType::oneToClear
                      || M == ModifiedWriteValueType::oneToSet)
         struct Clear<FieldLocation<TAddress, Mask, Access<AT, RAT, M>, TFieldType>> {
-            static_assert(false,
-                          "Register::clear writes a 0, which a write-one-to-clear or "
-                          "write-one-to-set field ignores: use Register::reset to clear a flag");
+            KVASIR_STATIC_ASSERT(
+              false,
+              (Diagnostic::ClearOnFlag<TAddress,
+                                       Mask>),
+              "Register::clear writes a 0, which a write-one-to-clear or "
+              "write-one-to-set field ignores: use Register::reset to clear a flag");
         };
 
         // special case for clearing toggle bits. Writing the value back will clear these, therefore using a xor of 0
@@ -123,18 +146,24 @@ namespace Kvasir { namespace Register {
         template<typename TAddress, unsigned Mask, typename Access, typename TFieldType>
         struct Toggle<FieldLocation<TAddress, Mask, Access, TFieldType>>
           : Action<FieldLocation<TAddress, Mask, Access, TFieldType>, XorLiteralAction<Mask>> {
-            static_assert(onlyOneBitSet(Mask),
-                          "Register::toggle only works on single bits");
-            static_assert(IsWritable<FieldLocation<TAddress,
-                                                   Mask,
-                                                   Access,
-                                                   TFieldType>>::value
-                            && IsReadable<FieldLocation<TAddress,
-                                                        Mask,
-                                                        Access,
-                                                        TFieldType>>::value,
-                          "Register::toggle reads the bit and writes it back inverted: the field "
-                          "must be readable and writable");
+            KVASIR_STATIC_ASSERT((onlyOneBitSet(Mask)),
+                                 (Diagnostic::NotSingleBit<TAddress,
+                                                           Mask,
+                                                           't'>),
+                                 "Register::toggle only works on single bits");
+            KVASIR_STATIC_ASSERT(
+              (IsWritable<FieldLocation<TAddress,
+                                        Mask,
+                                        Access,
+                                        TFieldType>>::value
+               && IsReadable<FieldLocation<TAddress,
+                                           Mask,
+                                           Access,
+                                           TFieldType>>::value),
+              (Diagnostic::ToggleNeedsRead<TAddress,
+                                           Mask>),
+              "Register::toggle reads the bit and writes it back inverted: the field "
+              "must be readable and writable");
         };
 
         template<typename TAddress,
@@ -166,11 +195,14 @@ namespace Kvasir { namespace Register {
             // every bit of the field written as 1: a multi-bit flag field is cleared whole
             using type
               = Action<FieldLocation<TAddress, Mask, Access, TFieldType>, WriteLiteralAction<Mask>>;
-            static_assert(IsWritable<FieldLocation<TAddress,
-                                                   Mask,
-                                                   Access,
-                                                   TFieldType>>::value,
-                          "Access violation: the FieldLocation provided is not marked as writable");
+            KVASIR_STATIC_ASSERT(
+              (IsWritable<FieldLocation<TAddress,
+                                        Mask,
+                                        Access,
+                                        TFieldType>>::value),
+              (Diagnostic::NotWritable<TAddress,
+                                       Mask>),
+              "Access violation: the FieldLocation provided is not marked as writable");
             static_assert(Detail::IsSetToClear<FieldLocation<TAddress,
                                                              Mask,
                                                              Access,

@@ -152,6 +152,9 @@ namespace Kvasir { namespace Register {
             static constexpr unsigned allBitsSetMask         = std::numeric_limits<TRegType>::max();
             static constexpr unsigned mustSupplyMask         = TMode::mustSupplyMask;
             static constexpr bool     readHasSideEffect      = TMode::readHasSideEffect;
+            static constexpr unsigned writeOnlyNoIdentityMask = TMode::writeOnlyNoIdentityMask;
+            static constexpr bool     writeOnlyRegister       = TMode::writeOnlyRegister;
+            using Mode                                        = TMode;
 
             static TRegType read() {
 #ifdef KVASIR_REGISTER_MOCK

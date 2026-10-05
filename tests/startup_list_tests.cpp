@@ -126,6 +126,15 @@ static_assert(!LR::NoDuplicateEntry<list<WithPinInit,
 static_assert(!LR::NoDuplicateEntry<list<WithPinInit,
                                          WithPinInit>>::value);
 
+// the first offender, which the compile error names
+static_assert(std::is_same_v<LR::NoDuplicateEntry<list<WithIsrAlias,
+                                                       WithPinInit,
+                                                       WithClaims,
+                                                       WithPinInit>>::Duplicate,
+                             WithPinInit>);
+static_assert(std::is_void_v<LR::NoDuplicateEntry<list<WithPinInit,
+                                                       WithClaims>>::Duplicate>);
+
 // ---- A2: every entry is a peripheral ----------------------------------------------------
 static_assert(LR::AllArePeripherals<IsFakeSecondary,
                                     list<>>::value);
@@ -138,6 +147,12 @@ static_assert(!LR::AllArePeripherals<IsFakeSecondary,
                                           Config>>::value);
 static_assert(!LR::AllArePeripherals<IsFakeSecondary,
                                      list<Empty>>::value);
+
+static_assert(std::is_same_v<LR::AllArePeripherals<IsFakeSecondary,
+                                                   list<WithPinInit,
+                                                        Config,
+                                                        Empty>>::NotAPeripheral,
+                             Config>);
 
 // ---- A3: one other core -----------------------------------------------------------------
 static_assert(LR::AtMostOneSecondary<IsFakeSecondary,
@@ -163,12 +178,19 @@ static_assert(LR::NoLaunchTimeoutIn<list<WithPinInit,
 static_assert(!LR::NoLaunchTimeoutIn<list<WithPinInit,
                                           Timeout>>::value);
 
+static_assert(std::is_same_v<LR::NoLaunchTimeoutIn<list<WithPinInit,
+                                                        Timeout>>::LaunchTimeout,
+                             Timeout>);
+
 // ---- A5: one ClockSettings, and not among the peripherals --------------------------------
 static_assert(LR::NoClockSettingsIn<list<WithPinInit,
                                          WithClaims>>::value);
 static_assert(!LR::NoClockSettingsIn<list<WithPinInit,
                                           Clocks>>::value);
 static_assert(!LR::NoClockSettingsIn<list<CoreClocksOnly>>::value);
+static_assert(std::is_same_v<LR::NoClockSettingsIn<list<WithPinInit,
+                                                        Clocks>>::ClockSettings,
+                             Clocks>);
 
 // ---- B1: every Isr index is in the chip's table ------------------------------------------
 struct Traits {

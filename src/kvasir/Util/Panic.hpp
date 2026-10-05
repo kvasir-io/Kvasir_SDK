@@ -21,11 +21,16 @@
 // The handler runs with interrupts masked, maybe on the fault stack, maybe with the flash busy:
 // register writes only, no waiting, no logging. A panic inside the handler halts at once.
 
+#include "kvasir/StartUp/LinkerSymbols.hpp"
+#include "kvasir/Util/CrashRecord.hpp"
+#include "kvasir/Util/Persistent.hpp"
+
 #include <cassert>
 #include <concepts>
 #include <cstdint>
 #include <cstdlib>
 #include <optional>
+#include <type_traits>
 
 namespace Kvasir::Panic {
 // The libc's assert.h and libc++'s __verbose_abort declare this enum opaquely (they cannot include
@@ -41,6 +46,11 @@ enum class Cause : unsigned char {
     undefinedBehaviour = 6,   // a fatal sanitizer handler
     fault              = 7,   // HardFault and the other fault vectors (Panic::FaultAction)
     user               = 8,   // KVASIR_PANIC
+    checkFailed        = 9,   // KVASIR_CHECK*, a KVASIR_SOFT_CHECK that escalates (Util/Check.hpp)
+    timeout = 10,   // a bounded register wait under OnTimeout::Panic; detail = the register (Register/Wait.hpp)
+    bootLoop = 11,   // the boot guard's RaisePanic policy; detail = the failed runs in a row (BootGuard.hpp)
+    healthCheck = 12,   // Health::Supervisor's RaisePanic policy; detail = the starved check's index (Health.hpp)
+    flashCorrupt = 13,   // ImageCheck's Panic policy: the image CRC differs; detail = the CRC computed (ImageCheck.hpp)
 };
 
 [[nodiscard]] constexpr char const* name(Cause c) {
@@ -54,6 +64,11 @@ enum class Cause : unsigned char {
     case Cause::undefinedBehaviour: return "undefined behaviour";
     case Cause::fault:              return "fault";
     case Cause::user:               return "KVASIR_PANIC";
+    case Cause::checkFailed:        return "check failed";
+    case Cause::timeout:            return "register wait timed out";
+    case Cause::bootLoop:           return "boot loop";
+    case Cause::healthCheck:        return "health check starved";
+    case Cause::flashCorrupt:       return "flash image CRC mismatch";
     }
     return "unknown";
 }
@@ -83,28 +98,128 @@ struct Record {
 // volatile: uninitialised, LTO would otherwise narrow it (as Fault::lastFault)
 [[gnu::section(".noInit"), gnu::used]] inline Record volatile lastPanic;
 
-inline void record(Info const& info) {
-    if(lastPanic.magic == Record::Magic) {
-        lastPanic.count = lastPanic.count + 1;
-        return;
+// The record under CrashRecord::Full: CRC-checked (Persistent.hpp), with the core and the stack
+// pointer in raise(). Referenced only by the Full path, so a Legacy image does not have it.
+struct RecordTag {
+    static constexpr std::uint32_t id      = persistentId("KPNC");
+    static constexpr std::uint16_t version = 2;
+};
+
+struct FullRecord {
+    std::uint32_t count;
+    std::uint32_t cause;
+    std::uint32_t pc;
+    std::uint32_t detail;
+    std::uint32_t core;   // 0, or 1 when raised on the secondary core's stack
+    std::uint32_t sp;     // the stack pointer where the record was written
+};
+
+[[gnu::section(".noInit")]] inline Persistent<FullRecord, RecordTag> lastPanicV2;
+
+namespace Detail {
+    template<typename... Dummy>
+    inline constexpr bool fullPolicy = CrashRecord::Detail::isFull<
+      std::remove_cvref_t<decltype(CrashRecord::injectedPolicy<Dummy...>)>>;
+
+#ifdef __arm__
+    [[gnu::always_inline]] inline std::uint32_t stackPointer() {
+        std::uint32_t sp;
+        asm volatile("mov %0, sp" : "=r"(sp));
+        return sp;
     }
-    lastPanic.count  = 1;
-    lastPanic.cause  = static_cast<std::uint32_t>(info.cause);
-    lastPanic.pc     = info.pc;
-    lastPanic.detail = info.detail;
-    lastPanic.magic  = Record::Magic;
+
+    // Which core runs this: the one whose stack holds sp. The SDK knows no chip's core id register,
+    // and on a single-core chip the secondary stack is empty.
+    inline std::uint32_t coreOf(std::uint32_t sp) {
+        return sp >= reinterpret_cast<std::uintptr_t>(_LINKER_stack1_start_)
+                && sp < reinterpret_cast<std::uintptr_t>(_LINKER_stack1_end_)
+               ? 1U
+               : 0U;
+    }
+#else
+    inline std::uint32_t stackPointer() { return 0; }
+
+    inline std::uint32_t coreOf(std::uint32_t) { return 0; }
+#endif
+
+    /// The cause of the panic record, without taking it (the boot guard).
+    template<typename... Dummy>
+        requires(sizeof...(Dummy) == 0)
+    std::optional<std::uint32_t> recordedCause() {
+        if constexpr(fullPolicy<Dummy...>) {
+            auto const r = lastPanicV2.load();
+            return r ? std::optional<std::uint32_t>{r->cause} : std::nullopt;
+        } else {
+            return lastPanic.magic == Record::Magic ? std::optional<std::uint32_t>{lastPanic.cause}
+                                                    : std::nullopt;
+        }
+    }
+
+    /// Whether a panic record is there, without taking it (the fault handler, the boot guard).
+    template<typename... Dummy>
+        requires(sizeof...(Dummy) == 0)
+    bool panicRecorded() {
+        if constexpr(fullPolicy<Dummy...>) {
+            return lastPanicV2.valid();
+        } else {
+            return lastPanic.magic == Record::Magic;
+        }
+    }
+}   // namespace Detail
+
+// The first panic since the last report is kept, later ones only counted. A template so the policy
+// is looked up where it is used, after the application's specialisation.
+template<typename... Dummy>
+    requires(sizeof...(Dummy) == 0)
+inline void record(Info const& info) {
+    if constexpr(Detail::fullPolicy<Dummy...>) {
+        if(auto old = lastPanicV2.load()) {
+            old->count = old->count + 1;
+            lastPanicV2.store(*old);
+            return;
+        }
+        auto const sp = Detail::stackPointer();
+        lastPanicV2.store(FullRecord{.count  = 1,
+                                     .cause  = static_cast<std::uint32_t>(info.cause),
+                                     .pc     = info.pc,
+                                     .detail = info.detail,
+                                     .core   = Detail::coreOf(sp),
+                                     .sp     = sp});
+    } else {
+        if(lastPanic.magic == Record::Magic) {
+            lastPanic.count = lastPanic.count + 1;
+            return;
+        }
+        lastPanic.count  = 1;
+        lastPanic.cause  = static_cast<std::uint32_t>(info.cause);
+        lastPanic.pc     = info.pc;
+        lastPanic.detail = info.detail;
+        lastPanic.magic  = Record::Magic;
+    }
 }
 
-// The record, once: cleared by reading.
+// The record, once: cleared by reading. The same shape under either policy.
+template<typename... Dummy>
+    requires(sizeof...(Dummy) == 0)
 inline std::optional<Record> takeLastPanic() {
-    if(lastPanic.magic != Record::Magic) { return std::nullopt; }
-    Record const r{.magic  = Record::Magic,
-                   .count  = lastPanic.count,
-                   .cause  = lastPanic.cause,
-                   .pc     = lastPanic.pc,
-                   .detail = lastPanic.detail};
-    lastPanic.magic = 0;
-    return r;
+    if constexpr(Detail::fullPolicy<Dummy...>) {
+        auto const r = lastPanicV2.take();
+        if(!r) { return std::nullopt; }
+        return Record{.magic  = Record::Magic,
+                      .count  = r->count,
+                      .cause  = r->cause,
+                      .pc     = r->pc,
+                      .detail = r->detail};
+    } else {
+        if(lastPanic.magic != Record::Magic) { return std::nullopt; }
+        Record const r{.magic  = Record::Magic,
+                       .count  = lastPanic.count,
+                       .cause  = lastPanic.cause,
+                       .pc     = lastPanic.pc,
+                       .detail = lastPanic.detail};
+        lastPanic.magic = 0;
+        return r;
+    }
 }
 
 // The end of the line: the breakpoint number each path used before this header existed.
@@ -127,8 +242,11 @@ halt([[maybe_unused]] Cause cause) {
 }
 
 struct DefaultHandler {
+    // a template, so record()'s policy lookup waits for the call (dispatch, at instantiation)
+    template<typename... Dummy>
+        requires(sizeof...(Dummy) == 0)
     [[noreturn]] static void operator()(Info const& info) {
-        record(info);
+        record<Dummy...>(info);
         halt(info.cause);
     }
 };

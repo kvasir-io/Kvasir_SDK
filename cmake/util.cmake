@@ -68,6 +68,21 @@ function(check_ram_funcs target)
         VERBATIM)
 endfunction()
 
+# IMAGE_CRC: writes the image CRC descriptor (kvasir/Util/ImageDescriptor.hpp) into the ELF for Kvasir::ImageCheck. Must
+# run before every artefact made from the ELF; removes the .elf on failure so the next build fails again.
+function(patch_image_crc target)
+    set(_sections .vectors .text .data ${TARGET_EXTRA_FLASH_SECTIONS})
+    add_custom_command(
+        TARGET ${target}
+        POST_BUILD
+        COMMAND
+            ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
+            ${kvasir_cmake_dir}/tools/patch_image_crc.py "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf" --delete-on-failure
+            --objcopy ${CMAKE_OBJCOPY} --sections ${_sections}
+        COMMENT "Writing the image CRC descriptor into ${target}.elf"
+        VERBATIM)
+endfunction()
+
 function(check_undefined_refs target)
     add_custom_command(
         TARGET ${target}
@@ -318,6 +333,10 @@ function(
     target_include_directories(${name} PUBLIC ${CHIP_ROOT_DIR}/core/src)
     check_ram_funcs(${name})
     check_undefined_refs(${name})
+    get_target_property(_image_crc ${name} KVASIR_IMAGE_CRC)
+    if(_image_crc)
+        patch_image_crc(${name}) # before generate_object: every artefact carries the descriptor
+    endif()
     generate_object(${name} .bin binary)
     generate_object(${name} .hex ihex)
     generate_lst(${name})
@@ -347,11 +366,11 @@ function(
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_heap_body.inc.ld)
 
     add_target_linker_dependency(${name} ${linker_file})
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/two_stage_link.py)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/linker_utils.py)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/find_undefined_refs.py)
     # POST_BUILD commands have no dependencies of their own: relink when one of their scripts changes
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/check_ram_funcs.py)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/patch_image_crc.py)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/pretty_size.py)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/strip_empty_segments.py)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/ihex_to_uf2.py)
@@ -368,7 +387,6 @@ function(
             "${LINKER_PREFIX}--library-path=${kvasir_cmake_dir}/../linker"
             "${LINKER_PREFIX}--defsym=cmake_ram_size=${TARGET_RAM_SIZE}"
             "${LINKER_PREFIX}--defsym=cmake_min_stack_size=${min_stack_size}"
-            "${LINKER_PREFIX}--defsym=cmake_stack_size_extra=0"
             "${LINKER_PREFIX}--defsym=cmake_heap_size=${heap_size}"
             "${LINKER_PREFIX}--defsym=cmake_core1_stack_size=${core1_stack_size}"
             "${LINKER_PREFIX}--defsym=cmake_core1_stack_in_scratch=${core1_stack_in_scratch}"
@@ -481,8 +499,8 @@ function(kvasir_executable_variants base_name)
         PARSE_ARGV
         1
         PARSED_ARGS
-        "RAM_ONLY;SCRATCH_BANKS"
-        "OPTIMIZATION;MIN_STACK_SIZE;CORE1_STACK_SIZE;CORE1_STACK_PLACEMENT;HEAP_SIZE;MIN_LOG_LEVEL;MIN_LOG_LEVEL_DEBUG;MIN_LOG_LEVEL_RELEASE;LOG_FILTER"
+        "RAM_ONLY;SCRATCH_BANKS;IMAGE_CRC"
+        "OPTIMIZATION;MIN_STACK_SIZE;CORE1_STACK_SIZE;CORE1_STACK_PLACEMENT;HEAP_SIZE;MIN_LOG_LEVEL;MIN_LOG_LEVEL_DEBUG;MIN_LOG_LEVEL_RELEASE;LOG_FILTER;LINKER_FILE;SELFTEST_VARIANT;CHECK_LEVEL;CHECK_LEVEL_RELEASE;DCHECK_LEVEL;DCHECK_LEVEL_RELEASE"
         "SOURCES;LIBRARIES;ADDITIONAL_FLAGS;ADDITIONAL_DEBUG_FLAGS;ADDITIONAL_RELEASE_FLAGS;ADDITIONAL_SANITIZE_FLAGS")
 
     if(PARSED_ARGS_UNPARSED_ARGUMENTS)
@@ -530,11 +548,23 @@ function(kvasir_executable_variants base_name)
         set(_log_filter LOG_FILTER ${_log_filter_path})
     endif()
 
+    # The firmware's own linker script instead of the chip's (e.g. a calibration sector kept out of the image), relative
+    # to the project.
+    set(_linker_file "")
+    if(PARSED_ARGS_LINKER_FILE)
+        set(_linker_file LINKER_FILE ${PARSED_ARGS_LINKER_FILE})
+    endif()
+
     # Opt-in to an image that lives entirely in RAM (the chip's LINKER_FILE_RAM_ONLY): loaded by the bootrom's UF2 path
     # or a debugger, never written to flash. What a flash eraser is built as.
     set(_ram_only "")
     if(PARSED_ARGS_RAM_ONLY)
         set(_ram_only RAM_ONLY)
+    endif()
+    # Opt-in to the image CRC descriptor (Kvasir::ImageCheck), in every variant.
+    set(_image_crc "")
+    if(PARSED_ARGS_IMAGE_CRC)
+        set(_image_crc IMAGE_CRC)
     endif()
 
     # Log floor per variant: MIN_LOG_LEVEL applies to every logging variant, MIN_LOG_LEVEL_DEBUG overrides it for the
@@ -577,6 +607,8 @@ function(kvasir_executable_variants base_name)
         ${_heap}
         ${_log_filter}
         ${_ram_only}
+        ${_image_crc}
+        ${_linker_file}
         ${_min_log_debug}
         ${PARSED_ARGS_ADDITIONAL_FLAGS}
         ${PARSED_ARGS_ADDITIONAL_DEBUG_FLAGS})
@@ -595,6 +627,8 @@ function(kvasir_executable_variants base_name)
         ${_heap}
         ${_log_filter}
         ${_ram_only}
+        ${_image_crc}
+        ${_linker_file}
         ${PARSED_ARGS_ADDITIONAL_FLAGS}
         ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
     if(PARSED_ARGS_LIBRARIES)
@@ -613,6 +647,8 @@ function(kvasir_executable_variants base_name)
         ${_heap}
         ${_log_filter}
         ${_ram_only}
+        ${_image_crc}
+        ${_linker_file}
         ${_min_log_release}
         ${PARSED_ARGS_ADDITIONAL_FLAGS}
         ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
@@ -633,12 +669,67 @@ function(kvasir_executable_variants base_name)
         ${_heap}
         ${_log_filter}
         ${_ram_only}
+        ${_image_crc}
+        ${_linker_file}
         ${_min_log_release}
         ${PARSED_ARGS_ADDITIONAL_FLAGS}
         ${PARSED_ARGS_ADDITIONAL_SANITIZE_FLAGS})
     if(PARSED_ARGS_LIBRARIES)
         target_link_libraries(${sanitize_target} ${PARSED_ARGS_LIBRARIES})
     endif()
+
+    # Compile-time self-tests (kvasir/Util/SelfTest.hpp) prove the same thing in every variant, so only one evaluates
+    # them (they are slow to compile): debug unless the firmware names another.
+    if(NOT PARSED_ARGS_SELFTEST_VARIANT)
+        set(PARSED_ARGS_SELFTEST_VARIANT debug)
+    endif()
+    set(_selftest_variants debug release release_log sanitize)
+    if(NOT PARSED_ARGS_SELFTEST_VARIANT IN_LIST _selftest_variants
+       AND NOT PARSED_ARGS_SELFTEST_VARIANT STREQUAL "all"
+       AND NOT PARSED_ARGS_SELFTEST_VARIANT STREQUAL "none")
+        message(FATAL_ERROR "SELFTEST_VARIANT ${PARSED_ARGS_SELFTEST_VARIANT}: one of ${_selftest_variants}, all, none")
+    endif()
+    foreach(_variant IN LISTS _selftest_variants)
+        if(PARSED_ARGS_SELFTEST_VARIANT STREQUAL _variant OR PARSED_ARGS_SELFTEST_VARIANT STREQUAL "all")
+            target_compile_definitions(${${_variant}_target} PRIVATE KVASIR_SELFTEST=1)
+        else()
+            target_compile_definitions(${${_variant}_target} PRIVATE KVASIR_SELFTEST=0)
+        endif()
+    endforeach()
+
+    # Runtime checks (kvasir/Util/Check.hpp): 0 off, 1 bare (panic, no log), 2 full (the operands logged). Every TU of
+    # an image must see the same level: set here per target, never in a header. CHECK_LEVEL defaults to 2 (release and
+    # release_log: CHECK_LEVEL_RELEASE); DCHECK follows it in debug and sanitize and is 0 in release and release_log
+    # (DCHECK_LEVEL / DCHECK_LEVEL_RELEASE). A failed KVASIR_SOFT_CHECK panics in sanitize and only logs elsewhere.
+    foreach(_level CHECK_LEVEL CHECK_LEVEL_RELEASE DCHECK_LEVEL DCHECK_LEVEL_RELEASE)
+        if(DEFINED PARSED_ARGS_${_level} AND NOT PARSED_ARGS_${_level} MATCHES "^[012]$")
+            message(FATAL_ERROR "${_level} ${PARSED_ARGS_${_level}}: 0 (off), 1 (bare) or 2 (full)")
+        endif()
+    endforeach()
+    set(_check 2)
+    if(DEFINED PARSED_ARGS_CHECK_LEVEL)
+        set(_check ${PARSED_ARGS_CHECK_LEVEL})
+    endif()
+    set(_check_release ${_check})
+    if(DEFINED PARSED_ARGS_CHECK_LEVEL_RELEASE)
+        set(_check_release ${PARSED_ARGS_CHECK_LEVEL_RELEASE})
+    endif()
+    set(_dcheck ${_check})
+    if(DEFINED PARSED_ARGS_DCHECK_LEVEL)
+        set(_dcheck ${PARSED_ARGS_DCHECK_LEVEL})
+    endif()
+    set(_dcheck_release 0)
+    if(DEFINED PARSED_ARGS_DCHECK_LEVEL_RELEASE)
+        set(_dcheck_release ${PARSED_ARGS_DCHECK_LEVEL_RELEASE})
+    endif()
+    target_compile_definitions(${debug_target} PRIVATE KVASIR_CHECK_LEVEL=${_check} KVASIR_DCHECK_LEVEL=${_dcheck}
+                                                       KVASIR_SOFT_CHECK_ESCALATE=0)
+    target_compile_definitions(${sanitize_target} PRIVATE KVASIR_CHECK_LEVEL=${_check} KVASIR_DCHECK_LEVEL=${_dcheck}
+                                                          KVASIR_SOFT_CHECK_ESCALATE=1)
+    foreach(_t ${release_target} ${release_log_target})
+        target_compile_definitions(${_t} PRIVATE KVASIR_CHECK_LEVEL=${_check_release}
+                                                 KVASIR_DCHECK_LEVEL=${_dcheck_release} KVASIR_SOFT_CHECK_ESCALATE=0)
+    endforeach()
 
 endfunction()
 
@@ -647,7 +738,7 @@ function(target_configure_kvasir target)
         PARSE_ARGV
         1
         PARSED_ARGS
-        "USE_LOG;NOT_USE_ASSERT;ENABLE_SELF_OVERRIDE;USE_SANITIZER;RAM_ONLY;SCRATCH_BANKS"
+        "USE_LOG;NOT_USE_ASSERT;ENABLE_SELF_OVERRIDE;USE_SANITIZER;RAM_ONLY;SCRATCH_BANKS;IMAGE_CRC"
         "LOG;MIN_LOG_LEVEL;LOG_FILTER;MIN_STACK_SIZE;CORE1_STACK_SIZE;CORE1_STACK_PLACEMENT;HEAP_SIZE;OPTIMIZATION_STRATEGY;LINKER_FILE;LINKER_FILE_TEMPLATE;APPLICATION;BOOTLOADER;BOOTLOADER_SIZE"
         "")
 
@@ -816,6 +907,16 @@ function(target_configure_kvasir target)
         endif()
     else()
         set(PARSED_ARGS_LINKER_FILE ${CMAKE_CURRENT_SOURCE_DIR}/${PARSED_ARGS_LINKER_FILE})
+    endif()
+
+    # IMAGE_CRC: the descriptor (KVASIR_IMAGE_CRC) and the post-link step that fills it (patch_image_crc, read by
+    # target_kvasir_config_internal).
+    if(PARSED_ARGS_IMAGE_CRC)
+        if(PARSED_ARGS_RAM_ONLY)
+            message(FATAL_ERROR "${target}: IMAGE_CRC checks the flash image; a RAM_ONLY image has none")
+        endif()
+        target_compile_definitions(${target} PUBLIC KVASIR_IMAGE_CRC=1)
+        set_property(TARGET ${target} PROPERTY KVASIR_IMAGE_CRC TRUE)
     endif()
 
     if(PARSED_ARGS_USE_SANITIZER)

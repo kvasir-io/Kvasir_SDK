@@ -200,7 +200,41 @@ static_assert(rmwAllowed<GetAddress<KeyReg::Addr>,
 static_assert(!rmwAllowed<GetAddress<FifoReg::Addr>,
                           0xFF>(),
               "never on a read side effect");
+static_assert(!rmwAllowed<GetAddress<IcrstReg::Addr>,
+                          0xF>(),
+              "an unclassified write-only bit must be named");
+static_assert(rmwAllowed<GetAddress<IcrstReg::Addr>,
+                         0x80F>(),
+              "named in the same write it may");
 }   // namespace RmwHazards
+
+// a register with no readable field: one store of exactly the named bits, no read
+static void writeOnlyRegisterNeverRead() {
+    test("writeOnlyRegisterNeverRead");
+    recorder.setReadValue(SetResetReg::Addr::value, 0xFFFFFFFF);   // a read would bring these in
+    apply(set(SetResetReg::bs5));
+    checkActions({
+      W{SetResetReg::Addr::value, 1U << 5}
+    });
+    test("writeOnlyRegisterNeverRead: two fields, one store");
+    recorder.setReadValue(SetResetReg::Addr::value, 0xFFFFFFFF);
+    apply(set(SetResetReg::br5), set(SetResetReg::bs5));
+    checkActions({
+      W{SetResetReg::Addr::value, (1U << 21) | (1U << 5)}
+    });
+}
+
+// with the write-only bit named, the partial write reads the rest and writes the bit as given
+static void writeOnlyBitNamed() {
+    test("writeOnlyBitNamed");
+    recorder.setReadValue(IcrstReg::Addr::value, 0xA0);
+    apply(write(IcrstReg::latency, Kvasir::Register::value<std::uint32_t, 5U>()),
+          clear(IcrstReg::icrst));
+    checkActions({
+      R{IcrstReg::Addr::value, 0xA0},
+      W{IcrstReg::Addr::value, 0xA5}
+    });
+}
 
 // a key register written whole (key + field): one write, no read
 static void keyRegisterWrittenWhole() {
@@ -215,6 +249,8 @@ static void keyRegisterWrittenWhole() {
 
 int main() {
     keyRegisterWrittenWhole();
+    writeOnlyRegisterNeverRead();
+    writeOnlyBitNamed();
     explicitReadPlusRmwWrite<SimpleTestReg>();
     explicitReadPlusRmwWrite<ComplexTestReg>();
 

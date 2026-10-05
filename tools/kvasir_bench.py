@@ -1150,7 +1150,118 @@ def code_ranges(tree: Tree) -> list[tuple[int, int]]:
 # kvasir/Util/Panic.hpp: Record::Magic and the Cause enumerators, in order
 PANIC_MAGIC = 0x9A41C0DE
 PANIC_CAUSES = ["assertion", "abort", "stack smash", "division by zero", "allocation without a heap",
-                "unhandled interrupt", "undefined behaviour", "fault", "KVASIR_PANIC"]
+                "unhandled interrupt", "undefined behaviour", "fault", "KVASIR_PANIC", "check failed",
+                "register wait timed out", "boot loop", "health check starved",
+                "flash image CRC mismatch"]
+
+
+# kvasir/Util/Persistent.hpp: id, version | size << 16, the value, zlib's crc32 over all before it
+def persistent_id(tag: str) -> int:
+    """Kvasir::persistentId("KFLT"): the four characters as a little-endian word."""
+    return int.from_bytes(tag.encode("ascii"), "little")
+
+
+def decode_persistent(raw: bytes, tag: str, version: int) -> list[int] | None:
+    """The value words of a Kvasir::Persistent record, or None (another tag, version, size, a
+    bad CRC: never stored, cleared, from another build, corrupt)."""
+    import zlib
+    if len(raw) < 12:
+        return None
+    words = [int.from_bytes(raw[i:i + 4], "little")
+             for i in range(0, len(raw) - 3, 4)]
+    if words[0] != persistent_id(tag) or (words[1] & 0xFFFF) != version:
+        return None
+    n = (words[1] >> 16) // 4
+    if len(words) < 2 + n + 1 or zlib.crc32(raw[:4 * (2 + n)]) != words[2 + n]:
+        return None
+    return words[2:2 + n]
+
+
+# kvasir/Util/FaultHandler.hpp Fault::FullRecord, in order (33 words)
+FAULT_V2_FIELDS = ["count", "flags", "r0", "r1", "r2", "r3", "r12", "lr", "pc", "xpsr",
+                   "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11",
+                   "exc_return", "msp", "psp", "control", "sp",
+                   "cfsr", "hfsr", "mmfar", "bfar", "shcsr", "icsr", "sfsr", "sfar", "msplim", "psplim"]
+FAULT_V2_FLAGS = ["frameValid", "calleeSaved", "faultRegs", "fpFrame", "stackLimits", "secureRegs",
+                  "stackCopied"]
+# Kvasir::Panic::FullRecord
+PANIC_V2_FIELDS = ["count", "cause", "pc", "detail", "core", "sp"]
+# CFSR bit names (Armv8-M ARM DDI0553B.y D1.2.11: MMFSR 7:0, BFSR 15:8, UFSR 31:16)
+CFSR_BITS = {0: "IACCVIOL", 1: "DACCVIOL", 3: "MUNSTKERR", 4: "MSTKERR", 5: "MLSPERR", 7: "MMARVALID",
+             8: "IBUSERR", 9: "PRECISERR", 10: "IMPRECISERR", 11: "UNSTKERR", 12: "STKERR", 13: "LSPERR",
+             15: "BFARVALID", 16: "UNDEFINSTR", 17: "INVSTATE", 18: "INVPC", 19: "NOCP", 20: "STKOF",
+             24: "UNALIGNED", 25: "DIVBYZERO"}
+
+
+def cfsr_text(cfsr: int) -> str:
+    return " ".join(n for b, n in sorted(CFSR_BITS.items()) if cfsr >> b & 1) or "-"
+
+
+def full_records(tree: "Tree", control, table) -> None:
+    """The CrashRecord::Full records, where the image has them: lastFaultV2, lastStack<N>, lastPanicV2."""
+    def find(pred):
+        hits = [sym for sym in table if pred(sym[2])]
+        return hits[0] if hits else None
+    fault = find(lambda n: n == "Kvasir::Fault::lastFaultV2")
+    fault_valid = False
+    if fault:
+        words = decode_persistent(read_target(
+            control, fault[0], fault[1]), "KFLT", 2)
+        if words is None or len(words) != len(FAULT_V2_FIELDS):
+            print("  the full fault record (lastFaultV2) is empty or not valid")
+        else:
+            fault_valid = True
+            f = dict(zip(FAULT_V2_FIELDS, words))
+            flags = [n for b, n in enumerate(
+                FAULT_V2_FLAGS) if f["flags"] >> b & 1]
+            where = addr2line(tree, [f["pc"] & ~1, f["lr"] & ~1])
+            print(f"  the full fault record (the first of {f['count']} since a boot line last reported one), "
+                  f"core {f['flags'] >> 8 & 0xF}, Armv{f['flags'] >> 12 & 0xF}-M, {' '.join(flags)}:")
+            print(f"    cfsr {f['cfsr']:#010x} ({cfsr_text(f['cfsr'])}) hfsr {f['hfsr']:#010x} "
+                  f"mmfar {f['mmfar']:#010x} bfar {f['bfar']:#010x} icsr {f['icsr']:#010x}")
+            if "frameValid" in flags:
+                print(
+                    f"    faulting pc {f['pc']:#010x}  {where.get(f['pc'] & ~1, '')}")
+                print(
+                    f"    its lr      {f['lr']:#010x}  {where.get(f['lr'] & ~1, '')}")
+            else:
+                print("    no stacked frame (it was not pushed, or lies outside RAM)")
+            print(
+                "    " + " ".join(f"{k}={f[k]:#x}" for k in FAULT_V2_FIELDS[2:7] + FAULT_V2_FIELDS[9:23]))
+            print(
+                "    " + " ".join(f"{k}={f[k]:#x}" for k in FAULT_V2_FIELDS[27:]))
+    # the snapshot belongs to the fault record; once that is taken (a boot line reported it) the
+    # snapshot left in RAM is that old fault's
+    stack = find(lambda n: n.startswith(
+        "Kvasir::Fault::lastStack<")) if fault_valid else None
+    if stack:
+        words = decode_persistent(read_target(
+            control, stack[0], stack[1]), "KSTK", 1)
+        if words:
+            start, count = words[0], words[1]
+            body = words[2:2 + count // 4]
+            ranges = code_ranges(tree)
+            code = [(i, w) for i, w in enumerate(body) if any(
+                lo <= (w & ~1) < hi for lo, hi in ranges)]
+            where = addr2line(tree, [w & ~1 for _, w in code])
+            print(
+                f"  the stack snapshot: {count} bytes from {start:#010x}; the words that point into code:")
+            for i, w in code:
+                print(
+                    f"    {start + 4 * i:#010x} {w:#010x}  {where.get(w & ~1, '')}")
+    panic = find(lambda n: n == "Kvasir::Panic::lastPanicV2")
+    if panic:
+        words = decode_persistent(read_target(
+            control, panic[0], panic[1]), "KPNC", 2)
+        if words and len(words) == len(PANIC_V2_FIELDS):
+            p = dict(zip(PANIC_V2_FIELDS, words))
+            name = PANIC_CAUSES[p["cause"]] if p["cause"] < len(
+                PANIC_CAUSES) else f"cause {p['cause']}"
+            site = (p["pc"] & ~1) - 2
+            where = addr2line(tree, [site]) if p["pc"] else {}
+            print(f"  the full panic record (the first of {p['count']}): {name}, detail {p['detail']}, core "
+                  f"{p['core']}, sp {p['sp']:#010x}, raised by the call before {p['pc']:#010x}  "
+                  f"{where.get(site, '')}")
 
 
 def crash(args) -> None:
@@ -1238,6 +1349,8 @@ def crash(args) -> None:
                 print(f"  the panic record in RAM (the first of {count} panic(s) since a boot line last "
                       f"reported one): {name}{extra}, raised by the call before {pc:#010x}  "
                       f"{where.get(site, '')}")
+    if control is not None:
+        full_records(tree, control, symbols(tree))
     # this run's fault line only (since the last flash/reset): an older boot's COREFAULT in the
     # printer's history is not this halt's
     fault_lines = subprocess.run([sys.executable, __file__, "log", str(tree.build), tree.target,

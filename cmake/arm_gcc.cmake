@@ -21,12 +21,10 @@ find_package(
     REQUIRED)
 
 set(CMAKE_C_LINK_EXECUTABLE
-    "${Python3_EXECUTABLE} -X pycache_prefix=<CMAKE_BINARY_DIR>/__pycache__ ${kvasir_cmake_dir}/tools/two_stage_link.py ${CMAKE_SIZE} \
-<CMAKE_C_COMPILER> <FLAGS> <CMAKE_C_LINK_FLAGS> <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>")
+    "<CMAKE_C_COMPILER> <FLAGS> <CMAKE_C_LINK_FLAGS> <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>")
 
 set(CMAKE_CXX_LINK_EXECUTABLE
-    "${Python3_EXECUTABLE} -X pycache_prefix=<CMAKE_BINARY_DIR>/__pycache__ ${kvasir_cmake_dir}/tools/two_stage_link.py ${CMAKE_SIZE} \
-<CMAKE_CXX_COMPILER> <FLAGS> <CMAKE_CXX_LINK_FLAGS> <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>")
+    "<CMAKE_CXX_COMPILER> <FLAGS> <CMAKE_CXX_LINK_FLAGS> <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>")
 
 if(TARGET_FPU MATCHES none)
     set(target_fpu auto)
@@ -139,6 +137,16 @@ set(CMAKE_C_LINK_LIBRARY_USING_KVASIR_WHOLE_ARCHIVE "${LINKER_PREFIX}--whole-arc
                                                     "${LINKER_PREFIX}--no-whole-archive")
 set(CMAKE_CXX_LINK_LIBRARY_USING_KVASIR_WHOLE_ARCHIVE_SUPPORTED TRUE)
 set(CMAKE_CXX_LINK_LIBRARY_USING_KVASIR_WHOLE_ARCHIVE ${CMAKE_C_LINK_LIBRARY_USING_KVASIR_WHOLE_ARCHIVE})
+
+# GNU ld 2.39+ warns "LOAD segment with RWX permissions": RAM functions next to the data are wanted. Probed by hand: a
+# toolchain file has no check_linker_flag yet; an older ld neither warns nor knows the flag.
+execute_process(
+    COMMAND arm-none-eabi-ld --help
+    OUTPUT_VARIABLE kvasir_gnu_ld_help
+    ERROR_QUIET)
+if(kvasir_gnu_ld_help MATCHES "--no-warn-rwx-segments")
+    list(APPEND linker_common_flags --no-warn-rwx-segments)
+endif()
 
 list(TRANSFORM linker_common_flags PREPEND ${LINKER_PREFIX})
 

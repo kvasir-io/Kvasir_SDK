@@ -32,7 +32,14 @@ struct StackProtector {
         }
     }
 
-    // A turn in the main loop: Startup::run<Hook::MainLoop>() calls handler() (not by hand too).
-    using Extends = Startup::Extend<Hook::MainLoop, &StackProtector::handler>;
+    // The main loop's turn: handler(), and "nothing to wait for" for a sleeping loop (Startup::runTurn): the check
+    // runs whenever the loop turns anyway.
+    static Turn turn() {
+        handler();
+        return Turn::idle();
+    }
+
+    // A turn in the main loop: Startup::run<Hook::MainLoop>() calls it (not handler() by hand too).
+    using Extends = Startup::Extend<Hook::MainLoop, &StackProtector::turn>;
 };
 }   // namespace Kvasir

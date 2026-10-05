@@ -127,9 +127,10 @@ namespace Io {
     // one pin (an interrupt and a poll of the same input), and the pad is chip-wide, so the
     // provider may sit in either core's list.
     struct PinTag {
-        static constexpr bool     sharedClaim = true;
-        static constexpr bool     coreLocal   = false;
-        static constexpr unsigned keyArity    = 2;
+        static constexpr char const* describeAs  = "Io pin";   // "Io pin 0.25" in a compile error
+        static constexpr bool        sharedClaim = true;
+        static constexpr bool        coreLocal   = false;
+        static constexpr unsigned    keyArity    = 2;
     };
 
     template<int Port, int Pin>

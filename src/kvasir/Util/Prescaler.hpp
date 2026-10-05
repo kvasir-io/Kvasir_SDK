@@ -15,6 +15,8 @@
 // product that would overflow is a compile error, never a wrap. Ties keep the first candidate in
 // iteration order.
 
+#include "kvasir/Util/Diagnostic.hpp"
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -428,13 +430,25 @@ struct ToleranceMessage {
     constexpr std::string_view view() const { return {data(), size()}; }
 };
 
+// The same text, built only when the check fails (Kvasir::Diagnostic::lazy): clang evaluates a static_assert's message
+// even when the assert holds, and ToleranceMessage's storage is computed wherever it is used.
+template<Rational Achieved, std::uint64_t Wanted, Tolerance Tol, FixedString What>
+struct ToleranceText {
+    consteval Kvasir::Diagnostic::Text operator()() const {
+        Kvasir::Diagnostic::Text t;
+        t << ToleranceMessage<Achieved, Wanted, Tol, What>{}.view();
+        return t;
+    }
+};
+
 template<Rational      Achieved,
          std::uint64_t Wanted,
          Tolerance     Tol,
          FixedString   What = "">
 consteval void assertInTolerance() {
-    static_assert(inTolerance(Achieved, Wanted, Tol),
-                  ToleranceMessage<Achieved, Wanted, Tol, What>{});
+    KVASIR_STATIC_ASSERT((inTolerance(Achieved, Wanted, Tol)),
+                         (ToleranceText<Achieved, Wanted, Tol, What>),
+                         (ToleranceMessage<Achieved, Wanted, Tol, What>{}));
 }
 
 }   // namespace Kvasir::Prescaler

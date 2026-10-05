@@ -162,6 +162,57 @@ class PanicRecord(unittest.TestCase):
         self.assertEqual(len(values), len(kb.PANIC_CAUSES))
 
 
+class FullRecords(unittest.TestCase):
+    """`crash` decodes the CrashRecord::Full records: Persistent's layout and the field lists must be
+    the headers'."""
+
+    @staticmethod
+    def record(tag: str, version: int, values: list[int]) -> bytes:
+        import zlib
+        words = [kb.persistent_id(tag), version | (
+            4 * len(values)) << 16] + values
+        raw = b"".join(w.to_bytes(4, "little") for w in words)
+        return raw + zlib.crc32(raw).to_bytes(4, "little")
+
+    def test_ids_match_persistent_hpp(self):
+        # tests/persistent_tests.cpp asserts the same word for "KFLT"
+        self.assertEqual(kb.persistent_id("KFLT"), 0x544C464B)
+
+    def test_round_trip_and_every_bad_bit(self):
+        raw = self.record("KFLT", 2, list(range(33)))
+        self.assertEqual(kb.decode_persistent(raw, "KFLT", 2), list(range(33)))
+        self.assertIsNone(kb.decode_persistent(raw, "KFLT", 1))
+        self.assertIsNone(kb.decode_persistent(raw, "KPNC", 2))
+        for bit in range(len(raw) * 8):
+            bad = bytearray(raw)
+            bad[bit // 8] ^= 1 << (bit % 8)
+            self.assertIsNone(kb.decode_persistent(bytes(bad), "KFLT", 2), bit)
+
+    def test_fields_match_the_headers(self):
+        import re
+        header = (HERE.parent / "src/kvasir/Util/FaultHandler.hpp").read_text()
+        body = re.search(
+            r"struct FullRecord \{.*?\n    \};", header, re.S).group(0)
+        names = []
+        for line in body.splitlines():
+            m = re.match(r"\s*std::uint32_t ([^;]+);", line)
+            if m:
+                names += [n.strip() for n in m.group(1).split(",")]
+        translate = {"excReturn": "exc_return"}
+        self.assertEqual([translate.get(n, n)
+                         for n in names], kb.FAULT_V2_FIELDS)
+        self.assertIn("sizeof(FullRecord) == 33 * 4", header)
+        panic = (HERE.parent / "src/kvasir/Util/Panic.hpp").read_text()
+        body = re.search(r"struct FullRecord \{(.*?)\};", panic, re.S).group(1)
+        self.assertEqual(re.findall(
+            r"std::uint32_t (\w+);", body), kb.PANIC_V2_FIELDS)
+
+    def test_cfsr_names(self):
+        self.assertEqual(kb.cfsr_text(0x00008200), "PRECISERR BFARVALID")
+        self.assertEqual(kb.cfsr_text(0x00100000), "STKOF")
+        self.assertEqual(kb.cfsr_text(0), "-")
+
+
 class PanicCommand(unittest.TestCase):
     """`panic` makes the core call Kvasir::Panic::raise(cause) through the debug registers."""
 
