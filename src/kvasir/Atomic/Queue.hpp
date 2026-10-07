@@ -3,8 +3,12 @@
 #include "kvasir/Mpl/Utility.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <bit>
 #include <cassert>
+#include <cstddef>
+#include <new>
 #include <ranges>
 #include <type_traits>
 
@@ -72,6 +76,42 @@ namespace Kvasir { namespace Atomic {
         template<std::size_t Size>
         using GetIndexTypeT = typename GetIndexType<Size, void>::type;
 
+        // The slots of a queue of trivially copyable elements: plain bytes, all zero at start.
+        // A slot holds an element only between its push and its pop, so it needs no initial
+        // value - but as a std::array<T> the slots are value-initialised, and a T with default
+        // member values (a request's default timeout, an empty callback) then makes the whole
+        // queue an initialised object: stored in the flash image and copied at start-up
+        // (i2c_testing's request queue: 3332 bytes, an SPI queue: 800). Such a T is an
+        // implicit-lifetime type: the byte array's lifetime starts the elements' as well.
+        template<typename T, std::size_t Size>
+        struct RawSlots {
+            alignas(T) std::array<std::byte,
+                                  sizeof(T) * Size> bytes;
+
+            // through void*: a reinterpret_cast from std::byte* is gcc's -Wcast-align, though `bytes` is alignas(T)
+            T* data() { return std::launder(static_cast<T*>(static_cast<void*>(bytes.data()))); }
+
+            T const* data() const {
+                return std::launder(static_cast<T const*>(static_cast<void const*>(bytes.data())));
+            }
+
+            //NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+            T& operator[](std::size_t i) { return data()[i]; }
+
+            //NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+            T const& operator[](std::size_t i) const { return data()[i]; }
+
+            // byte for byte, as two std::array<T> of trivially copyable elements compare in a test
+            friend bool operator==(RawSlots const&,
+                                   RawSlots const&) = default;
+        };
+
+        template<typename T, std::size_t Size>
+        using Slots = std::conditional_t<std::is_trivially_copyable_v<T>
+                                           && std::is_trivially_destructible_v<T>,
+                                         RawSlots<T, Size>,
+                                         std::array<T, Size>>;
+
     }   // namespace Detail
 
     template<typename TDataType,
@@ -82,11 +122,11 @@ namespace Kvasir { namespace Atomic {
         using IndexType = Detail::GetIndexTypeT<Size>;
         static_assert(std::numeric_limits<IndexType>::max() > Size,
                       "Size to big");
-        static constexpr auto       load_memory_order{TSync::load_memory_order};
-        static constexpr auto       store_memory_order{TSync::store_memory_order};
-        std::atomic<IndexType>      head_{};
-        std::atomic<IndexType>      tail_{};
-        std::array<TDataType, Size> data_{};
+        static constexpr auto          load_memory_order{TSync::load_memory_order};
+        static constexpr auto          store_memory_order{TSync::store_memory_order};
+        std::atomic<IndexType>         head_{};
+        std::atomic<IndexType>         tail_{};
+        Detail::Slots<TDataType, Size> data_{};
 
         static constexpr IndexType distance(IndexType head,
                                             IndexType tail) {
@@ -95,8 +135,16 @@ namespace Kvasir { namespace Atomic {
             return static_cast<IndexType>(t >= h ? t - h : Size - h + t);
         }
 
+        // An index is always below Size, so the wrap is one compare: `% Size` was a division on every
+        // push and pop (a call into the RP2040's divider, software on the SAM D21, 2026-10-06). A
+        // power of two keeps its mask: clang does not find it from the compare.
         static constexpr IndexType next(IndexType in) {
-            return static_cast<IndexType>((static_cast<std::size_t>(in) + 1) % Size);
+            std::size_t const n = static_cast<std::size_t>(in) + 1;
+            if constexpr(std::has_single_bit(Size)) {
+                return static_cast<IndexType>(n & (Size - 1));
+            } else {
+                return static_cast<IndexType>(n == Size ? 0 : n);
+            }
         }
 
         // contiguous trivially copyable ranges are copied in at most two runs instead of per element

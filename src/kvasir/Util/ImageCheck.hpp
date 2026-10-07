@@ -3,6 +3,12 @@
 // turn over exactly the bytes the build put into the flash hex, compared at the end of each pass with the value the
 // build wrote into the image (ImageDescriptor.hpp, cmake/tools/patch_image_crc.py).
 //
+// A RAM image (RAM_ONLY, or any linker file that loads the whole image into SRAM) is checked where it runs: the
+// patcher then covers its read-only part - vectors, code, constants, the RAM functions - and leaves .data out. The
+// same checker walks it; a stray write into the code is what it finds there. Its backend is Software<> with the
+// default reader: the chips' flash readers and stream backends (RP: Flash::UncachedRead, RpStream) address the flash
+// window, not SRAM.
+//
 //     kvasir_executable_variants(fw ... IMAGE_CRC)           # CMake: the descriptor and its post-link step
 //
 //     using ImageCheck = Kvasir::ImageCheck::Checker<Kvasir::ImageCheck::Software<>,
@@ -15,8 +21,11 @@
 //     template<>
 //     inline constexpr auto Kvasir::ImageCheck::injectedMismatchPolicy<> = Kvasir::ImageCheck::Policy::Panic{};
 //
-// Policy::Panic raises Panic::Cause::flashCorrupt with the computed CRC as the detail; Policy::Call<&fn> calls
-// fn(got, want). Backends: Software<TableSize, Reader> (every chip; on RP read through the uncached alias,
+// Policy::Panic raises Panic::Cause::imageCorrupt with the computed CRC as the detail; Policy::PanicAfter<N> logs
+// each corrupt pass and raises it at the N-th in a row - unless a debugger has halting debug enabled (its software
+// breakpoints are writes into the code); Policy::Call<&fn> calls fn(got, want), or fn(got, want, inARow).
+//
+// Backends: Software<TableSize, Reader> (every chip; on RP read through the uncached alias,
 // Kvasir::Flash::UncachedRead, so the check neither evicts hot code from the XIP cache nor reads a cached copy), and
 // the chips' hardware ones (RP: RpStream in chip/ImageCheck.hpp, SAM: SamDsu). A chunk is finished before step()
 // returns; a flash writer on the OTHER core must stop this checker first (FlashRegion.hpp's rule).
@@ -54,15 +63,42 @@ enum class Result : std::uint8_t { unknown, ok, corrupt, noDescriptor };
     return "?";
 }
 
+/// Whether a debugger has halting debug enabled: DHCSR.C_DEBUGEN (bit 0, 0xE000EDF0; Armv8-M ARM DDI0553B.y
+/// D1.2.39), read on Armv8-M mainline only - the Cortex-M33 TRM (100230 C1.1.5 Table C1-4) lists DHCSR for software.
+/// Everything else says no: Armv6-M software cannot read it (AnnouncedReset.hpp has the sources), and Armv7-M has
+/// the register at the same address with the same bit (DDI0403E C1.6.2) but leaves "access to the DHCSR from
+/// software running on the processor" IMPLEMENTATION DEFINED - a chip package whose core documents the read can
+/// give PanicAfter a Debugger of its own.
+///
+/// Measured on the RP2350 (Feather, J-Link, 2026-10-06, test_examples 111): software reads the bit as the probe
+/// does (DHCSR 0x01100001) - except while the log printer's session starts: after it loaded and started an image
+/// the bit was set at the first instruction, clear from 4..14 ms, set again from 74..99 ms and then stayed. A
+/// corrupt pass in that gap is judged as if nobody were attached.
+struct CoreDebug {
+    /// Whether this core can ask at all; false: attached() is always false.
+#if defined(__ARM_ARCH_8M_MAIN__)
+    static constexpr bool readable = true;
+#else
+    static constexpr bool readable = false;
+#endif
+
+    [[nodiscard]] static bool attached() {
+        if constexpr(readable) {
+            return (*reinterpret_cast<std::uint32_t const volatile*>(0xE000'EDF0U) & 1U) != 0;
+        } else {
+            return false;
+        }
+    }
+};
+
 namespace Policy {
     struct Log {
         static void mismatch([[maybe_unused]] std::uint32_t got,
                              [[maybe_unused]] std::uint32_t want) {
 #ifdef USE_UC_LOG
-            UC_LOG_C(
-              "image check: flash CRC 0x{:08x}, the image was built with 0x{:08x}: flash corrupt",
-              got,
-              want);
+            UC_LOG_C("image check: CRC 0x{:08x}, the image was built with 0x{:08x}: image corrupt",
+                     got,
+                     want);
 #endif
         }
     };
@@ -70,18 +106,55 @@ namespace Policy {
     struct Panic {
         [[noreturn]] static void mismatch(std::uint32_t got,
                                           std::uint32_t) {
-            Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::flashCorrupt,
+            Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::imageCorrupt,
                                    static_cast<std::uint32_t>(
                                      reinterpret_cast<std::uintptr_t>(__builtin_return_address(0))),
                                    got);
         }
     };
 
+    /// Logs every corrupt pass and panics at the Limit-th in a row (an ok pass starts the count again): one bad pass
+    /// is reported before the image is given up on. Not while Debugger::attached(): a debugger's software breakpoint
+    /// is a write into the code, and the session should not end in a reset - the passes are still reported.
+    template<std::uint32_t Limit, typename Debugger = CoreDebug>
+    struct PanicAfter {
+        static_assert(Limit >= 1,
+                      "PanicAfter<0> would never let a pass be corrupt: use Policy::Panic");
+        static constexpr std::uint32_t limit = Limit;
+
+        static void mismatch(std::uint32_t                  got,
+                             [[maybe_unused]] std::uint32_t want,
+                             std::uint32_t                  inARow) {
+            bool const debugged = Debugger::attached();
+#ifdef USE_UC_LOG
+            UC_LOG_C(
+              "image check: CRC 0x{:08x}, the image was built with 0x{:08x}: image corrupt "
+              "({} of {} in a row{})",
+              got,
+              want,
+              inARow,
+              Limit,
+              debugged ? std::string_view{", debugger attached: no panic"} : std::string_view{});
+#endif
+            if(inARow >= Limit && !debugged) {
+                Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::imageCorrupt,
+                                       static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(
+                                         __builtin_return_address(0))),
+                                       got);
+            }
+        }
+    };
+
     template<auto Fn>
     struct Call {
         static void mismatch(std::uint32_t got,
-                             std::uint32_t want) {
-            Fn(got, want);
+                             std::uint32_t want,
+                             std::uint32_t inARow) {
+            if constexpr(requires { Fn(got, want, inARow); }) {
+                Fn(got, want, inARow);
+            } else {
+                Fn(got, want);
+            }
         }
     };
 }   // namespace Policy
@@ -123,7 +196,8 @@ namespace Test {
 }   // namespace Test
 #endif
 
-/// Reads the flash where the descriptor says it is. The chips offer readers of their own (RP: the uncached alias).
+/// Reads the image where the descriptor says it is (the reader for a RAM image). The chips offer flash readers of
+/// their own (RP: the uncached alias).
 struct DirectRead {
     static std::uint32_t word(std::uintptr_t address) {
         return *reinterpret_cast<std::uint32_t const volatile*>(address);
@@ -181,7 +255,8 @@ private:
     static inline Engine engine_{};
 };
 
-/// The descriptor the build patched into this image, read in place (it is in flash; nothing is copied to RAM).
+/// The descriptor the build patched into this image, read in place (in flash, or in a RAM image where it was
+/// loaded; nothing is copied).
 struct LinkedDescriptor {
 #if defined(KVASIR_IMAGE_CRC) && KVASIR_IMAGE_CRC
     static constexpr bool configured = true;
@@ -277,6 +352,9 @@ struct Checker {
     /// The CRC the last finished pass computed.
     [[nodiscard]] static std::uint32_t lastCrc() { return lastCrc_; }
 
+    /// Corrupt passes since the last ok one (0 after an ok pass).
+    [[nodiscard]] static std::uint32_t consecutiveCorrupt() { return consecutiveCorrupt_; }
+
     /// The descriptor the checker walks.
     [[nodiscard]] static Descriptor const volatile& descriptor() { return Source::get(); }
 
@@ -339,8 +417,14 @@ private:
     template<typename... Dummy>
         requires(sizeof...(Dummy) == 0)
     static void mismatch(std::uint32_t got) {
-        auto const& policy = injectedMismatchPolicy<Dummy...>;
-        std::remove_cvref_t<decltype(policy)>::mismatch(got, Source::get().crc);
+        auto const& policy       = injectedMismatchPolicy<Dummy...>;
+        using P                  = std::remove_cvref_t<decltype(policy)>;
+        std::uint32_t const want = Source::get().crc;
+        if constexpr(requires { P::mismatch(got, want, consecutiveCorrupt_); }) {
+            P::mismatch(got, want, consecutiveCorrupt_);
+        } else {
+            P::mismatch(got, want);
+        }
     }
 
     static void finishPass() {
@@ -348,7 +432,8 @@ private:
         [[maybe_unused]] auto const before = last_;
         last_ = lastCrc_ == Source::get().crc ? Result::ok : Result::corrupt;
         ++passes_;
-        state_ = State::idle;
+        consecutiveCorrupt_ = last_ == Result::corrupt ? consecutiveCorrupt_ + 1 : 0;
+        state_              = State::idle;
 #ifdef USE_UC_LOG
         if(last_ == Result::ok && before != Result::ok) {
             UC_LOG_I("image check: pass {} ok (crc 0x{:08x})", passes_, lastCrc_);
@@ -361,6 +446,7 @@ private:
     static inline std::uint32_t passes_{};
     static inline std::uint32_t lastCrc_{};
     static inline std::uint32_t dropped_{};
+    static inline std::uint32_t consecutiveCorrupt_{};
     static inline std::uint8_t  segment_{};
     static inline State         state_{State::idle};
     static inline Result        last_{Result::unknown};

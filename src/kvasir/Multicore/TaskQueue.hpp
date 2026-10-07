@@ -236,7 +236,7 @@ struct TaskQueue {
         Slot& s = slots[index];
         new(s.captures.data()) Fn{std::forward<F>(f)};
         s.invoke = [](std::byte* captures, std::byte* result) {
-            auto& fn = *std::launder(reinterpret_cast<Fn*>(captures));
+            auto& fn = *std::launder(static_cast<Fn*>(static_cast<void*>(captures)));
             if constexpr(std::is_void_v<R>) {
                 static_cast<void>(result);
                 fn();

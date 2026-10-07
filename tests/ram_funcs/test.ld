@@ -9,7 +9,7 @@ ENTRY(entry)
 SECTIONS
 {
     .text : { KEEP(*(.text.main)) *(.text*) *(.rodata*) } > flash
-    .data : { *(.data*) } > ram AT > flash
+    .data : { *(.data*) *(.ramfunc*) } > ram AT > flash
     .bss (NOLOAD) : { *(.bss*) *(COMMON) } > ram
     .scratch_x : { *(.scratch_x.*) } > scratch_x AT > flash
     kvasir_ram_funcs 0 (INFO) : { KEEP(*(kvasir_ram_funcs)) }

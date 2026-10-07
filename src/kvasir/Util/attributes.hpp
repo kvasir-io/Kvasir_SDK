@@ -5,13 +5,17 @@
 //
 // A RAM function may run while the flash is not readable, so it carries no check whose handler
 // lives in flash (the UB sanitizer's, __stack_chk_fail): one that fired could only lock the core up.
+//
+// Its code goes to the input section .ramfunc, not .data: the linker scripts copy it from flash with
+// .data (linker/common_data_body.inc.ld), and a RAM-only image puts it with .text
+// (linker/common_ram_only.ld), read-only and covered by an IMAGE_CRC check of the running image.
 #ifdef __clang__
-    #define KVASIR_RAM_FUNC_ATTRIBUTES                                         \
-        gnu::section(".data"), gnu::noinline, clang::no_sanitize("undefined"), \
+    #define KVASIR_RAM_FUNC_ATTRIBUTES                                            \
+        gnu::section(".ramfunc"), gnu::noinline, clang::no_sanitize("undefined"), \
           gnu::no_stack_protector
     // inlined into a RAM function, it brings its instrumentation along: exempt as well
-    #define KVASIR_RAM_FUNC_INLINE_ATTRIBUTES                                      \
-        gnu::section(".data"), gnu::always_inline, clang::no_sanitize("undefined")
+    #define KVASIR_RAM_FUNC_INLINE_ATTRIBUTES                                         \
+        gnu::section(".ramfunc"), gnu::always_inline, clang::no_sanitize("undefined")
     #define KVASIR_RESETISR_ATTRIBUTES noreturn
     #define KVASIR_ALWAYS_INLINE       clang::always_inline
     // no atexit() registration for the static's destructor
@@ -22,7 +26,7 @@
     // noipa: under LTO gcc clones (constprop) member, template and inline functions and puts the
     // clone in .text, dropping the section - it keeps it only with noipa (or used).
     #define KVASIR_RAM_FUNC_ATTRIBUTES                                            \
-        gnu::section(".data#"), gnu::noinline, gnu::long_call, gnu::noipa,        \
+        gnu::section(".ramfunc"), gnu::noinline, gnu::long_call, gnu::noipa,      \
           gnu::no_sanitize("undefined", "bounds-strict"), gnu::no_stack_protector
     #define KVASIR_RAM_FUNC_INLINE_ATTRIBUTES                              \
         gnu::always_inline, gnu::no_sanitize("undefined", "bounds-strict")
@@ -35,6 +39,46 @@
     #define KVASIR_NO_DESTROY
     // gcc has no unsigned-overflow sanitizer; naming it anyway earns a -Wattributes
     #define KVASIR_NO_SANITIZE_UNSIGNED_OVERFLOW
+#endif
+
+// The section of an INLINE variable: [[KVASIR_SECTION(".noInit")]] on a namespace-scope inline
+// variable or a variable template, [[KVASIR_SECTION_MEMBER(".eeprom")]] on a class's static inline
+// member. gcc's LTO makes such a variable local to the link and forgets its section attribute with
+// that - measured 2026-10-06, arm-none-eabi-g++ 16.2 -flto: StackProtector's sentinel in .bss
+// instead of at the stack's bottom, the RP2040's SimpleEeprom value in .data instead of .eeprom.
+// Two attributes keep the section, each with a price that decides where it fits:
+//   externally_visible  emits nothing that no code refers to (a record in .noInit costs RAM only in
+//                       the images that use it) - but is refused on a variable without external
+//                       linkage, which a member of a class template with a file-local argument is
+//                       ("'externally_visible' attribute have effect only on public objects");
+//   used                works with any linkage - but emits the variable wherever it is declared,
+//                       which for a member is wherever its class is instantiated, and that is where
+//                       it is used anyway.
+// clang keeps the section by itself. A variable that is not inline (plain, static, in an unnamed
+// namespace) keeps it with either compiler.
+#ifdef __clang__
+    #define KVASIR_SECTION(name)        gnu::section(name)
+    #define KVASIR_SECTION_MEMBER(name) gnu::section(name)
+#else
+    #define KVASIR_SECTION(name)        gnu::section(name), gnu::externally_visible
+    #define KVASIR_SECTION_MEMBER(name) gnu::section(name), gnu::used
+#endif
+
+// Kept through the compiler AND the linker's garbage collection though nothing refers to it (a
+// descriptor only a tool reads). arm-none-eabi-gcc has no `retain` ("'retain' attribute ignored
+// [-Wattributes]", 16.2): there it is `used` alone, and the linker may still drop the section.
+#ifdef __clang__
+    #define KVASIR_USED_RETAIN gnu::used, gnu::retain
+#else
+    #define KVASIR_USED_RETAIN gnu::used
+#endif
+
+// One function optimised for size whatever the variant: clang's minsize. gcc has no counterpart
+// that is safe on any function (optimize("Os") resets other options of the TU), so there it is nothing.
+#ifdef __clang__
+    #define KVASIR_MINSIZE clang::minsize
+#else
+    #define KVASIR_MINSIZE
 #endif
 
 // Per-core memory: the RP2040's SRAM4 (core 1, "scratch_x") and SRAM5 (core 0, "scratch_y"), banks

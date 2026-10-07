@@ -446,6 +446,70 @@ KVASIR_ATOMIC_FETCH_OP(xor,
                        ^)
 #undef KVASIR_ATOMIC_FETCH_OPS
 #undef KVASIR_ATOMIC_FETCH_OP
+
+// The same read-modify-writes under the names clang calls when loads and stores of up to 32
+// bits are inline instructions (the +atomics-32 target feature of core_cortex_m0plus):
+// __sync_* instead of __atomic_*. Same operations, same lock. The __sync names are compiler
+// builtins and cannot be defined under their own name, hence the asm labels.
+#define KVASIR_SYNC_FETCH_OP(NAME, N, T)                                                             \
+    T kvasir_sync_fetch_and_##NAME##_##N(T volatile* ptr,                                            \
+                                         T           val) __asm__("__sync_fetch_and_" #NAME "_" #N); \
+    [[gnu::used]] inline T kvasir_sync_fetch_and_##NAME##_##N(T volatile* ptr, T val) {              \
+        return __atomic_fetch_##NAME##_##N(ptr, val, __ATOMIC_SEQ_CST);                              \
+    }
+#define KVASIR_SYNC_OPS(N, T)                                                                      \
+    KVASIR_SYNC_FETCH_OP(add, N, T)                                                                \
+    KVASIR_SYNC_FETCH_OP(sub, N, T)                                                                \
+    KVASIR_SYNC_FETCH_OP(and, N, T)                                                                \
+    KVASIR_SYNC_FETCH_OP(or, N, T)                                                                 \
+    KVASIR_SYNC_FETCH_OP(xor, N, T)                                                                \
+    T kvasir_sync_fetch_and_nand_##N(T volatile* ptr, T val) __asm__("__sync_fetch_and_nand_" #N); \
+    [[gnu::used]] inline T kvasir_sync_fetch_and_nand_##N(T volatile* ptr, T val) {                \
+        CommonAtomic::ShimLock guard;                                                              \
+        T const                old = *ptr;                                                         \
+        *ptr                       = static_cast<T>(~(old & val));                                 \
+        return old;                                                                                \
+    }                                                                                              \
+    T kvasir_sync_lock_test_and_set_##N(T volatile* ptr,                                           \
+                                        T           val) __asm__("__sync_lock_test_and_set_" #N);  \
+    [[gnu::used]] inline T kvasir_sync_lock_test_and_set_##N(T volatile* ptr, T val) {             \
+        return CommonAtomic::atomic_exchange_block<T>(ptr, val, __ATOMIC_SEQ_CST);                 \
+    }                                                                                              \
+    T kvasir_sync_val_compare_and_swap_##N(T volatile* ptr, T expected, T desired) __asm__(        \
+      "__sync_val_compare_and_swap_" #N);                                                          \
+    [[gnu::used]] inline T kvasir_sync_val_compare_and_swap_##N(T volatile* ptr,                   \
+                                                                T           expected,              \
+                                                                T           desired) {             \
+        /* on failure the block writes the value it found into `expected` */                       \
+        static_cast<void>(CommonAtomic::atomic_compare_exchange_block<T>(ptr,                      \
+                                                                         &expected,                \
+                                                                         desired,                  \
+                                                                         false,                    \
+                                                                         __ATOMIC_SEQ_CST,         \
+                                                                         __ATOMIC_SEQ_CST));       \
+        return expected;                                                                           \
+    }                                                                                              \
+    bool kvasir_sync_bool_compare_and_swap_##N(T volatile* ptr, T expected, T desired) __asm__(    \
+      "__sync_bool_compare_and_swap_" #N);                                                         \
+    [[gnu::used]] inline bool kvasir_sync_bool_compare_and_swap_##N(T volatile* ptr,               \
+                                                                    T           expected,          \
+                                                                    T           desired) {         \
+        return CommonAtomic::atomic_compare_exchange_block<T>(ptr,                                 \
+                                                              &expected,                           \
+                                                              desired,                             \
+                                                              false,                               \
+                                                              __ATOMIC_SEQ_CST,                    \
+                                                              __ATOMIC_SEQ_CST);                   \
+    }
+
+KVASIR_SYNC_OPS(1,
+                unsigned char)
+KVASIR_SYNC_OPS(2,
+                unsigned short)
+KVASIR_SYNC_OPS(4,
+                unsigned)
+#undef KVASIR_SYNC_OPS
+#undef KVASIR_SYNC_FETCH_OP
 }
 
 namespace Kvasir::Atomic {

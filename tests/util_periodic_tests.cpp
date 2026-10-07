@@ -161,6 +161,60 @@ static_assert(
   }(),
   "Deadline32 across the wrap");
 
+// ---- the short tick: the default unit of the 32-bit forms ----------------------------------------
+
+template<std::intmax_t Hz>
+using Cpu = Kvasir::Test::FakeClockT<std::chrono::duration<std::int64_t, std::ratio<1, Hz>>>;
+
+// the power of two of clock ticks closest to a microsecond; a clock at or above 1 us per tick is
+// its own short tick, so the cases above (FakeClock in ms) count in milliseconds as before
+static_assert(Kvasir::detail::ShortShift<Cpu<125'000'000>> == 7);   // 1.024 us
+static_assert(Kvasir::detail::ShortShift<Cpu<150'000'000>> == 7);   // 0.853 us
+static_assert(Kvasir::detail::ShortShift<Cpu<48'000'000>> == 6);    // 1.33 us
+static_assert(Kvasir::detail::ShortShift<Cpu<12'000'000>> == 4);    // 1.33 us
+static_assert(Kvasir::detail::ShortShift<Cpu<1'000'000>> == 0);
+static_assert(Kvasir::detail::ShortShift<Us> == 0 && Kvasir::detail::ShortShift<Ms> == 0);
+static_assert(std::ratio_equal_v<Kvasir::ShortTick<Cpu<125'000'000>>,
+                                 std::ratio<128,
+                                            125'000'000>>);
+static_assert(std::ratio_equal_v<Kvasir::ShortTick<Ms>,
+                                 std::milli>);
+
+using Fast   = Cpu<125'000'000>;
+using FastTp = Fast::time_point;
+
+// a time in short ticks (128 clock ticks each)
+constexpr FastTp shortAt(std::int64_t shortTicks) {
+    return FastTp{Fast::duration{shortTicks * 128}};
+}
+
+static_assert(
+  [] {
+      // 1 ms = 125000 clock ticks = 976.56 short ticks: rounded to 977
+      Every32<Fast> e{1ms, shortAt(1000)};
+      bool          ok = e.period().count() == 977;
+      ok = ok && e.due(shortAt(1000)) && !e.due(shortAt(1976)) && e.due(shortAt(1977));
+      // one clock tick before a short tick boundary is still the tick before
+      ok = ok && !e.due(FastTp{Fast::duration{(1977 + 977) * 128 - 1}});
+      ok = ok && e.due(FastTp{Fast::duration{(1977 + 977) * 128}});
+      return ok;
+  }(),
+  "Every32 in short ticks: the period rounded, due on the shifted clock");
+
+static_assert(
+  [] {
+      // across 2^32 short ticks (73 minutes at 125 MHz)
+      Every32<Fast> e{1ms, shortAt(Wrap - 500)};
+      bool          ok = e.due(shortAt(Wrap - 500)) && !e.due(shortAt(Wrap + 476));
+      ok               = ok && e.due(shortAt(Wrap + 477));
+      ok               = ok && e.dueCount(shortAt(Wrap + 477 + 3 * 977)) == 3;
+      Deadline32<Fast> d{10ms, shortAt(Wrap - 100)};   // 9765.6 short ticks: 9766
+      ok = ok && d.armed(shortAt(Wrap + 9665)) && d.expired(shortAt(Wrap + 9666));
+      ok = ok && d.remaining(shortAt(Wrap)).count() == 9666;
+      return ok;
+  }(),
+  "the short-tick forms across the wrap");
+
 // a clock whose now() returns a duration (AonTimer's shape) is not a PollClock
 struct NotAClock {
     using duration   = std::chrono::milliseconds;

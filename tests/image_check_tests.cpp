@@ -2,7 +2,9 @@
 // patch_image_crc.py builds one. One pass gives the descriptor's CRC and every chunk size agrees (unaligned segment
 // starts and lengths too); runPass(); a flipped byte (KVASIR_IMAGE_CRC_TEST) is a corrupt pass that calls the policy
 // once with (got, want) and the next pass is ok again; an unpatched descriptor stops the checker without calling the
-// policy; Paced works once per period; Policy::Panic raises flashCorrupt with the computed CRC.
+// policy; Paced works once per period; consecutiveCorrupt() counts corrupt passes in a row; Policy::Call gives a
+// three-argument function that count; Policy::Panic raises imageCorrupt with the computed CRC, Policy::PanicAfter<N>
+// only at the N-th in a row and never while debugged.
 #include "kvasir/Util/ImageCheck.hpp"
 #include "support/FakeClock.hpp"
 #include "test_harness.hpp"
@@ -114,6 +116,27 @@ struct Seen {
 
 using Clock = Kvasir::Test::FakeClockT<std::chrono::milliseconds>;
 
+// a Policy::Call function that asks for the count of corrupt passes in a row as well
+struct SeenInARow {
+    static inline std::uint32_t got   = 0;
+    static inline std::uint32_t want  = 0;
+    static inline std::uint32_t inRow = 0;
+
+    static void mismatch(std::uint32_t g,
+                         std::uint32_t w,
+                         std::uint32_t n) {
+        got   = g;
+        want  = w;
+        inRow = n;
+    }
+};
+
+struct FakeDebug {
+    static inline bool on = false;
+
+    static bool attached() { return on; }
+};
+
 using Sw = IC::Software<16, FakeRead>;
 template<std::size_t Chunk>
 using EveryTurnChecker = IC::Checker<Sw, IC::EveryTurn<Chunk>, FakeSource>;
@@ -182,17 +205,37 @@ int main() {
     CHECK(Seen::calls == 1 && Seen::want == want && Seen::got != want);
     CHECK(Seen::got == EveryTurnChecker<256>::lastCrc());
     CHECK(EveryTurnChecker<256>::runPass() == IC::Result::ok && Seen::calls == 1);
+    CHECK(EveryTurnChecker<256>::consecutiveCorrupt() == 0);
     // a byte in a gap is never read: nothing to flip
     IC::Test::corruptNextPass(Segments[0].address + Segments[0].length + 1);
     CHECK(EveryTurnChecker<256>::runPass() == IC::Result::ok && Seen::calls == 1);
     IC::Test::corruptNextPass(0);
+
+    test("consecutiveCorrupt counts corrupt passes in a row; an ok pass ends the run");
+    using InARow = IC::Checker<Sw, IC::EveryTurn<256>, FakeSource>;
+    IC::Test::corruptNextPass(Segments[2].address + 7);
+    CHECK(InARow::runPass() == IC::Result::corrupt && InARow::consecutiveCorrupt() == 1);
+    IC::Test::corruptNextPass(Segments[0].address);
+    CHECK(InARow::runPass() == IC::Result::corrupt && InARow::consecutiveCorrupt() == 2);
+    CHECK(InARow::runPass() == IC::Result::ok && InARow::consecutiveCorrupt() == 0);
+    CHECK(Seen::calls == 3);
+    IC::Test::corruptNextPass(0);
+
+    test(
+      "Policy::Call hands a three-argument function the count in a row, a two-argument one (Seen) "
+      "not");
+    IC::Policy::Call<&SeenInARow::mismatch>::mismatch(0xAAAA'0001U, 0xBBBB'0002U, 7);
+    CHECK(SeenInARow::got == 0xAAAA'0001U && SeenInARow::want == 0xBBBB'0002U
+          && SeenInARow::inRow == 7);
+    IC::Policy::Call<&Seen::mismatch>::mismatch(0xAAAA'0003U, want, 9);
+    CHECK(Seen::calls == 4 && Seen::got == 0xAAAA'0003U && Seen::want == want);
 
     test("an unpatched descriptor: noDescriptor, stopped, no policy call");
     FakeSource::d.magic = IC::Descriptor::Unpatched;
     using Fresh         = IC::Checker<Sw, IC::EveryTurn<64>, FakeSource>;
     for(int i = 0; i < 1000; ++i) { Fresh::step(); }
     CHECK(Fresh::lastResult() == IC::Result::noDescriptor && Fresh::passes() == 0
-          && Seen::calls == 1);
+          && Seen::calls == 4);
     FakeSource::d.count
       = IC::Descriptor::MaxSegments + 1;   // a count past the table is no descriptor either
     FakeSource::d.magic = IC::Descriptor::Magic;
@@ -219,15 +262,35 @@ int main() {
     CHECK(periods == static_cast<int>((bytes + 511) / 512) && Paced::lastCrc() == want);
 
 #ifndef IMAGE_CHECK_TEST_NO_LONGJMP
-    test("Policy::Panic raises flashCorrupt with the computed CRC");
+    test("Policy::Panic raises imageCorrupt with the computed CRC");
     seen.reset();
     Kvasir::Panic::Detail::entered = false;
     if(setjmp(back) == 0) { IC::Policy::Panic::mismatch(0x1234'5678U, want); }
-    CHECK(seen && seen->cause == Kvasir::Panic::Cause::flashCorrupt
+    CHECK(seen && seen->cause == Kvasir::Panic::Cause::imageCorrupt
           && seen->detail == 0x1234'5678U);
+
+    test(
+      "Policy::PanicAfter<3>: not before the third in a row, then imageCorrupt; never while "
+      "debugged");
+    using After = IC::Policy::PanicAfter<3, FakeDebug>;
+    static_assert(After::limit == 3);
+    seen.reset();
+    Kvasir::Panic::Detail::entered = false;
+    if(setjmp(back) == 0) {
+        After::mismatch(0xBAD0'0001U, want, 1);
+        After::mismatch(0xBAD0'0002U, want, 2);
+    }
+    CHECK(!seen);
+    FakeDebug::on = true;
+    if(setjmp(back) == 0) { After::mismatch(0xBAD0'0003U, want, 3); }
+    CHECK(!seen);
+    FakeDebug::on = false;
+    if(setjmp(back) == 0) { After::mismatch(0xBAD0'0004U, want, 4); }
+    CHECK(seen && seen->cause == Kvasir::Panic::Cause::imageCorrupt
+          && seen->detail == 0xBAD0'0004U);
 #endif
-    CHECK(std::string_view{Kvasir::Panic::name(Kvasir::Panic::Cause::flashCorrupt)}
-          == "flash image CRC mismatch");
+    CHECK(std::string_view{Kvasir::Panic::name(Kvasir::Panic::Cause::imageCorrupt)}
+          == "image CRC mismatch");
 
     return Kvasir::Test::report();
 }

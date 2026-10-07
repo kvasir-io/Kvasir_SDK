@@ -232,11 +232,13 @@ class PanicCommand(unittest.TestCase):
 
     def test_register_writes_r0_xpsr_without_it_ici_then_pc(self):
         # a halt inside an IT block of an exception handler: IT/ICI bits set, IPSR 3
-        steps = kb.panic_register_writes(0x20026439, 8, 0x89002803)
+        steps = kb.panic_register_writes(0x20026439, 8, 0x89002803, 0x10001234)
         self.assertEqual(steps[0], [(kb.DCRDR, 8), (kb.DCRSR, 0x10000)])
-        self.assertEqual(steps[1], [(kb.DCRDR, 0x89000003), (kb.DCRSR, 0x10010)],
+        self.assertEqual(steps[1], [(kb.DCRDR, 0x10001237), (kb.DCRSR, 0x1000E)],
+                         "LR = a call from where the core stood: the record's site is that PC")
+        self.assertEqual(steps[2], [(kb.DCRDR, 0x89000003), (kb.DCRSR, 0x10010)],
                          "IT/ICI cleared (DDI0553B.y RQLRN), flags, T and IPSR kept")
-        self.assertEqual(steps[2], [(kb.DCRDR, 0x20026438), (kb.DCRSR, 0x1000F)],
+        self.assertEqual(steps[3], [(kb.DCRDR, 0x20026438), (kb.DCRSR, 0x1000F)],
                          "the PC without the Thumb bit")
 
     def test_it_ici_mask(self):
@@ -244,7 +246,8 @@ class PanicCommand(unittest.TestCase):
 
     def test_gdb_commands(self):
         self.assertEqual(kb.panic_gdb_commands(0x20026439, 3),
-                         ["monitor halt", "set $r0 = 3", "set $xpsr = $xpsr & ~0x600fc00",
+                         ["monitor halt", "set $r0 = 3", "set $lr = ($pc + 2) | 1",
+                          "set $xpsr = $xpsr & ~0x600fc00",
                           "set $pc = 0x20026438", "monitor go", "detach"])
 
 
@@ -349,6 +352,43 @@ class ChipPlugin(unittest.TestCase):
             self.assertIsNone(kb.load_chip_plugin(self.tree(root)))
             self.assertIn("no chip commands", self.listing(root))
         self.assertIsNone(kb.load_chip_plugin(self.tree("")))
+
+
+class TraceRing(unittest.TestCase):
+    """Both layouts of a Kvasir::Trace::Ring: one RAM object with the header in front (until
+    2026-10-06), and a constant descriptor plus RAM storage."""
+    RECORDS = b"".join(v.to_bytes(4, "little")
+                       for v in (10, 11, 20, 21, 30, 31, 40, 41))
+
+    def test_descriptor_and_storage(self):
+        descriptor = (kb.TRACE_MAGIC.to_bytes(4, "little") + (2).to_bytes(2, "little")
+                      + (4).to_bytes(2, "little") + (0x10001234).to_bytes(4, "little"))
+        storage = (5).to_bytes(4, "little") + self.RECORDS
+        self.assertEqual(kb.trace_layout(descriptor, storage),
+                         (2, 4, 5, 0x10001234, 0, 4))
+
+    def test_old_layout(self):
+        storage = (kb.TRACE_MAGIC.to_bytes(4, "little") + (2).to_bytes(2, "little")
+                   + (4).to_bytes(2, "little") + (5).to_bytes(4, "little")
+                   + (0x10001234).to_bytes(4, "little") + self.RECORDS)
+        self.assertEqual(kb.trace_layout(None, storage),
+                         (2, 4, 5, 0x10001234, 8, 16))
+
+    def test_not_a_ring(self):
+        self.assertIsNone(kb.trace_layout(None, bytes(48))
+                          )                    # no magic
+        descriptor = (kb.TRACE_MAGIC.to_bytes(4, "little") + (2).to_bytes(2, "little")
+                      + (64).to_bytes(2, "little") + bytes(4))
+        self.assertIsNone(kb.trace_layout(descriptor, bytes(36))
+                          )              # storage too short
+
+    def test_rings_pair_descriptor_with_storage(self):
+        new = 'Kvasir::Trace::Ring<Kvasir::Trace::Name<4u>{"usb"}, 64u>::'
+        old = 'Kvasir::Trace::Ring<Kvasir::Trace::Name<5u>{"loop"}, 16u>::'
+        all_symbols = [(0x10002000, 12, new + "descriptor"), (0x20000100, 516, new + "storage"),
+                       (0x20000400, 208, old + "storage"), (0x20000800, 4, "other::storage")]
+        self.assertEqual(kb.trace_rings(all_symbols),
+                         [(0x10002000, 0x20000100, 516), (None, 0x20000400, 208)])
 
 
 if __name__ == "__main__":

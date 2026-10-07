@@ -69,18 +69,54 @@ function(check_ram_funcs target)
 endfunction()
 
 # IMAGE_CRC: writes the image CRC descriptor (kvasir/Util/ImageDescriptor.hpp) into the ELF for Kvasir::ImageCheck. Must
-# run before every artefact made from the ELF; removes the .elf on failure so the next build fails again.
+# run before every artefact made from the ELF; removes the .elf on failure so the next build fails again. A RAM image
+# (the descriptor linked into SRAM) is checked where it runs: the patcher keeps only the read-only sections of the list
+# (and the descriptor's own, .text) and prints which. TARGET_IMAGE_CRC_EXCLUDE (chip): pairs of symbols bounding bytes a
+# later step rewrites (the RP2350's picobin block).
 function(patch_image_crc target)
     set(_sections .vectors .text .data ${TARGET_EXTRA_FLASH_SECTIONS})
+    set(_excludes)
+    set(_pair ${TARGET_IMAGE_CRC_EXCLUDE})
+    list(LENGTH _pair _n)
+    math(EXPR _odd "${_n} % 2")
+    if(_odd)
+        message(FATAL_ERROR "TARGET_IMAGE_CRC_EXCLUDE is pairs of symbols, got ${_n}: ${TARGET_IMAGE_CRC_EXCLUDE}")
+    endif()
+    while(_pair)
+        list(POP_FRONT _pair _start _end)
+        list(APPEND _excludes --exclude ${_start} ${_end})
+    endwhile()
     add_custom_command(
         TARGET ${target}
         POST_BUILD
         COMMAND
             ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
             ${kvasir_cmake_dir}/tools/patch_image_crc.py "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf" --delete-on-failure
-            --objcopy ${CMAKE_OBJCOPY} --sections ${_sections}
+            --objcopy ${CMAKE_OBJCOPY} --sections ${_sections} ${_excludes}
         COMMENT "Writing the image CRC descriptor into ${target}.elf"
         VERBATIM)
+endfunction()
+
+# kvasir_constexpr_budget(<steps> [<target>...]): how much compile-time evaluation the compiler may do - for
+# static_asserts that simulate (water_mix's valve) or measure text (gfx's checked literals). <steps> is clang's count
+# (-fconstexpr-steps, default 1 048 576); gcc counts operations (-fconstexpr-ops-limit, default 33 554 432) and needs
+# more of them for the same work - water_mix: 30 M clang steps, between 34 M and 268 M gcc operations (2026-10-06) - so
+# it gets 8 x <steps>, never less than its default. With targets: on those; without: add_compile_options for the
+# directory.
+function(kvasir_constexpr_budget steps)
+    math(EXPR _ops "${steps} * 8")
+    if(_ops LESS 33554432)
+        set(_ops 33554432)
+    endif()
+    set(_flags $<$<CXX_COMPILER_ID:Clang>:-fconstexpr-steps=${steps}>
+               $<$<CXX_COMPILER_ID:GNU>:-fconstexpr-ops-limit=${_ops}>)
+    if(ARGN)
+        foreach(_target IN LISTS ARGN)
+            target_compile_options(${_target} PRIVATE ${_flags})
+        endforeach()
+    else()
+        add_compile_options(${_flags})
+    endif()
 endfunction()
 
 function(check_undefined_refs target)
@@ -287,12 +323,15 @@ function(
     # Compute flags first so they are available for the shared-library key.
     if(optimize STREQUAL size)
         set(optimize_flags ${optimize_option_size})
+        set(optimize_link_flags ${optimize_link_option_size})
         set(used_specs ${optimize_specs_size})
     elseif(optimize STREQUAL speed)
         set(optimize_flags ${optimize_option_speed})
+        set(optimize_link_flags ${optimize_link_option_speed})
         set(used_specs ${optimize_specs_speed})
     elseif(optimize STREQUAL debug)
         set(optimize_flags ${optimize_option_debug})
+        set(optimize_link_flags ${optimize_link_option_debug})
         set(used_specs ${optimize_specs_debug})
     else()
         message(FATAL_ERROR "wrong OPTIMIZE option specified!!!!")
@@ -402,6 +441,8 @@ function(
             PROPERTY SOURCES ${CHIP_SOURCES})
 
         target_compile_options(${name} PUBLIC ${optimize_flags} ${sanitize_flags} ${CHIP_OPTIONS})
+        # the optimisation set's linker options (arm_clang.cmake: backend options of an LTO link); none with gcc
+        target_link_options(${name} PUBLIC ${optimize_link_flags})
 
         # CHIP_LINKER_OPTIONS are bare linker options (`--wrap=...`): the gcc driver needs them behind -Wl, (clang links
         # with ld.lld directly, LINKER_PREFIX is empty there)
@@ -910,11 +951,9 @@ function(target_configure_kvasir target)
     endif()
 
     # IMAGE_CRC: the descriptor (KVASIR_IMAGE_CRC) and the post-link step that fills it (patch_image_crc, read by
-    # target_kvasir_config_internal).
+    # target_kvasir_config_internal). With RAM_ONLY (or any linker file that loads the image into SRAM) the check covers
+    # the running image's read-only part instead of the flash.
     if(PARSED_ARGS_IMAGE_CRC)
-        if(PARSED_ARGS_RAM_ONLY)
-            message(FATAL_ERROR "${target}: IMAGE_CRC checks the flash image; a RAM_ONLY image has none")
-        endif()
         target_compile_definitions(${target} PUBLIC KVASIR_IMAGE_CRC=1)
         set_property(TARGET ${target} PROPERTY KVASIR_IMAGE_CRC TRUE)
     endif()

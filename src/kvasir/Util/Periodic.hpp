@@ -161,14 +161,44 @@ private:
 };
 
 namespace detail {
+    // A short tick is 2^ShortShift ticks of the clock: the power of two that comes closest to a
+    // microsecond (125 MHz: 2^7 = 1.024 us; 150 MHz: 2^7 = 0.853 us; 48 MHz: 2^6 = 1.33 us), 2^0
+    // for a clock whose own tick is a microsecond or longer. The clock's time in short ticks is
+    // a shift, where any decimal unit is a 64-bit division.
+    template<PollClock ClockT>
+    inline constexpr unsigned ShortShift = [] {
+        using P                         = typename ClockT::period;
+        std::uintmax_t const ticksPerUs = static_cast<std::uintmax_t>(P::den)
+                                        / (static_cast<std::uintmax_t>(P::num) * 1'000'000U);
+        unsigned             shift{};
+        while((std::uintmax_t{2} << shift) <= ticksPerUs) { ++shift; }
+        // 2^shift <= ticksPerUs < 2^(shift + 1): take the upper one from sqrt(2) * 2^shift on
+        std::uintmax_t const low = std::uintmax_t{1} << shift;
+        if(ticksPerUs > 1 && ticksPerUs * ticksPerUs >= 2 * low * low) { ++shift; }
+        return shift;
+    }();
+}   // namespace detail
+
+/// The unit Every32 and Deadline32 count in by default: about a microsecond, 2^32 of them
+/// 61 to 95 minutes on the clocks here.
+template<PollClock ClockT>
+using ShortTick = std::ratio_multiply<typename ClockT::period,
+                                      std::ratio<std::intmax_t{1} << detail::ShortShift<ClockT>>>;
+
+namespace detail {
     // the clock's time in Unit, truncated to 32 bits: wraps every 2^32 Units
     template<PollClock ClockT,
              typename Unit>
     constexpr std::uint32_t ticks32(typename ClockT::time_point t) {
-        return static_cast<std::uint32_t>(
-          std::chrono::duration_cast<std::chrono::duration<std::int64_t, Unit>>(
-            t.time_since_epoch())
-            .count());
+        if constexpr(std::ratio_equal_v<Unit, ShortTick<ClockT>>) {
+            return static_cast<std::uint32_t>(
+              static_cast<std::uint64_t>(t.time_since_epoch().count()) >> ShortShift<ClockT>);
+        } else {
+            return static_cast<std::uint32_t>(
+              std::chrono::duration_cast<std::chrono::duration<std::int64_t, Unit>>(
+                t.time_since_epoch())
+                .count());
+        }
     }
 
     template<typename Unit,
@@ -176,8 +206,8 @@ namespace detail {
              typename P>
     constexpr std::uint32_t units32(std::chrono::duration<Rep,
                                                           P> d) {
-        auto const n
-          = std::chrono::duration_cast<std::chrono::duration<std::int64_t, Unit>>(d).count();
+        // rounded: a period is rarely a whole number of short ticks (1 ms = 976.56 of 1.024 us)
+        auto const n = std::chrono::round<std::chrono::duration<std::int64_t, Unit>>(d).count();
         assert(n >= 0 && n < (std::int64_t{1} << 31));   // below half the range
         return static_cast<std::uint32_t>(n);
     }
@@ -187,9 +217,13 @@ namespace detail {
 // position to order: due() compares the unsigned distance `now - last` with the period, which
 // is right for any gap below 2^32 Units. Limits: the period below 2^31 Units, and a poll at
 // least every 2^32 - period Units (std::milli: 49.7 days, std::micro: 71 min); after a longer
-// stall it fires up to one wrap late and nothing can tell. Converting the clock's time to Unit
-// is a 64-bit division per poll unless Unit is the clock's own period (RP TIMER + std::micro).
-template<PollClock ClockT, typename Unit = std::milli>
+// stall it fires up to one wrap late and nothing can tell. In the default Unit, the clock's
+// ShortTick, a poll is a shift and a compare and the limits are a period below 30 minutes and
+// a poll at least every hour; the period is rounded to a whole short tick, so a 1 ms period is
+// up to 0.05 % off where Every is exact to the clock's tick. Any other Unit (std::milli for
+// periods up to 24 days) makes converting the clock's time a 64-bit division per poll, unless
+// it is the clock's own period.
+template<PollClock ClockT, typename Unit = ShortTick<ClockT>>
 class Every32 {
 public:
     using clock      = ClockT;
@@ -245,7 +279,7 @@ private:
 // Deadline in 8 bytes: the start and the interval in Unit, 32 bits (no end position without an
 // ordering), armed in the interval's bit 31. Same limits as Every32: interval below 2^31 Units,
 // polled at least every 2^32 - interval Units while armed.
-template<PollClock ClockT, typename Unit = std::milli>
+template<PollClock ClockT, typename Unit = ShortTick<ClockT>>
 class Deadline32 {
 public:
     using clock      = ClockT;

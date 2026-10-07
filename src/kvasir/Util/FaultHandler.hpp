@@ -4,6 +4,7 @@
 #include "kvasir/Util/CrashRecord.hpp"
 #include "kvasir/Util/Panic.hpp"
 #include "kvasir/Util/Persistent.hpp"
+#include "kvasir/Util/attributes.hpp"
 #include "uc_log/uc_log.hpp"
 
 #include <algorithm>
@@ -69,7 +70,7 @@ namespace Kvasir { namespace Fault {
     static_assert(sizeof(FullRecord) == 33 * 4,
                   "the layout the host tools decode");
 
-    [[gnu::section(".noInit")]] inline Persistent<FullRecord, RecordTag> lastFaultV2;
+    [[KVASIR_SECTION(".noInit")]] inline Persistent<FullRecord, RecordTag> lastFaultV2;
 
     /// A copy of the faulting stack (CrashRecord::Options::stackBytes): `bytes` valid bytes from
     /// `from`, the rest 0. lastStack<N>: N is the policy's stackBytes.
@@ -86,7 +87,7 @@ namespace Kvasir { namespace Fault {
     };
 
     template<std::uint16_t Bytes>
-    [[gnu::section(".noInit")]] inline Persistent<StackSnapshot<Bytes>, StackTag> lastStack;
+    [[KVASIR_SECTION(".noInit")]] inline Persistent<StackSnapshot<Bytes>, StackTag> lastStack;
 
     namespace Detail {
         template<typename... Dummy>
@@ -498,9 +499,10 @@ namespace Kvasir { namespace Fault {
             r.count = 1;
             r.flags = (static_cast<std::uint32_t>(__ARM_ARCH) << FullRecord::archShift)
                     | (std::uint32_t{startupCore} << FullRecord::coreShift)
-                    | FullRecord::calleeSaved | (sys.faultRegs ? FullRecord::faultRegs : 0U)
-                    | (sys.secureRegs ? FullRecord::secureRegs : 0U)
-                    | ((excReturn & (1U << 4)) == 0 ? FullRecord::fpFrame : 0U);
+                    | FullRecord::calleeSaved
+                    | (sys.faultRegs ? std::uint32_t{FullRecord::faultRegs} : 0U)
+                    | (sys.secureRegs ? std::uint32_t{FullRecord::secureRegs} : 0U)
+                    | ((excReturn & (1U << 4)) == 0 ? std::uint32_t{FullRecord::fpFrame} : 0U);
             if(frameOk) {
                 r.r0   = frame[0];
                 r.r1   = frame[1];

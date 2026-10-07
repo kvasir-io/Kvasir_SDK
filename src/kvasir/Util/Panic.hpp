@@ -24,6 +24,7 @@
 #include "kvasir/StartUp/LinkerSymbols.hpp"
 #include "kvasir/Util/CrashRecord.hpp"
 #include "kvasir/Util/Persistent.hpp"
+#include "kvasir/Util/attributes.hpp"
 
 #include <cassert>
 #include <concepts>
@@ -50,7 +51,8 @@ enum class Cause : unsigned char {
     timeout = 10,   // a bounded register wait under OnTimeout::Panic; detail = the register (Register/Wait.hpp)
     bootLoop = 11,   // the boot guard's RaisePanic policy; detail = the failed runs in a row (BootGuard.hpp)
     healthCheck = 12,   // Health::Supervisor's RaisePanic policy; detail = the starved check's index (Health.hpp)
-    flashCorrupt = 13,   // ImageCheck's Panic policy: the image CRC differs; detail = the CRC computed (ImageCheck.hpp)
+    imageCorrupt = 13,   // ImageCheck's Panic policies: the image (in flash, or a RAM image's code) differs from its
+                         // build; detail = the CRC computed (ImageCheck.hpp)
 };
 
 [[nodiscard]] constexpr char const* name(Cause c) {
@@ -68,7 +70,7 @@ enum class Cause : unsigned char {
     case Cause::timeout:            return "register wait timed out";
     case Cause::bootLoop:           return "boot loop";
     case Cause::healthCheck:        return "health check starved";
-    case Cause::flashCorrupt:       return "flash image CRC mismatch";
+    case Cause::imageCorrupt:       return "image CRC mismatch";
     }
     return "unknown";
 }
@@ -114,7 +116,7 @@ struct FullRecord {
     std::uint32_t sp;     // the stack pointer where the record was written
 };
 
-[[gnu::section(".noInit")]] inline Persistent<FullRecord, RecordTag> lastPanicV2;
+[[KVASIR_SECTION(".noInit")]] inline Persistent<FullRecord, RecordTag> lastPanicV2;
 
 namespace Detail {
     template<typename... Dummy>

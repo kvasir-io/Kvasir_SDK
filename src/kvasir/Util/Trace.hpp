@@ -1,5 +1,7 @@
 #pragma once
 
+#include "kvasir/Util/attributes.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -26,14 +28,15 @@ struct Name {
 template<std::size_t N>
 Name(char const (&)[N]) -> Name<N>;
 
-/// `layout` points at "name:field,field,...\0".
-struct Header {
+/// What a ring is: constant, in flash. `layout` points at "name:field,field,...\0".
+/// (Until 2026-10-06 this was the head of the ring's one RAM object, with the count in it: the
+/// magic made the whole ring an initialised object, 784 bytes of flash for a 64-record ring.)
+struct Descriptor {
     static constexpr std::uint32_t Magic = 0x4352544BU;   // "KTRC" in memory
 
     std::uint32_t magic;
     std::uint16_t fields;
     std::uint16_t capacity;
-    std::uint32_t count;   // records ever written; the next one goes to count % capacity
     char const*   layout;
 };
 
@@ -73,36 +76,42 @@ private:
 public:
     static constexpr std::array<char, LayoutSize> layout = makeLayout();
 
+    // All zero at start, so it costs no flash: the records ever written (the next one goes to
+    // count % Capacity), then the records.
     struct Storage {
-        Header                       header;
+        std::uint32_t                count;
         std::array<Record, Capacity> records;
     };
 
-    [[gnu::used]] static inline Storage storage{
-      .header  = {Header::Magic,
-                  static_cast<std::uint16_t>(FieldCount),
-                  static_cast<std::uint16_t>(Capacity),
-                  0, layout.data()},
-      .records = {}
-    };
+    // `kvasir_bench.py trace` finds a ring by these two symbols. Nothing in the firmware reads the
+    // descriptor, so it is kept through the linker's garbage collection by `retain`.
+    [[KVASIR_USED_RETAIN]] static constexpr Descriptor descriptor{
+      Descriptor::Magic,
+      static_cast<std::uint16_t>(FieldCount),
+      static_cast<std::uint16_t>(Capacity),
+      layout.data()};
+
+    [[gnu::used]] static inline Storage storage{};
 
     template<typename... Ts>
     [[gnu::always_inline]] static void record(Ts... values) {
         static_assert(sizeof...(Ts) == FieldCount,
                       "record() takes one value per field of the ring");
-        auto const count                        = storage.header.count;
+        static_cast<void>(
+          &descriptor);   // an odr-use: the descriptor exists wherever a ring records
+        auto const count                        = storage.count;
         storage.records[count & (Capacity - 1)] = Record{static_cast<std::uint32_t>(values)...};
-        storage.header.count                    = count + 1;
+        storage.count                           = count + 1;
     }
 
-    static std::uint32_t count() { return storage.header.count; }
+    static std::uint32_t count() { return storage.count; }
 
-    static void clear() { storage.header.count = 0; }
+    static void clear() { storage.count = 0; }
 
     /// f(record), oldest first. Not while record() may run.
     template<typename F>
     static void forEach(F&& f) {
-        auto const count = storage.header.count;
+        auto const count = storage.count;
         auto const kept  = count < Capacity ? count : static_cast<std::uint32_t>(Capacity);
         for(std::uint32_t i = count - kept; i != count; ++i) {
             f(storage.records[i & (Capacity - 1)]);

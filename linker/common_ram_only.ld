@@ -13,6 +13,11 @@ SECTIONS {
 
     .text : {
         INCLUDE common_text_body.inc.ld
+        /* RAM functions (KVASIR_RAM_FUNC_ATTRIBUTES): here they are in RAM already, so they go with the code rather
+           than with .data (common_data_body.inc.ld, which the first match leaves without them) - read-only, and
+           covered by an IMAGE_CRC check of the running image. */
+        . = ALIGN(4);
+        *(SORT_BY_ALIGNMENT(.ramfunc*))
     } > ram
 
     .data : {

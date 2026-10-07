@@ -15,10 +15,14 @@
 //
 //     using Health = Kvasir::Health::Supervisor<Startup, HW::Watchdog, HW::SystickClock, HealthConfig>;
 //     int main() {
+//         Health::holdOff();                         // a watchdog the last run left armed waits for service()
 //         Kvasir::Boot::logBoot(Kvasir::PM::reset_cause());
 //         Health::logReport();                       // names the check that starved last time
 //         while(true) { Startup::run<Kvasir::Hook::MainLoop>(); Health::service(); }
 //     }
+//
+// The supervisor owns the watchdog: its first service() arms it (a watchdog with arm(); one without is fed), from
+// then on only service() feeds, and holdOff() - before that first turn only - stops one that is already running.
 //
 // Check Config: name, maxInterval (required), graceAfterBoot (default maxInterval: the first window is grace +
 // maxInterval), startSuspended (false; Supervisor::resume<C>() starts it). Supervisor Config: period (10 ms),
@@ -28,13 +32,14 @@
 // StopFeeding (the default: log, record, announce the coming reset to a printer, let the watchdog bite), RaisePanic
 // (Panic::Cause::healthCheck, the check's index as the detail: the application's panic handler makes it safe),
 // LogOnly (bench: log, keep feeding). A supervised image should set its watchdog's `gatedFeed`, so only the
-// supervisor can feed it (Util/HealthKey.hpp).
+// supervisor can feed, arm or disarm it (Util/HealthKey.hpp).
 #include "kvasir/StartUp/Hooks.hpp"
 #include "kvasir/Util/AnnouncedReset.hpp"
 #include "kvasir/Util/HealthKey.hpp"
 #include "kvasir/Util/Panic.hpp"
 #include "kvasir/Util/Periodic.hpp"
 #include "kvasir/Util/Persistent.hpp"
+#include "kvasir/Util/attributes.hpp"
 
 #include <algorithm>
 #include <array>
@@ -92,7 +97,7 @@ struct StarvationTag {
     static constexpr std::uint16_t version = 1;
 };
 
-[[gnu::section(".noInit")]] inline Persistent<Starvation, StarvationTag> lastStarvation;
+[[KVASIR_SECTION(".noInit")]] inline Persistent<Starvation, StarvationTag> lastStarvation;
 
 /// Whether a starvation record is there, without taking it (a boot guard).
 inline bool starvationRecorded() { return lastStarvation.valid(); }
@@ -249,9 +254,17 @@ struct Supervisor {
       std::chrono::duration_cast<std::chrono::milliseconds>(period).count());
     static_assert(periodMs > 0,
                   "Health::Supervisor: a period of at least 1 ms");
-    static_assert(
-      !requires { Watchdog::Timeout; } || Watchdog::Timeout > 2 * period,
-      "Health::Supervisor: the period must be well below the watchdog's timeout");
+    // a watchdog without a Timeout member (a driver that does not say) is taken as it is: `||` does not keep the
+    // right-hand side from being looked up, so the member is asked for in a discarded branch
+    static constexpr bool periodBelowTimeout = [] {
+        if constexpr(requires { Watchdog::Timeout; }) {
+            return Watchdog::Timeout > 2 * period;
+        } else {
+            return true;
+        }
+    }();
+    static_assert(periodBelowTimeout,
+                  "Health::Supervisor: the period must be well below the watchdog's timeout");
     static constexpr bool statistics = [] {
         if constexpr(requires { Config::statistics; }) {
             return Config::statistics;
@@ -278,7 +291,7 @@ struct Supervisor {
             for(std::size_t i = 0; i < N; ++i) {
                 limitMs_[i] = Cfg::graceMs[i] + Cfg::allowedMs[i];
             }
-            feedWatchdog();
+            startWatchdog();
             return;
         }
         auto const k = tick_.dueCount(now);
@@ -308,6 +321,25 @@ struct Supervisor {
         }
         if(starved && !latched_) { starve<>(*starved, silentMask, now); }
         if(!latched_) { feedWatchdog(); }
+    }
+
+    /// Whether the watchdog can be stopped at all (an STM32 IWDG cannot): holdOff() is only there if it can.
+    static constexpr bool canHoldOff
+      = requires(FeedKey key) { Watchdog::disarm(key); } || requires { Watchdog::disarm(); };
+
+    /// Before the first service(), where the boot may take longer than the watchdog allows: stops a watchdog that
+    /// is already running - the run before left it armed (the RP2350 keeps it enabled across a watchdog reset), or
+    /// the Startup list armed it. The first service() arms it again. Once the supervisor runs this does nothing:
+    /// it is no way to switch a supervised watchdog off.
+    static void holdOff()
+        requires canHoldOff
+    {
+        if(started_) { return; }
+        if constexpr(requires(FeedKey key) { Watchdog::disarm(key); }) {
+            Watchdog::disarm(FeedKey{});
+        } else {
+            Watchdog::disarm();
+        }
     }
 
     template<CheckConfig C>
@@ -366,6 +398,17 @@ private:
             Watchdog::feed(FeedKey{});
         } else {
             Watchdog::feed();
+        }
+    }
+
+    // the first turn: arm (which loads the full timeout), or feed a watchdog that has no arm()
+    static void startWatchdog() {
+        if constexpr(requires(FeedKey key) { Watchdog::arm(key); }) {
+            Watchdog::arm(FeedKey{});
+        } else if constexpr(requires { Watchdog::arm(); }) {
+            Watchdog::arm();
+        } else {
+            feedWatchdog();
         }
     }
 

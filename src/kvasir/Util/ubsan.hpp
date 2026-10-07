@@ -44,6 +44,11 @@ namespace Kvasir { namespace Ubsan {
 
 extern "C" {
 
+// A handler is never inlined: it reports its return address as the place of the check, and
+// since a log line is one call its body is small enough for -O3 to copy into every check -
+// defender_display's sanitize image grew 60 KB of flash and 30 KB of RAM code that way.
+#define KVASIR_UBSAN_HANDLER [[gnu::used, gnu::noinline, gnu::cold]] inline
+
 #define UBSAN_REPORT()                                                                         \
     do {                                                                                       \
         ::Kvasir::Ubsan::countReport(__builtin_return_address(0));                             \
@@ -56,25 +61,25 @@ extern "C" {
           __builtin_return_address(0));                                                        \
     } while(false)
 
-[[gnu::used]] inline void __ubsan_handle_mul_overflow_minimal() { UBSAN_REPORT(); }
+KVASIR_UBSAN_HANDLER void __ubsan_handle_mul_overflow_minimal() { UBSAN_REPORT(); }
 
-[[gnu::used]] inline void __ubsan_handle_add_overflow_minimal() { UBSAN_REPORT(); }
+KVASIR_UBSAN_HANDLER void __ubsan_handle_add_overflow_minimal() { UBSAN_REPORT(); }
 
-[[gnu::used]] inline void __ubsan_handle_alignment_assumption_minimal() { UBSAN_REPORT(); }
+KVASIR_UBSAN_HANDLER void __ubsan_handle_alignment_assumption_minimal() { UBSAN_REPORT(); }
 
-[[gnu::used]] inline void __ubsan_handle_sub_overflow_minimal() { UBSAN_REPORT(); }
+KVASIR_UBSAN_HANDLER void __ubsan_handle_sub_overflow_minimal() { UBSAN_REPORT(); }
 
-[[gnu::used]] inline void __ubsan_handle_implicit_conversion_minimal() { UBSAN_REPORT(); }
+KVASIR_UBSAN_HANDLER void __ubsan_handle_implicit_conversion_minimal() { UBSAN_REPORT(); }
 
-[[gnu::used]] inline void __ubsan_handle_load_invalid_value_minimal() { UBSAN_REPORT(); }
+KVASIR_UBSAN_HANDLER void __ubsan_handle_load_invalid_value_minimal() { UBSAN_REPORT(); }
 
-[[gnu::used]] inline void __ubsan_handle_type_mismatch_minimal() { UBSAN_REPORT(); }
+KVASIR_UBSAN_HANDLER void __ubsan_handle_type_mismatch_minimal() { UBSAN_REPORT(); }
 
-[[gnu::used]] inline void __ubsan_handle_pointer_overflow_minimal() { UBSAN_REPORT(); }
+KVASIR_UBSAN_HANDLER void __ubsan_handle_pointer_overflow_minimal() { UBSAN_REPORT(); }
 
-[[gnu::used]] inline void __ubsan_handle_shift_out_of_bounds_minimal() { UBSAN_REPORT(); }
+KVASIR_UBSAN_HANDLER void __ubsan_handle_shift_out_of_bounds_minimal() { UBSAN_REPORT(); }
 
-[[gnu::used]] inline void __ubsan_handle_negate_overflow_minimal() { UBSAN_REPORT(); }
+KVASIR_UBSAN_HANDLER void __ubsan_handle_negate_overflow_minimal() { UBSAN_REPORT(); }
 
 // unreachable and missing_return cannot go on: clang emits the call and nothing after it, so a
 // handler that returned would run into whatever function the linker put next. They report and panic.
@@ -86,9 +91,9 @@ __ubsan_handle_builtin_unreachable_minimal() {
                              reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
 }
 
-[[gnu::used]] inline void __ubsan_handle_out_of_bounds_minimal() { UBSAN_REPORT(); }
+KVASIR_UBSAN_HANDLER void __ubsan_handle_out_of_bounds_minimal() { UBSAN_REPORT(); }
 
-[[gnu::used]] inline void __ubsan_handle_function_type_mismatch_minimal() { UBSAN_REPORT(); }
+KVASIR_UBSAN_HANDLER void __ubsan_handle_function_type_mismatch_minimal() { UBSAN_REPORT(); }
 
 [[gnu::used,
   noreturn]] inline void
@@ -98,15 +103,15 @@ __ubsan_handle_missing_return_minimal() {
                              reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
 }
 
-[[gnu::used]] inline void __ubsan_handle_float_cast_overflow_minimal() { UBSAN_REPORT(); }
+KVASIR_UBSAN_HANDLER void __ubsan_handle_float_cast_overflow_minimal() { UBSAN_REPORT(); }
 
-[[gnu::used]] inline void __ubsan_handle_divrem_overflow_minimal() { UBSAN_REPORT(); }
+KVASIR_UBSAN_HANDLER void __ubsan_handle_divrem_overflow_minimal() { UBSAN_REPORT(); }
 
-[[gnu::used]] inline void __ubsan_handle_invalid_builtin_minimal() { UBSAN_REPORT(); }
+KVASIR_UBSAN_HANDLER void __ubsan_handle_invalid_builtin_minimal() { UBSAN_REPORT(); }
 
-[[gnu::used]] inline void __ubsan_handle_nullability_arg_minimal() { UBSAN_REPORT(); }
+KVASIR_UBSAN_HANDLER void __ubsan_handle_nullability_arg_minimal() { UBSAN_REPORT(); }
 
-[[gnu::used]] inline void __ubsan_handle_nonnull_arg_minimal() { UBSAN_REPORT(); }
+KVASIR_UBSAN_HANDLER void __ubsan_handle_nonnull_arg_minimal() { UBSAN_REPORT(); }
 
 #undef UBSAN_REPORT
 }
@@ -146,7 +151,7 @@ using Kvasir::Ubsan::UbsanSourceLocation;
 using ValueHandle = std::uintptr_t;
 
     #define KVASIR_UBSAN_GCC(name, ...)                                             \
-        [[gnu::used]] inline void __ubsan_handle_##name(                            \
+        KVASIR_UBSAN_HANDLER void __ubsan_handle_##name(                            \
           UbsanSourceLocation const* data __VA_OPT__(, ) __VA_ARGS__) {             \
             ::Kvasir::Ubsan::ubsanReport(#name, data, __builtin_return_address(0)); \
         }
@@ -191,7 +196,7 @@ KVASIR_UBSAN_GCC(alignment_assumption,
     #undef KVASIR_UBSAN_GCC
 
 // the one handler whose location is the second argument, not the data block
-[[gnu::used]] inline void __ubsan_handle_nonnull_return_v1(void const*,
+KVASIR_UBSAN_HANDLER void __ubsan_handle_nonnull_return_v1(void const*,
                                                            UbsanSourceLocation const* loc) {
     ::Kvasir::Ubsan::ubsanReport("nonnull_return_v1", loc, __builtin_return_address(0));
 }
@@ -213,3 +218,4 @@ __ubsan_handle_missing_return(UbsanSourceLocation const* data) {
 }
 }
 #endif
+#undef KVASIR_UBSAN_HANDLER   // after gcc's handlers above, which carry it too

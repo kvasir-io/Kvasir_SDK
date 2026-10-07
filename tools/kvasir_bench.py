@@ -639,7 +639,7 @@ DHCSR, DCRSR, DCRDR = 0xE000EDF0, 0xE000EDF4, 0xE000EDF8
 DBGKEY, C_DEBUGEN, C_HALT, S_REGRDY, S_HALT = 0xA05F0000, 1 << 0, 1 << 1, 1 << 16, 1 << 17
 REGWNR = 1 << 16
 # DCRSR.REGSEL: R0, DebugReturnAddress (the PC the core resumes at), xPSR (D1.2.34)
-REG_R0, REG_PC, REG_XPSR = 0, 15, 16
+REG_R0, REG_LR, REG_PC, REG_XPSR = 0, 14, 15, 16
 # EPSR.ICI/IT, xPSR[26:25] and [15:10] (B3.5): a halt can land inside an IT block or an
 # interrupted LDM/STM, and "the Debugger must ensure that the EPSR.IT and EPSR.ICI bits are
 # consistent with DebugReturnAddress, otherwise instruction execution will be UNPREDICTABLE"
@@ -664,11 +664,13 @@ def raise_causes() -> dict[str, int]:
             for i, n in enumerate(PANIC_CAUSES)}
 
 
-def panic_register_writes(address: int, cause: int, xpsr: int) -> list[list[tuple[int, int]]]:
-    """With the core halted and its xPSR read: R0 = cause; xPSR without IT/ICI; PC = raise (a
-    Thumb address without its bit 0: xPSR.T stays set). One list per register transfer; after
-    each DHCSR.S_REGRDY says it is done."""
+def panic_register_writes(address: int, cause: int, xpsr: int, pc: int) -> list[list[tuple[int, int]]]:
+    """With the core halted and its xPSR and PC read: R0 = cause; LR = "called from where the
+    core stood" (raise()'s return address is the place the record keeps - otherwise whatever LR
+    happened to hold); xPSR without IT/ICI; PC = raise (a Thumb address without its bit 0:
+    xPSR.T stays set). One list per register transfer; after each DHCSR.S_REGRDY says it is done."""
     return [[(DCRDR, cause), (DCRSR, REGWNR | REG_R0)],
+            [(DCRDR, ((pc + 2) | 1) & 0xFFFFFFFF), (DCRSR, REGWNR | REG_LR)],
             [(DCRDR, xpsr & ~EPSR_IT_ICI), (DCRSR, REGWNR | REG_XPSR)],
             [(DCRDR, address & ~1), (DCRSR, REGWNR | REG_PC)]]
 
@@ -677,7 +679,8 @@ def panic_gdb_commands(address: int, cause: int) -> list[str]:
     """The same in one GDB session (no printer: JLinkExe cannot read xPSR and write it back in
     one session, and it lets the core run between two). `monitor go` before detach: detach
     alone leaves the core halted."""
-    return ["monitor halt", f"set $r0 = {cause}", f"set $xpsr = $xpsr & ~{EPSR_IT_ICI:#x}",
+    return ["monitor halt", f"set $r0 = {cause}", "set $lr = ($pc + 2) | 1",
+            f"set $xpsr = $xpsr & ~{EPSR_IT_ICI:#x}",
             f"set $pc = {address & ~1:#x}", "monitor go", "detach"]
 
 
@@ -724,7 +727,11 @@ def panic(args) -> None:
         wait(S_REGRDY, "the core did not hand out xPSR (DHCSR.S_REGRDY)")
         xpsr = int.from_bytes(read_bytes(
             c.ask(req_read([(DCRDR, 4)])))[1][0], "little")
-        for step in panic_register_writes(address, cause, xpsr):
+        c.ask(req_write([(DCRSR, REG_PC)]))
+        wait(S_REGRDY, "the core did not hand out the PC (DHCSR.S_REGRDY)")
+        pc = int.from_bytes(read_bytes(
+            c.ask(req_read([(DCRDR, 4)])))[1][0], "little")
+        for step in panic_register_writes(address, cause, xpsr, pc):
             c.ask(req_write(step))
             wait(S_REGRDY, "the core did not take the register write (DHCSR.S_REGRDY)")
         c.ask(req_write([(DHCSR, DBGKEY | C_DEBUGEN)]))
@@ -1152,7 +1159,7 @@ PANIC_MAGIC = 0x9A41C0DE
 PANIC_CAUSES = ["assertion", "abort", "stack smash", "division by zero", "allocation without a heap",
                 "unhandled interrupt", "undefined behaviour", "fault", "KVASIR_PANIC", "check failed",
                 "register wait timed out", "boot loop", "health check starved",
-                "flash image CRC mismatch"]
+                "image CRC mismatch"]
 
 
 # kvasir/Util/Persistent.hpp: id, version | size << 16, the value, zlib's crc32 over all before it
@@ -1397,29 +1404,58 @@ def ub(args) -> None:
 TRACE_MAGIC = 0x4352544B
 
 
+def trace_rings(all_symbols) -> list:
+    """(descriptor address or None, storage address, storage size) of every Trace::Ring. Since
+    2026-10-06 a ring is two objects, a constant `descriptor` and the RAM `storage` (count, then
+    records); before, `storage` alone, starting with the header (descriptor address None)."""
+    descriptors = {name[:-len("descriptor")]: a for a, _, name in all_symbols
+                   if re.search(r"Trace::Ring<.*>::descriptor$", name)}
+    return [(descriptors.get(name[:-len("storage")]), a, size) for a, size, name in all_symbols
+            if re.search(r"Trace::Ring<.*>::storage$", name)]
+
+
+def trace_layout(descriptor: bytes | None, storage: bytes):
+    """-> (fields, capacity, count, layout address, offset of the count, offset of the records)
+    of a ring in either layout, or None if the bytes are no ring."""
+    def u(raw, at, n):
+        return int.from_bytes(raw[at:at + n], "little")
+    if descriptor is None:      # the old layout: magic, fields, capacity, count, layout, records
+        if len(storage) < 16:
+            return None
+        magic, fields, capacity, count, layout_at = (
+            u(storage, 0, 4), u(storage, 4, 2), u(storage, 6, 2), u(storage, 8, 4), u(storage, 12, 4))
+        count_at, records_at = 8, 16
+    else:                       # descriptor: magic, fields, capacity, layout; storage: count, records
+        if len(descriptor) < 12 or len(storage) < 4:
+            return None
+        magic, fields, capacity, layout_at = (
+            u(descriptor, 0, 4), u(descriptor, 4, 2), u(descriptor, 6, 2), u(descriptor, 8, 4))
+        count, count_at, records_at = u(storage, 0, 4), 0, 4
+    if magic != TRACE_MAGIC or fields == 0 or records_at + 4 * fields * capacity > len(storage):
+        return None
+    return fields, capacity, count, layout_at, count_at, records_at
+
+
 def trace(args) -> None:
     tree = Tree(args.build, args.target)
     check_build(tree, args.stale_ok)
     control = control_socket(tree)
     if control is None:
         die("no printer with a control socket runs for this target (printer start)")
-    rings = [(a, size, name) for a, size, name in symbols(tree)
-             if re.search(r"Trace::Ring<.*>::storage$", name)]
+    rings = trace_rings(symbols(tree))
     if not rings:
         die("no Kvasir::Trace::Ring in this firmware (kvasir/Util/Trace.hpp)")
     shown = 0
-    for address, size, _ in rings:
+    for descriptor_at, address, size in rings:
         raw = read_target(control, address, size)
-        magic, fields, capacity, count, layout_at = (
-            int.from_bytes(raw[0:4], "little"), int.from_bytes(
-                raw[4:6], "little"),
-            int.from_bytes(raw[6:8], "little"), int.from_bytes(
-                raw[8:12], "little"),
-            int.from_bytes(raw[12:16], "little"))
-        if magic != TRACE_MAGIC or fields == 0 or 16 + 4 * fields * capacity > len(raw):
+        descriptor = None if descriptor_at is None else read_target(
+            control, descriptor_at, 12)
+        ring = trace_layout(descriptor, raw)
+        if ring is None:
             print(
                 f"ring at {address:#x}: no valid header (does the board run this build?)")
             continue
+        fields, capacity, count, layout_at, count_at, records_at = ring
         layout = read_target(control, layout_at, 256).split(b"\0")[
             0].decode(errors="replace")
         name, _, field_text = layout.partition(":")
@@ -1427,11 +1463,12 @@ def trace(args) -> None:
             continue
         shown += 1
         names = field_text.split(",")
-        again = int.from_bytes(read_target(control, address + 8, 4), "little")
+        again = int.from_bytes(read_target(
+            control, address + count_at, 4), "little")
         kept = min(count, capacity)
         rows = []
         for i in range(count - kept, count):
-            at = 16 + 4 * fields * (i % capacity)
+            at = records_at + 4 * fields * (i % capacity)
             rows.append((i, [int.from_bytes(
                 raw[at + 4 * k:at + 4 * k + 4], "little") for k in range(fields)]))
         # what record() wrote while the ring was read is overwritten, not torn: drop it

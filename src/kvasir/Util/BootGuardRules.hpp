@@ -5,6 +5,7 @@
 #include "kvasir/Util/Panic.hpp"
 #include "kvasir/Util/Persistent.hpp"
 #include "kvasir/Util/ResetKind.hpp"
+#include "kvasir/Util/attributes.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -39,7 +40,7 @@ struct Tag {
     static constexpr std::uint16_t version = 1;
 };
 
-[[gnu::section(".noInit")]] inline Persistent<State, Tag> state;
+[[KVASIR_SECTION(".noInit")]] inline Persistent<State, Tag> state;
 
 struct Evidence {
     bool                         panic;

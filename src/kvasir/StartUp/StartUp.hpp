@@ -20,8 +20,11 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cerrno>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
+#include <new>
 #include <string_view>
 
 // declaring and calling main is ill-formed in ISO C++ but intended here; gcc diagnoses it under -Wpedantic
@@ -1339,6 +1342,67 @@ _Exit(int status) noexcept {
 }
 }
     #endif
+    #if defined(KVASIR_HEAP) && defined(__NEWLIB__)
+// The full newlib (gcc's speed variants) links its stdio as soon as malloc is used: malloc needs the reent structure,
+// which there holds the three standard streams. Nothing opens or prints through them, but their read/write/seek/close
+// need a system call each, and libnosys' stand-ins are linker warnings ("_write is not implemented and will always
+// fail"; defender_display, 2026-10-06). These fail the same way, silently.
+extern "C" {
+int _close(int);
+int _lseek(int,
+           int,
+           int);
+int _read(int,
+          char*,
+          int);
+int _write(int,
+           char const*,
+           int);
+
+[[gnu::used]] int _close(int) { return -1; }
+
+[[gnu::used]] int _lseek(int,
+                         int,
+                         int) {
+    return -1;
+}
+
+[[gnu::used]] int _read(int,
+                        char*,
+                        int) {
+    return -1;
+}
+
+[[gnu::used]] int _write(int,
+                         char const*,
+                         int) {
+    return -1;
+}
+}
+
+// A gcc build with HEAP_SIZE: newlib's malloc takes its memory through _sbrk - out of the linker's .heap, never past
+// its end (without this the link fails on "undefined reference to `_sbrk'").
+extern "C" {
+void* _sbrk(std::ptrdiff_t increment);
+
+[[gnu::used]] void* _sbrk(std::ptrdiff_t increment) {
+    static std::uintptr_t brk{};
+    auto const            start = reinterpret_cast<std::uintptr_t>(&_LINKER_heap_start_);
+    auto const            end   = reinterpret_cast<std::uintptr_t>(&_LINKER_heap_end_);
+    if(brk == 0) { brk = start; }
+    auto const next
+      = brk
+      + static_cast<std::uintptr_t>(increment);   // modulo 2^32: a negative increment gives back
+    if(next < start || next > end) {
+        errno = ENOMEM;
+        return reinterpret_cast<void*>(std::uintptr_t{0} - 1U);   // (void*)-1, newlib's "no memory"
+    }
+    auto const previous = brk;
+    brk                 = next;
+    return reinterpret_cast<void*>(previous);
+}
+}
+    #endif
     #if defined(KVASIR_HEAP) && defined(LIBC_NAMESPACE)
 // llvm-libc's heap aligns every block to max(4, alignof(max_align_t)) (Block::MIN_ALIGN), and
 // operator new(size_t) promises __STDCPP_DEFAULT_NEW_ALIGNMENT__. A max_align_t weaker than that
@@ -1606,6 +1670,163 @@ void* operator new[](std::size_t) {
 }
 
     #pragma GCC diagnostic pop
+#endif
+
+#if defined(KVASIR_HEAP) && defined(__NEWLIB__)
+// A gcc build with a heap. libstdc++'s own operator new throws std::bad_alloc when malloc returns null, and that one
+// throw links the unwinder (__exidx_start / __exidx_end, which no script here defines), the verbose terminate handler
+// and newlib's stdio behind it ("_write is not implemented and will always fail", ...: defender_display's speed
+// variants, 2026-10-06). These replace it: straight to newlib's malloc, and an exhausted heap is the allocation
+// panic, as an allocation without a heap is above.
+namespace Kvasir::Startup::Detail {
+[[gnu::always_inline]] inline void* allocateOrPanic(void* block,
+                                                    void* caller) {
+    if(block == nullptr) {
+        UC_LOG_C("operator new: the heap (HEAP_SIZE) is exhausted");
+        Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::allocation,
+                               reinterpret_cast<std::uint32_t>(caller));
+    }
+    return block;
+}
+}   // namespace Kvasir::Startup::Detail
+
+void* operator new(std::size_t size) {
+    return Kvasir::Startup::Detail::allocateOrPanic(std::malloc(size == 0 ? 1 : size),
+                                                    __builtin_return_address(0));
+}
+
+void* operator new[](std::size_t size) {
+    return Kvasir::Startup::Detail::allocateOrPanic(std::malloc(size == 0 ? 1 : size),
+                                                    __builtin_return_address(0));
+}
+
+void operator delete(void* block) noexcept { std::free(block); }
+
+void operator delete(void* block,
+                     std::size_t) noexcept {
+    std::free(block);
+}
+
+void operator delete[](void* block) noexcept { std::free(block); }
+
+void operator delete[](void* block,
+                       std::size_t) noexcept {
+    std::free(block);
+}
+
+// new (std::nothrow): libstdc++'s wraps the throwing one in a try block (the personality routine, the unwinder)
+void* operator new(std::size_t size,
+                   std::nothrow_t const&) noexcept {
+    return std::malloc(size == 0 ? 1 : size);
+}
+
+void* operator new[](std::size_t size,
+                     std::nothrow_t const&) noexcept {
+    return std::malloc(size == 0 ? 1 : size);
+}
+
+void operator delete(void* block,
+                     std::nothrow_t const&) noexcept {
+    std::free(block);
+}
+
+void operator delete[](void* block,
+                       std::nothrow_t const&) noexcept {
+    std::free(block);
+}
+#endif
+
+#if defined(__NEWLIB__) && defined(__GLIBCXX__) && defined(__arm__)
+// libstdc++'s error paths (a container asked for too much, vector::at out of range, bad_alloc) end in its
+// std::__throw_* helpers, all fifteen in one object of the library (functexcept.o). In the full library - gcc's speed
+// variants - they really throw: the unwinder, the type-info tables, the verbose terminate handler with its demangler
+// and newlib's stdio come with that one object, and the image does not link (__exidx_start; "_write is not implemented
+// and will always fail"; defender_display, 2026-10-06). Defined here, the linker never takes that object: each helper
+// logs what would have been thrown and raises the abort panic at the caller. Under their mangled names, as the
+// __sync_* shims are, so no declaration here has to match the library's. All fifteen, or the linker takes the object
+// for the missing one and reports the others as defined twice (the list is the same in libstdc++ 16.2's full and
+// nano libraries, v6-M and v8-M).
+namespace Kvasir::Startup::Detail {
+[[gnu::noreturn,
+  gnu::always_inline]] inline void
+libstdcxxThrow(std::string_view exception,
+               char const*      what,
+               void*            caller) {
+    UC_LOG_SCOPE_MODULE("assert");
+    UC_LOG_C("libstdc++ would throw std::{}: {}",
+             exception,
+             std::string_view{what == nullptr ? "" : what});
+    Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::abort, reinterpret_cast<std::uint32_t>(caller));
+}
+
+    #define KVASIR_LIBSTDCXX_THROW(function, mangled, exception)             \
+        [[gnu::noreturn, gnu::used]] void function() __asm__(mangled);       \
+        [[gnu::noreturn, gnu::used]] void function() {                       \
+            libstdcxxThrow(exception, nullptr, __builtin_return_address(0)); \
+        }
+    #define KVASIR_LIBSTDCXX_THROW_WHAT(function, mangled, exception)                  \
+        [[gnu::noreturn, gnu::used]] void function(char const* what) __asm__(mangled); \
+        [[gnu::noreturn, gnu::used]] void function(char const* what) {                 \
+            libstdcxxThrow(exception, what, __builtin_return_address(0));              \
+        }
+KVASIR_LIBSTDCXX_THROW(throwBadCast,
+                       "_ZSt16__throw_bad_castv",
+                       "bad_cast")
+KVASIR_LIBSTDCXX_THROW(throwBadAlloc,
+                       "_ZSt17__throw_bad_allocv",
+                       "bad_alloc")
+KVASIR_LIBSTDCXX_THROW(throwBadTypeid,
+                       "_ZSt18__throw_bad_typeidv",
+                       "bad_typeid")
+KVASIR_LIBSTDCXX_THROW(throwBadException,
+                       "_ZSt21__throw_bad_exceptionv",
+                       "bad_exception")
+KVASIR_LIBSTDCXX_THROW(throwBadArrayNewLength,
+                       "_ZSt28__throw_bad_array_new_lengthv",
+                       "bad_array_new_length")
+KVASIR_LIBSTDCXX_THROW_WHAT(throwLogicError,
+                            "_ZSt19__throw_logic_errorPKc",
+                            "logic_error")
+KVASIR_LIBSTDCXX_THROW_WHAT(throwRangeError,
+                            "_ZSt19__throw_range_errorPKc",
+                            "range_error")
+KVASIR_LIBSTDCXX_THROW_WHAT(throwDomainError,
+                            "_ZSt20__throw_domain_errorPKc",
+                            "domain_error")
+KVASIR_LIBSTDCXX_THROW_WHAT(throwLengthError,
+                            "_ZSt20__throw_length_errorPKc",
+                            "length_error")
+KVASIR_LIBSTDCXX_THROW_WHAT(throwOutOfRange,
+                            "_ZSt20__throw_out_of_rangePKc",
+                            "out_of_range")
+KVASIR_LIBSTDCXX_THROW_WHAT(throwRuntimeError,
+                            "_ZSt21__throw_runtime_errorPKc",
+                            "runtime_error")
+KVASIR_LIBSTDCXX_THROW_WHAT(throwOverflowError,
+                            "_ZSt22__throw_overflow_errorPKc",
+                            "overflow_error")
+KVASIR_LIBSTDCXX_THROW_WHAT(throwUnderflowError,
+                            "_ZSt23__throw_underflow_errorPKc",
+                            "underflow_error")
+KVASIR_LIBSTDCXX_THROW_WHAT(throwInvalidArgument,
+                            "_ZSt24__throw_invalid_argumentPKc",
+                            "invalid_argument")
+    #undef KVASIR_LIBSTDCXX_THROW
+    #undef KVASIR_LIBSTDCXX_THROW_WHAT
+
+// the one with a printf format: the format itself is logged, its arguments are not expanded
+[[gnu::noreturn,
+  gnu::used]] void
+throwOutOfRangeFmt(char const* format,
+                   ...) __asm__("_ZSt24__throw_out_of_range_fmtPKcz");
+
+[[gnu::noreturn,
+  gnu::used]] void
+throwOutOfRangeFmt(char const* format,
+                   ...) {
+    libstdcxxThrow("out_of_range", format, __builtin_return_address(0));
+}
+}   // namespace Kvasir::Startup::Detail
 #endif
 
 #include "kvasir/StartUp/SecondaryCore.hpp"

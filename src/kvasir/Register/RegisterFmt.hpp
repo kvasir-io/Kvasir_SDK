@@ -3,6 +3,7 @@
 
 #include <bit>
 #include <cstddef>
+#include <span>
 #include <utility>
 
 #if __has_include("remote_fmt/remote_fmt.hpp")
@@ -24,7 +25,76 @@ template<typename T>
     #endif
   ;
 
+// A register whose fields also come as data (field_masks, field_dims, field_name_of: emitted by
+// the svd converter next to fmt_string).
+template<typename T>
+concept TabledRegister = PrintableRegister<T> && requires {
+    { T::field_masks[0] } -> std::convertible_to<unsigned>;
+    { T::field_dims.size() } -> std::convertible_to<std::size_t>;
+    { T::fieldNameOf()[0] } -> std::convertible_to<remote_fmt::catalog_id (*)(unsigned)>;
+    requires T::fieldNameOf().size() == T::field_masks.size();
+};
+
+// The whole register, one line per field: fmt_string's placeholders filled from one read.
+// Table-driven since 2026-10-06 (plans/binary_quality): the dims and the fields go out in a loop
+// over field_masks - a number as the field's value, an enumeration as the catalog id of its
+// value's name (the number when the value has none) - which is what format_to(fmt_string,
+// fields...) sent, for a fraction of the code: that form was a copy of the argument list per
+// register, 14 bytes and a stack slot per field (an OUT_BUFFER_CONTROL line 344 bytes).
+namespace Kvasir::Register::Detail {
+// The field loop, once per Printer: the dims, then each field as a number or as the catalog id
+// of its value's name. Not a template on the register, so ten buffer-control registers of
+// ten endpoints share it (52 bytes each as a template, measured).
+template<typename Printer>
+[[gnu::noinline]] void
+formatRegisterFields(Printer&                                             printer,
+                     std::span<unsigned const>                            dims,
+                     unsigned                                             raw,
+                     std::span<unsigned const>                            masks,
+                     std::span<remote_fmt::catalog_id (*const)(unsigned)> nameOf) {
+    for(unsigned const dim : dims) { remote_fmt::formatter<unsigned>{}.format(dim, printer); }
+    for(std::size_t i = 0; i != masks.size(); ++i) {
+        unsigned const mask  = masks[i];
+        unsigned const value = (raw & mask) >> std::countr_zero(mask);
+        if(nameOf[i] != nullptr) {
+            if(auto const id = nameOf[i](value); id != 0) {
+                printer.catalogedString(id);
+                continue;
+            }
+        }
+        remote_fmt::formatter<unsigned>{}.format(value, printer);
+    }
+}
+}   // namespace Kvasir::Register::Detail
+
+template<TabledRegister R>
+struct remote_fmt::formatter<R> {
+    template<typename Printer>
+    void format(R const& reg,
+                Printer& printer) {
+        // Without a catalog (the host tests) a name has no id: the argument list as it is.
+        if constexpr(!remote_fmt::use_catalog) {
+            R::apply_fields_with_dim([&]<typename... Args>(Args&&... args) {
+                return format_to(printer, SC_LIFT(R::fmt_string), std::forward<Args>(args)...);
+            });
+            return;
+        }
+        static_cast<void>(reg);
+        static constexpr auto nameOfField = R::fieldNameOf();
+        printer.beginSub(SC_LIFT(R::fmt_string));
+        Kvasir::Register::Detail::formatRegisterFields(
+          printer,
+          std::span<unsigned const>{R::field_dims},
+          static_cast<unsigned>(apply(read(R::FULLREGISTER))),
+          std::span<unsigned const>{R::field_masks},
+          std::span<remote_fmt::catalog_id (*const)(unsigned)>{nameOfField});
+    }
+};
+
+// A register that carries only fmt_string and apply_fields (a hand-written one): the argument list
+// as it is.
 template<PrintableRegister R>
+    requires(!TabledRegister<R>)
 struct remote_fmt::formatter<R> {
     template<typename FormatContext>
     auto format(R const&,

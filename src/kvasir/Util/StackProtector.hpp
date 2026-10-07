@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kvasir/StartUp/Hooks.hpp"
+#include "kvasir/Util/attributes.hpp"
 
 #include <algorithm>
 #include <array>
@@ -20,7 +21,7 @@ struct StackProtector {
 
     using Sentinel_t = std::array<std::decay_t<decltype(sentinelVal)>, Size / sizeof(sentinelVal)>;
 
-    [[gnu::section(".stackProtector")]] static inline Sentinel_t sentinel{};
+    [[KVASIR_SECTION_MEMBER(".stackProtector")]] static inline Sentinel_t sentinel{};
 
     [[gnu::always_inline]] static void runtimeInit() {
         std::fill(sentinel.begin(), sentinel.end(), sentinelVal);

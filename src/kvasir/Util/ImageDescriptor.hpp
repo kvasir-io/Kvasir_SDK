@@ -1,6 +1,8 @@
 #pragma once
 // The image CRC descriptor (IMAGE_CRC): which flash bytes make up the image and their CRC-32, written into the ELF
 // after the link by cmake/tools/patch_image_crc.py. Kvasir::ImageCheck (ImageCheck.hpp) walks it at run time.
+// In a RAM image (RAM_ONLY) the segments are its read-only part in SRAM instead - .data left out - and on the
+// RP2350 the picobin block behind the vectors is left out of either (the patcher's docstring has both rules).
 //
 // The segments are exactly the data records of <name>_flash.hex - what J-Link programs and the log printer checks
 // (uc_log detail/HexImage.hpp): contiguous records form one segment, gaps are never read. The CRC is
@@ -11,8 +13,9 @@
 
 namespace Kvasir::ImageCheck {
 struct Segment {
-    std::uint32_t address;   // load address (the XIP window on RP, 0-based NVM on SAM)
-    std::uint32_t length;    // bytes
+    std::uint32_t
+      address;   // load address (the XIP window on RP, 0-based NVM on SAM, SRAM in a RAM image)
+    std::uint32_t length;   // bytes
 };
 
 struct Descriptor {

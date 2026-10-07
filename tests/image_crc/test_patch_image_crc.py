@@ -4,7 +4,9 @@ toolchain found (arm-none-eabi-g++ and clang, LTO as the firmwares link) and hol
 names exactly the hex's records without its own 80 bytes, their zlib CRC, a second run changes nothing, the log
 printer's parser (uc_log HexImage.hpp, when the nested uc_log and a host compiler are there) reads the same
 segments; and it refuses an image without a descriptor, a descriptor outside the hex, a RAM segment, too many
-segments. A missing toolchain is a skip.
+segments. A RAM image (test_ram.ld) is checked where it runs: only its read-only sections - and .text also when a
+static constructor's .init_array entry makes the linker call it writable -, --exclude cuts the picobin-like block
+out, and it refuses a segment outside SRAM. A missing toolchain is a skip.
 
     python3 tests/image_crc/test_patch_image_crc.py -v
 """
@@ -30,13 +32,14 @@ spec.loader.exec_module(pic)
 
 COMMON = ['-mcpu=cortex-m33', '-mthumb', '-std=c++26', '-Os', '-flto', '-ffunction-sections', '-fdata-sections',
           '-nostdlib', '-ffreestanding', '-nostdinc++', f'-I{HERE / "include"}', '-Wall', '-Wextra', '-Werror',
-          f'-I{SDK / "src"}', f'-T{HERE / "test.ld"}',
-          '-Wl,--gc-sections']
+          f'-I{SDK / "src"}', '-Wl,--gc-sections']
 TOOLCHAINS = {
     'gcc': (['arm-none-eabi-g++', '-nostartfiles'], ['arm-none-eabi-g++']),
     'clang': (['clang++', '--target=armv8m.main-none-eabi', '-fuse-ld=lld'], ['clang++', 'ld.lld']),
 }
 SECTIONS = ['.vectors', '.text', '.data', '.boot2']
+EXCLUDE = ['--exclude', '_LINKER_INTERN_after_vectors_start_',
+           '_LINKER_INTERN_after_vectors_end_']
 
 
 def objcopy():
@@ -56,14 +59,14 @@ class PatchImageCrc(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def build(self, toolchain, *defines):
+    def build(self, toolchain, *defines, script='test.ld'):
         flags, exes = TOOLCHAINS[toolchain]
         for exe in exes + [self.objcopy]:
             if exe is None or shutil.which(exe) is None:
                 self.skipTest(f'{exe or "an objcopy"} not found')
         elf = Path(self.tmp.name) / \
-            f'{toolchain}_{"_".join(defines) or "plain"}.elf'
-        cmd = flags + COMMON + \
+            f'{toolchain}_{Path(script).stem}_{"_".join(defines) or "plain"}.elf'
+        cmd = flags + COMMON + [f'-T{HERE / script}'] + \
             [f'-D{d}' for d in defines] + \
             [str(HERE / 'image.cpp'), '-o', str(elf)]
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -71,9 +74,9 @@ class PatchImageCrc(unittest.TestCase):
                          f'{" ".join(cmd)}\n{result.stderr}')
         return elf
 
-    def patch(self, elf, sections=SECTIONS):
+    def patch(self, elf, sections=SECTIONS, extra=()):
         result = subprocess.run([sys.executable, '-B', str(PATCH), str(elf), '--objcopy', self.objcopy,
-                                 '--sections', *sections], capture_output=True, text=True)
+                                 '--sections', *sections, *extra], capture_output=True, text=True)
         return result.returncode, result.stdout + result.stderr
 
     def hex_of(self, elf):
@@ -148,6 +151,99 @@ class PatchImageCrc(unittest.TestCase):
         self.assertEqual(int(count), len(segments))
         # the "build" number: descriptor included
         self.assertEqual(int(crc, 16), pic.image_crc(segments))
+
+    def section(self, elf, name):
+        e = pic.Elf(elf)
+        s = next(s for s in e.sections if s['name'] == name)
+        return s['addr'], bytes(e.data[s['offset']:s['offset'] + s['size']])
+
+    def crc_in_elf(self, elf, segments):
+        """The CRC over the segments, read from the ELF's loaded sections (as the firmware reads them in RAM)."""
+        e = pic.Elf(elf)
+        crc = 0
+        for address, length in segments:
+            s = e.section_of(address)
+            offset = s['offset'] + address - s['addr']
+            crc = zlib.crc32(bytes(e.data[offset:offset + length]), crc)
+        return crc
+
+    def poke(self, elf, address, value=0x5A):
+        e = pic.Elf(elf)
+        s = e.section_of(address)
+        e.data[s['offset'] + address - s['addr']] ^= value
+        elf.write_bytes(e.data)
+
+    def check_ram_image(self, toolchain, *defines):
+        elf = self.build(toolchain, 'KVASIR_IMAGE_CRC=1',
+                         'RAM_IMAGE', *defines, script='test_ram.ld')
+        rc, out = self.patch(elf, extra=EXCLUDE)
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(out.strip().endswith(
+            ', checked in RAM: .vectors .text (left out: .data)'), out)
+        address, words = self.descriptor(elf)
+        magic, _version, crc, count = words[:4]
+        self.assertEqual(magic, pic.MAGIC)
+        segments = [(words[4 + 2 * i], words[5 + 2 * i]) for i in range(count)]
+        e = pic.Elf(elf)
+        block_start = e.symbol('_LINKER_INTERN_after_vectors_start_')[0]
+        block_end = e.symbol('_LINKER_INTERN_after_vectors_end_')[0]
+        data_start, data = self.section(elf, '.data')
+        text_start, text = self.section(elf, '.text')
+        vectors_start, _ = self.section(elf, '.vectors')
+        twice = e.symbol('twice')[0] & ~1
+
+        def covered(a):
+            return any(s <= a < s + n for s, n in segments)
+        self.assertTrue(all(a >= pic.SRAM_BASE for a, _ in segments))
+        self.assertTrue(covered(vectors_start) and covered(
+            text_start) and covered(twice))
+        self.assertFalse(any(covered(a)
+                         for a in range(block_start, block_end)))
+        self.assertFalse(any(covered(a)
+                         for a in range(data_start, data_start + len(data))))
+        self.assertFalse(any(covered(a) for a in range(
+            address, address + pic.DESCRIPTOR_BYTES)))
+        self.assertGreater(block_end, block_start)
+        self.assertEqual(self.crc_in_elf(elf, segments), crc)
+        # idempotent
+        before = elf.read_bytes()
+        rc, out = self.patch(elf, extra=EXCLUDE)
+        self.assertEqual((rc, before), (0, elf.read_bytes()), out)
+        # what picotool seal does to the block, and what the program does to .data, leaves the CRC alone; a byte of
+        # code does not
+        self.poke(elf, block_start + 12)
+        self.poke(elf, data_start)
+        self.assertEqual(self.crc_in_elf(elf, segments), crc)
+        self.poke(elf, twice)
+        self.assertNotEqual(self.crc_in_elf(elf, segments), crc)
+
+    def test_ram_image_gcc(self):
+        self.check_ram_image('gcc')
+
+    def test_ram_image_clang(self):
+        self.check_ram_image('clang')
+
+    # lld marks .text writable once it holds an .init_array entry: the code must be covered all the same
+    def test_ram_image_with_a_static_constructor_gcc(self):
+        self.check_ram_image('gcc', 'RAM_CTOR')
+
+    def test_ram_image_with_a_static_constructor_clang(self):
+        self.check_ram_image('clang', 'RAM_CTOR')
+
+    def test_ram_image_refuses_a_flash_segment(self):
+        elf = self.build('clang' if shutil.which('ld.lld') else 'gcc', 'KVASIR_IMAGE_CRC=1', 'RAM_IMAGE',
+                         'RAM_FLASH_SEGMENT', script='test_ram.ld')
+        rc, out = self.patch(elf, SECTIONS + ['.inflash'], EXCLUDE)
+        self.assertEqual(rc, 1, out)
+        self.assertIn('is not in RAM', out)
+
+    def test_refuses_an_exclude_the_image_does_not_have(self):
+        elf = self.build('clang' if shutil.which('ld.lld')
+                         else 'gcc', 'KVASIR_IMAGE_CRC=1')
+        rc, out = self.patch(elf, extra=EXCLUDE)
+        self.assertEqual(rc, 1, out)
+        self.assertIn(
+            'no _LINKER_INTERN_after_vectors_start_ in the image', out)
 
     def test_refuses_an_image_without_descriptor(self):
         elf = self.build('clang' if shutil.which('ld.lld') else 'gcc')

@@ -7,6 +7,11 @@
 // elsewhere is a -Wredundant-decls under gcc.
 extern "C" {
 extern void _LINKER_vectors_start_();   // the boot core's vector table (.core_vectors)
+// .after_vectors, right behind that table: the RP2350's picobin block, which IMAGE_CRC leaves out there (the chip's
+// TARGET_IMAGE_CRC_EXCLUDE); start == end on a chip that puts nothing in it - which the compiler does not believe
+// of two functions: compare the addresses as run-time values (test_examples 111 has the asm that makes them one)
+extern void _LINKER_INTERN_after_vectors_start_();
+extern void _LINKER_INTERN_after_vectors_end_();
 
 extern void _LINKER_stack_start_();   // low address - the stack grows DOWN to here
 extern void _LINKER_stack_end_();     // high address - the initial stack pointer
@@ -14,6 +19,10 @@ extern void _LINKER_stack_end_();     // high address - the initial stack pointe
 // The secondary core's stack (.stack1), sized by CORE1_STACK_SIZE; start == end when unset
 extern void _LINKER_stack1_start_();
 extern void _LINKER_stack1_end_();
+
+// The heap (.heap, sized by HEAP_SIZE); start == end without one
+extern void _LINKER_heap_start_();
+extern void _LINKER_heap_end_();
 
 using InitFunc = void (*)();
 extern InitFunc _LINKER_init_array_start_;

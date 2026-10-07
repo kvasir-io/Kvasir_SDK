@@ -113,6 +113,8 @@ kvasir_add_host_test(kvasir_test_persistent persistent_tests.cpp)
 kvasir_add_host_test(kvasir_test_crash_record crash_record_tests.cpp)
 kvasir_add_host_test(kvasir_test_boot_guard boot_guard_tests.cpp)
 kvasir_add_host_test(kvasir_test_health health_tests.cpp)
+kvasir_add_host_test(kvasir_test_health_scenarios health_scenarios_tests.cpp)
+kvasir_add_host_test(kvasir_test_health_logonly health_logonly_tests.cpp)
 kvasir_add_host_test(kvasir_test_image_check image_check_tests.cpp)
 kvasir_add_host_test(kvasir_test_cell_store cell_store_tests.cpp)
 kvasir_add_host_test(kvasir_test_executor executor_tests.cpp)
@@ -240,6 +242,26 @@ add_test(NAME kvasir_test_stack_fill COMMAND ${Python3_EXECUTABLE} -B
 
 add_test(NAME kvasir_test_bench_tool COMMAND ${Python3_EXECUTABLE}
                                              ${CMAKE_CURRENT_LIST_DIR}/../tools/test_kvasir_bench.py)
+
+# lib/compiler-rt/builtins/kvasir/udivmoddi4_udiv.c (the 64-bit division of the cores with a 32-bit divide instruction)
+# against the host's own division; C, as the routine. Its options are its own: the directory's are for C++
+# (-stdlib=libc++ in the libc++ configurations, which the C compiler - gcc there - rejects).
+enable_language(C)
+add_executable(kvasir_udivmoddi4_tests udivmoddi4/udivmoddi4_tests.c)
+set(kvasir_udivmoddi4_options -O2 -Wall -Wextra -Werror)
+set(kvasir_udivmoddi4_link_options)
+if(USE_SANITIZER)
+    list(APPEND kvasir_udivmoddi4_options -fsanitize=${USE_SANITIZER} -fno-omit-frame-pointer)
+    list(APPEND kvasir_udivmoddi4_link_options -fsanitize=${USE_SANITIZER})
+endif()
+set_target_properties(kvasir_udivmoddi4_tests PROPERTIES COMPILE_OPTIONS "${kvasir_udivmoddi4_options}"
+                                                         LINK_OPTIONS "${kvasir_udivmoddi4_link_options}")
+add_test(NAME kvasir_udivmoddi4_tests COMMAND kvasir_udivmoddi4_tests)
+
+# tools/size_report.py: bucketing, parsers, diff, and a snapshot of an image linked here (a missing toolchain is a skip
+# inside the test)
+add_test(NAME kvasir_test_size_report COMMAND ${Python3_EXECUTABLE} -B
+                                              ${CMAKE_CURRENT_LIST_DIR}/../tools/test_size_report.py)
 
 # cmake/tools/patch_image_crc.py on ARM images built here (a missing toolchain is a skip inside the test)
 add_test(NAME kvasir_test_patch_image_crc COMMAND ${Python3_EXECUTABLE} -B

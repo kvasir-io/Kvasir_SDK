@@ -11,6 +11,9 @@ set(compiler_common_flags
     -fno-common
     -fomit-frame-pointer
     -fmerge-all-constants
+    # no math function here sets errno (the libc is built LIBC_MATH_NO_ERRNO): with this the compiler may use the
+    # instruction for sqrtf and friends where the core has one
+    -fno-math-errno
     -fstack-protector-strong
     -Wno-unused-macros)
 

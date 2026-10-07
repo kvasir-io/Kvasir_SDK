@@ -12,7 +12,15 @@ set(CMAKE_STRIP arm-none-eabi-strip)
 set(CMAKE_AR arm-none-eabi-ar)
 set(CMAKE_NM arm-none-eabi-nm)
 set(CMAKE_RANLIB arm-none-eabi-ranlib)
-set(CMAKE_OBJCOPY arm-none-eabi-objcopy)
+# llvm-objcopy when it is installed, as in the clang trees: GNU objcopy warns "empty loadable segment detected" for
+# every <target>_flash.elf it cuts out of an image with an .eeprom segment (the segments cmake/tools/
+# strip_empty_segments.py removes right after), and a warning fails a build.
+find_program(KVASIR_LLVM_OBJCOPY llvm-objcopy)
+if(KVASIR_LLVM_OBJCOPY)
+    set(CMAKE_OBJCOPY llvm-objcopy)
+else()
+    set(CMAKE_OBJCOPY arm-none-eabi-objcopy)
+endif()
 set(CMAKE_OBJDUMP arm-none-eabi-objdump)
 
 find_package(
@@ -40,8 +48,9 @@ set(target_flags -mfloat-abi=${TARGET_FLOAT_ABI} -mfpu=${target_fpu} -mcpu=${TAR
 # =auto: plain -flto warns "using serial compilation of N LTRANS jobs" on every link
 set(optimize_option_common -ggdb3 -flto=auto)
 
-set(optimize_option_speed ${optimize_option_common} -Ofast)
-set(optimize_option_size ${optimize_option_common} -Os)
+# plain -fstack-protector in the release sets, as arm_clang.cmake (2026-10-06)
+set(optimize_option_speed ${optimize_option_common} -Ofast -fstack-protector)
+set(optimize_option_size ${optimize_option_common} -Os -fstack-protector)
 set(optimize_option_debug ${optimize_option_common} -Og)
 
 set(optimize_specs_speed "nosys")
@@ -74,7 +83,15 @@ set(common_warning_flags
 # gcc has no minimal UBSan runtime; kvasir/Util/ubsan.hpp defines the full-ABI __ubsan_handle_* functions. Compile-only:
 # never on the link line, so gcc does not add its libubsan. _GLIBCXX_ASSERTIONS is libstdc++'s counterpart of libc++'s
 # debug hardening mode (reported through std::__glibcxx_assert_fail, defined in StartUp.hpp).
-set(sanitize_option -fsanitize=undefined -fsanitize=bounds-strict -D_GLIBCXX_ASSERTIONS)
+#
+# gcc's null-pointer checks stay on (dominic, 2026-10-06): address 0 is readable on these chips (the boot ROM on the RP
+# chips - ROM_BASE, RP2040 datasheet md l.1238, RP2350 md l.1439 -, the flash on SAM D21/C21 - "Internal Flash
+# 0x00000000", SAM D21 datasheet md l.1507), so nothing else catches a null dereference. Their price is in constant
+# evaluation: with them gcc cannot evaluate "a pointer into a namespace-scope object or a template argument != nullptr"
+# ("... != 0 is not a constant expression", in the sanitize variant only). Code that is evaluated at compile time
+# therefore looks things up by INDEX, not by pointer, and does not call std::string_view::find / contains on
+# namespace-scope text (std::ranges::search instead).
+set(sanitize_option -fsanitize=undefined -fsanitize=bounds-strict -fstack-protector-strong -D_GLIBCXX_ASSERTIONS)
 if("${CPPLIB}" STREQUAL "libc++")
     # gcc's null-check wrappers inside the arguments of uc_log's constexpr log() make the call immediate-escalating with
     # libc++'s tuple/time_point in the signature; a gcc front-end limitation, scoped to exactly this combination
