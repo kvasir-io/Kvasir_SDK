@@ -1298,13 +1298,15 @@ _exit(int) {
 }
 }
     #endif
-    #if !defined(__clang__)
+    #if defined(__NEWLIB__)
 // gcc has no [[clang::no_destroy]]; accept and ignore the atexit() registration of static
-// destructors - firmware never exits
+// destructors - firmware never exits. newlib's own atexit() would also link register_fini ->
+// __libc_fini_array -> _fini, which lives in crti.o and is not linked (clang with newlib).
 extern "C" {
 [[gnu::used]] int atexit(void (*)()) { return 0; }
 }
     #elif defined(LIBC_NAMESPACE)
+// Whatever the compiler (gcc with llvm-libc too: it used to take the newlib branch above and link without abort/exit).
 // third-party static destructors; noexcept as llvm-libc declares it
 extern "C" {
 [[gnu::used]] int atexit(void (*)()) noexcept { return 0; }
@@ -1346,7 +1348,7 @@ _Exit(int status) noexcept {
 // The full newlib (gcc's speed variants) links its stdio as soon as malloc is used: malloc needs the reent structure,
 // which there holds the three standard streams. Nothing opens or prints through them, but their read/write/seek/close
 // need a system call each, and libnosys' stand-ins are linker warnings ("_write is not implemented and will always
-// fail"; defender_display, 2026-10-06). These fail the same way, silently.
+// fail"). These fail the same way, silently.
 extern "C" {
 int _close(int);
 int _lseek(int,
@@ -1406,7 +1408,7 @@ void* _sbrk(std::ptrdiff_t increment);
     #if defined(KVASIR_HEAP) && defined(LIBC_NAMESPACE)
 // llvm-libc's heap aligns every block to max(4, alignof(max_align_t)) (Block::MIN_ALIGN), and
 // operator new(size_t) promises __STDCPP_DEFAULT_NEW_ALIGNMENT__. A max_align_t weaker than that
-// (lib/libc/include/stddef.h had `typedef int` until 2026-09-25) hands 8-aligned types 4-aligned
+// (lib/libc/include/stddef.h once had `typedef int`) hands 8-aligned types 4-aligned
 // memory: a sanitizer type_mismatch at every such new.
 static_assert(alignof(std::max_align_t) >= __STDCPP_DEFAULT_NEW_ALIGNMENT__,
               "max_align_t is weaker than operator new's default alignment: the heap would return "
@@ -1675,8 +1677,8 @@ void* operator new[](std::size_t) {
 #if defined(KVASIR_HEAP) && defined(__NEWLIB__)
 // A gcc build with a heap. libstdc++'s own operator new throws std::bad_alloc when malloc returns null, and that one
 // throw links the unwinder (__exidx_start / __exidx_end, which no script here defines), the verbose terminate handler
-// and newlib's stdio behind it ("_write is not implemented and will always fail", ...: defender_display's speed
-// variants, 2026-10-06). These replace it: straight to newlib's malloc, and an exhausted heap is the allocation
+// and newlib's stdio behind it ("_write is not implemented and will always fail", ...: gcc's speed
+// variants). These replace it: straight to newlib's malloc, and an exhausted heap is the allocation
 // panic, as an allocation without a heap is above.
 namespace Kvasir::Startup::Detail {
 [[gnu::always_inline]] inline void* allocateOrPanic(void* block,
@@ -1741,7 +1743,7 @@ void operator delete[](void* block,
 // std::__throw_* helpers, all fifteen in one object of the library (functexcept.o). In the full library - gcc's speed
 // variants - they really throw: the unwinder, the type-info tables, the verbose terminate handler with its demangler
 // and newlib's stdio come with that one object, and the image does not link (__exidx_start; "_write is not implemented
-// and will always fail"; defender_display, 2026-10-06). Defined here, the linker never takes that object: each helper
+// and will always fail"). Defined here, the linker never takes that object: each helper
 // logs what would have been thrown and raises the abort panic at the caller. Under their mangled names, as the
 // __sync_* shims are, so no declaration here has to match the library's. All fifteen, or the linker takes the object
 // for the missing one and reports the others as defined twice (the list is the same in libstdc++ 16.2's full and

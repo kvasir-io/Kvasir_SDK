@@ -4,11 +4,11 @@
 Reads ELF files that are already built (llvm-readelf, llvm-objdump); builds nothing, touches no
 tree.
 
-  size_report.py snapshot -o before.json  usb_playground/build_pico  water_mix/build
-  size_report.py snapshot -o after.json   pico=<scratch>/usb_pico    water_mix=<scratch>/wm
+  size_report.py snapshot -o before.json  fw_a/build_pico            fw_b/build
+  size_report.py snapshot -o after.json   pico=<scratch>/fw_a_pico  fw_b=<scratch>/fw_b
   size_report.py report   before.json                     # one markdown row per image
   size_report.py diff     before.json after.json          # per image, totals, symbols that moved
-  size_report.py symbols  before.json 'water_mix/build/release' --top 40
+  size_report.py symbols  before.json 'fw_b/build/release' --top 40
 
 A TREE is a build directory (searched for ELFs) or one ELF. An image's key is `<label>/<path of
 the ELF in the tree, without .elf>`; the label is `name=` in front of the path, or the path's last

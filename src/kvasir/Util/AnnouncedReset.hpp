@@ -83,7 +83,7 @@ namespace detail {
     // 2); the Cortex-M33 can dual-issue some 16-bit pairs (100230 A1.4.1 "Limited dual-issue"), so
     // >= 2 is assumed there. The fastest clock: RP2040 200 MHz at 1.15 V (data sheet md l.515,
     // l.8660; 133 MHz nominal), RP2350 200 MHz too - 150 MHz is its nominal clock (data sheet md
-    // l.838), but firmwares run it at 200 MHz (aps-microcontroller does). So the bound is at least
+    // l.838), but firmwares run it at 200 MHz. So the bound is at least
     // the time asked for at the fastest clock and longer below it: the ack wait is >= 0.5 s at
     // 200 MHz (~0.75 s at 133 MHz with 6-cycle polls, ~8 s at the 12 MHz XOSC before the PLL).
     // It is spent only when a printer armed the block in this boot and does not answer.

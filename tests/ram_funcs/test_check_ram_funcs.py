@@ -73,7 +73,7 @@ class CheckRamFuncs(unittest.TestCase):
     def test_correct_image_clang(self):
         self.expect_pass('clang')
 
-    # the 2026-09-24 bug: gcc + LTO dropped the section of member, template and inline functions
+    # the old bug: gcc + LTO dropped the section of member, template and inline functions
     def test_old_gcc_attributes_leave_functions_in_flash(self):
         self.expect_fail('gcc', 0, 'Member::run', 'not in RAM',
                          defines=['OLD_GCC_ATTRIBUTES'])

@@ -49,8 +49,8 @@ set(CHIP_ROOT
     CACHE INTERNAL "" FORCE)
 
 # A tree of sibling checkouts can hand FetchContent dependencies (aglio, which uc_log fetches) its own checkouts: a
-# kvasir_fetch_links.cmake next to the SDK sets FETCHCONTENT_SOURCE_DIR_<NAME> for them (kvasir_work: `just link` writes
-# it, `just unlink` empties it). Found with a glob so that a file that appears or goes re-runs cmake.
+# kvasir_fetch_links.cmake next to the SDK sets FETCHCONTENT_SOURCE_DIR_<NAME> for them (a workspace's link step writes
+# it, its unlink empties it). Found with a glob so that a file that appears or goes re-runs cmake.
 get_filename_component(_kvasir_tree_dir "${KVASIR_ROOT_DIR}" DIRECTORY)
 file(GLOB _kvasir_fetch_links CONFIGURE_DEPENDS "${_kvasir_tree_dir}/kvasir_fetch_links.cmake")
 if(_kvasir_fetch_links)

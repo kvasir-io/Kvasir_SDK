@@ -70,7 +70,7 @@ enum class Result : std::uint8_t { unknown, ok, corrupt, noDescriptor };
 /// software running on the processor" IMPLEMENTATION DEFINED - a chip package whose core documents the read can
 /// give PanicAfter a Debugger of its own.
 ///
-/// Measured on the RP2350 (Feather, J-Link, 2026-10-06, test_examples 111): software reads the bit as the probe
+/// Measured on the RP2350 over J-Link: software reads the bit as the probe
 /// does (DHCSR 0x01100001) - except while the log printer's session starts: after it loaded and started an image
 /// the bit was set at the first instruction, clear from 4..14 ms, set again from 74..99 ms and then stayed. A
 /// corrupt pass in that gap is judged as if nobody were attached.

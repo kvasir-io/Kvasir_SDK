@@ -5,7 +5,7 @@
 #include "kvasir/Util/attributes.hpp"
 
 #if defined(OLD_GCC_ATTRIBUTES)
-// what KVASIR_RAM_FUNC_ATTRIBUTES was before 2026-09-24: gcc's LTO puts these in .text
+// what KVASIR_RAM_FUNC_ATTRIBUTES used to be: gcc's LTO puts these in .text
     #undef KVASIR_RAM_FUNC_ATTRIBUTES
     #define KVASIR_RAM_FUNC_ATTRIBUTES gnu::section(".data#"), gnu::noinline, gnu::long_call
 #endif

@@ -355,8 +355,8 @@ class ChipPlugin(unittest.TestCase):
 
 
 class TraceRing(unittest.TestCase):
-    """Both layouts of a Kvasir::Trace::Ring: one RAM object with the header in front (until
-    2026-10-06), and a constant descriptor plus RAM storage."""
+    """Both layouts of a Kvasir::Trace::Ring: one RAM object with the header in front (the old
+    layout), and a constant descriptor plus RAM storage."""
     RECORDS = b"".join(v.to_bytes(4, "little")
                        for v in (10, 11, 20, 21, 30, 31, 40, 41))
 

@@ -98,11 +98,10 @@ function(patch_image_crc target)
 endfunction()
 
 # kvasir_constexpr_budget(<steps> [<target>...]): how much compile-time evaluation the compiler may do - for
-# static_asserts that simulate (water_mix's valve) or measure text (gfx's checked literals). <steps> is clang's count
+# static_asserts that simulate a plant or measure text (gfx's checked literals). <steps> is clang's count
 # (-fconstexpr-steps, default 1 048 576); gcc counts operations (-fconstexpr-ops-limit, default 33 554 432) and needs
-# more of them for the same work - water_mix: 30 M clang steps, between 34 M and 268 M gcc operations (2026-10-06) - so
-# it gets 8 x <steps>, never less than its default. With targets: on those; without: add_compile_options for the
-# directory.
+# more of them for the same work - one firmware: 30 M clang steps, between 34 M and 268 M gcc operations - so it gets 8
+# x <steps>, never less than its default. With targets: on those; without: add_compile_options for the directory.
 function(kvasir_constexpr_budget steps)
     math(EXPR _ops "${steps} * 8")
     if(_ops LESS 33554432)

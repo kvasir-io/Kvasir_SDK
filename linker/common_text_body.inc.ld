@@ -12,7 +12,7 @@ __start___lcxx_override = .;
 *(__lcxx_override)
 __stop___lcxx_override = .;
 *(SORT_BY_ALIGNMENT(.rodata*))
-/* gcc's UBSan data blocks, one per check site (266 of them, 4472 bytes, in rgb_rotary's sanitize image - which did not
+/* gcc's UBSan data blocks, one per check site (266 of them, 4472 bytes, in one sanitize image - which did not
    fit the ATSAMC21E17A's 16 KB with them in RAM). gcc makes them writable because its own runtime marks a reported
    location; Kvasir's handlers (Util/ubsan.hpp) only read them, so they live here and not in .data, whose *(.data*)
    further down the script would take them. clang's minimal runtime has none. */

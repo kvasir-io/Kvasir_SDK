@@ -46,7 +46,7 @@ extern "C" {
 
 // A handler is never inlined: it reports its return address as the place of the check, and
 // since a log line is one call its body is small enough for -O3 to copy into every check -
-// defender_display's sanitize image grew 60 KB of flash and 30 KB of RAM code that way.
+// one sanitize image grew 60 KB of flash and 30 KB of RAM code that way.
 #define KVASIR_UBSAN_HANDLER [[gnu::used, gnu::noinline, gnu::cold]] inline
 
 #define UBSAN_REPORT()                                                                         \

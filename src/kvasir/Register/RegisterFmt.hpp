@@ -36,7 +36,7 @@ concept TabledRegister = PrintableRegister<T> && requires {
 };
 
 // The whole register, one line per field: fmt_string's placeholders filled from one read.
-// Table-driven since 2026-10-06 (plans/binary_quality): the dims and the fields go out in a loop
+// Table-driven: the dims and the fields go out in a loop
 // over field_masks - a number as the field's value, an enumeration as the catalog id of its
 // value's name (the number when the value has none) - which is what format_to(fmt_string,
 // fields...) sent, for a fraction of the code: that form was a copy of the argument list per

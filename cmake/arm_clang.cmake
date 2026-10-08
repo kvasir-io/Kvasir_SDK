@@ -95,35 +95,34 @@ set(target_flags
 # The Cortex-M0+ has no exclusive accesses, so clang calls a library function for EVERY atomic access there, a plain
 # load or store included. +atomics-32 lets it do loads and stores of up to 32 bits inline (they are single instructions)
 # and call __sync_* for the read-modify-writes only, which kvasir/Atomic/detail/arm_Common_atomic.hpp provides on the
-# same lock as before. Measured 2026-10-05 (kvasir_work plans/binary_quality/RESULTS.md): M0+ release images 2.2 %
-# smaller in sum, an atomic load 14 -> 0 cycles and Clock::now() 91 -> 58 on the RP2040. Part of target_flags, which
-# becomes the CMAKE_<LANG>_FLAGS string: as a target option list CMake would drop the second -Xclang.
+# same lock as before. Measured: M0+ release images 2.2 % smaller in sum, an atomic load 14 -> 0 cycles and Clock::now()
+# 91 -> 58 on the RP2040. Part of target_flags, which becomes the CMAKE_<LANG>_FLAGS string: as a target option list
+# CMake would drop the second -Xclang.
 if(TARGET_ARCH STREQUAL "v6-m")
     list(APPEND target_flags -Xclang -target-feature -Xclang +atomics-32)
 endif()
 
 set(optimize_option_common -ggdb3 -flto -fwhole-program-vtables -fforce-emit-vtables)
 
-# A/B switches for flag experiments (kvasir_work plans/binary_quality), given with -D when a tree is configured; unset
-# or empty leaves every command line as it is. KVASIR_EXTRA_COMPILE_FLAGS: a ;-list added at the end of each
-# optimisation set, so the runtime libraries get it too and a later -O wins. KVASIR_EXTRA_LINK_FLAGS: a ;-list added to
-# the link. KVASIR_LTO_LEVEL: the digit of lld's --lto-O.
+# A/B switches for flag experiments, given with -D when a tree is configured; unset or empty leaves every command line
+# as it is. KVASIR_EXTRA_COMPILE_FLAGS: a ;-list added at the end of each optimisation set, so the runtime libraries get
+# it too and a later -O wins. KVASIR_EXTRA_LINK_FLAGS: a ;-list added to the link. KVASIR_LTO_LEVEL: the digit of lld's
+# --lto-O.
 set(kvasir_lto_level 3)
 if(NOT "${KVASIR_LTO_LEVEL}" STREQUAL "")
     set(kvasir_lto_level ${KVASIR_LTO_LEVEL})
 endif()
 
-# The stack protector per variant (dominic, 2026-10-06, plans/binary_quality F4): compiler_common.cmake's
-# -fstack-protector-strong guards every function that takes a local's address, about 24 bytes a function (550 B in
-# usb_playground's bulk, 860 B in water_mix, 1.3 KB in i2c_testing). The release sets take plain -fstack-protector (char
-# arrays only; the later flag wins), debug keeps strong, sanitize puts strong back below. The libc and compiler-rt have
-# no protector at all, their own flag lists say so.
+# The stack protector per variant: compiler_common.cmake's -fstack-protector-strong guards every function that takes a
+# local's address, about 24 bytes a function (0.5 to 1.3 KB in a firmware). The release sets take plain
+# -fstack-protector (char arrays only; the later flag wins), debug keeps strong, sanitize puts strong back below. The
+# libc and compiler-rt have no protector at all, their own flag lists say so.
 set(optimize_option_speed ${optimize_option_common} -O3 -fstack-protector ${KVASIR_EXTRA_COMPILE_FLAGS})
 set(optimize_option_size ${optimize_option_common} -Oz -fstack-protector ${KVASIR_EXTRA_COMPILE_FLAGS})
 set(optimize_option_debug ${optimize_option_common} -Og ${KVASIR_EXTRA_COMPILE_FLAGS})
 
 # Backend options of an optimisation set go to the LINKER: with -flto the code is generated inside lld, and an -mllvm
-# given at compile time never reaches it (the speed set's -arm-promote-constant did nothing until 2026-10-05).
+# given at compile time never reaches it (the speed set's -arm-promote-constant did nothing there).
 set(optimize_link_option_speed --mllvm=-arm-promote-constant=true)
 set(optimize_link_option_size)
 set(optimize_link_option_debug)
@@ -299,25 +298,23 @@ endif()
 
 set(profile_flags)
 
-# libstdc++ hides hosted headers under __STDC_HOSTED__=0 and clang, unlike gcc, refuses to redefine the macro, so
-# -ffreestanding has to go; -Wno-main because StartUp.hpp declares main() extern "C" and takes its address on purpose
-if("${CPPLIB}" STREQUAL "libstdc++")
-    list(REMOVE_ITEM arm_compiler_common_flags -ffreestanding)
-    list(APPEND common_warning_flags -Wno-main)
-endif()
-# Hosted application code (2026-10-06, plans/binary_quality): clang then copies a small struct with ldm/stm instead of
-# calling memcpy, calls __aeabi_memcpy4 / __aeabi_memclr8 / __aeabi_memset8 for copies and fills of known alignment
-# (direct entries in Kvasir's assembly memory functions, lib/libc/kvasir/arm/memory_v6m.S and memory_v7m.S - with
-# compiler-rt's forwarders instead they cost 2 to 5 cycles more a copy), and uses what it knows of the C library
-# (-fno-math-errno is already set). The runtime libraries keep -ffreestanding (and -fno-builtin) in their own flag
-# lists, so no memcpy is built out of memcpy. -Wno-main: StartUp.hpp declares main() extern "C" and takes its address.
-# __STDC_HOSTED__ stays 0: the C library has no FILE, and third-party headers read the macro as "stdio exists" (emio
-# compiles its std::fseek file buffer under it, ambient_light_control 2026-10-06). Clang has no flag for "builtins yes,
-# hosted no" - -fbuiltin after -ffreestanding changes nothing - so the macro is set by hand, which clang calls
-# redefining a builtin macro.
+# Hosted application code: clang then copies a small struct with ldm/stm instead of calling memcpy, calls
+# __aeabi_memcpy4 / __aeabi_memclr8 / __aeabi_memset8 for copies and fills of known alignment (direct entries in
+# Kvasir's assembly memory functions, lib/libc/kvasir/arm/memory_v6m.S and memory_v7m.S - with compiler-rt's forwarders
+# instead they cost 2 to 5 cycles more a copy), and uses what it knows of the C library (-fno-math-errno is already
+# set). The runtime libraries keep -ffreestanding (and -fno-builtin) in their own flag lists, so no memcpy is built out
+# of memcpy. -Wno-main: StartUp.hpp declares main() extern "C" and takes its address. __STDC_HOSTED__ stays 0: the C
+# library has no FILE, and third-party headers read the macro as "stdio exists" (emio compiles its std::fseek file
+# buffer under it). Clang has no flag for "builtins yes, hosted no" - -fbuiltin after -ffreestanding changes nothing -
+# so the macro is set by hand, which clang calls redefining a builtin macro. Not with libstdc++: it hides <string> and
+# the rest of its hosted headers under __STDC_HOSTED__=0 (requires_hosted.h), and newlib, its C library here, has FILE
+# anyway.
 list(REMOVE_ITEM arm_compiler_common_flags -ffreestanding)
-list(APPEND arm_compiler_common_flags -U__STDC_HOSTED__ -D__STDC_HOSTED__=0)
-list(APPEND common_warning_flags -Wno-main -Wno-builtin-macro-redefined)
+list(APPEND common_warning_flags -Wno-main)
+if(NOT "${CPPLIB}" STREQUAL "libstdc++")
+    list(APPEND arm_compiler_common_flags -U__STDC_HOSTED__ -D__STDC_HOSTED__=0)
+    list(APPEND common_warning_flags -Wno-builtin-macro-redefined)
+endif()
 
 if("${CPPLIB}" STREQUAL "libc++")
     list(APPEND profile_flags ${libcxx_profile_flags})

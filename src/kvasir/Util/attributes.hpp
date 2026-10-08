@@ -44,7 +44,7 @@
 // The section of an INLINE variable: [[KVASIR_SECTION(".noInit")]] on a namespace-scope inline
 // variable or a variable template, [[KVASIR_SECTION_MEMBER(".eeprom")]] on a class's static inline
 // member. gcc's LTO makes such a variable local to the link and forgets its section attribute with
-// that - measured 2026-10-06, arm-none-eabi-g++ 16.2 -flto: StackProtector's sentinel in .bss
+// that - measured with arm-none-eabi-g++ 16.2 -flto: StackProtector's sentinel in .bss
 // instead of at the stack's bottom, the RP2040's SimpleEeprom value in .data instead of .eeprom.
 // Two attributes keep the section, each with a price that decides where it fits:
 //   externally_visible  emits nothing that no code refers to (a record in .noInit costs RAM only in

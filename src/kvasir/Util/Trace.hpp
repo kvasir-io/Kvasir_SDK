@@ -29,7 +29,7 @@ template<std::size_t N>
 Name(char const (&)[N]) -> Name<N>;
 
 /// What a ring is: constant, in flash. `layout` points at "name:field,field,...\0".
-/// (Until 2026-10-06 this was the head of the ring's one RAM object, with the count in it: the
+/// (This used to be the head of the ring's one RAM object, with the count in it: the
 /// magic made the whole ring an initialised object, 784 bytes of flash for a 64-record ring.)
 struct Descriptor {
     static constexpr std::uint32_t Magic = 0x4352544BU;   // "KTRC" in memory

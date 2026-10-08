@@ -9,14 +9,14 @@ repo with a single build tree; a target that is not built lists the ones that ar
 RULES (the tool enforces what it can; the rest is on you)
   1. `status BUILD TARGET` before any hardware step: which probe, whose printer, running or halted,
      and whether the board runs the tree's build.
-  2. One printer per board. If one runs - dominic's `just log` window, or one from `printer start`
+  2. One printer per board. If one runs - a `just log` window, or one from `printer start`
      - use it: every command goes through its socket. `printer stop` refuses to end a printer that
      has a window (exit 4) unless asked with --confirm.
   3. Symbols come from the tree's ELF. `peek`, `trace`, `stack`, `ub`, `crash`, `snapshot`, `profile`
      refuse (exit 4) when the printer says the board runs another build or the tree was rebuilt
      since the flash: flash first, or --stale-ok if you know the symbol did not move.
   4. `reset` and `flash` refuse (exit 4) where the repo's .kvasir_bench.json says they do something
-     physical (water_mix: the valve's motor calibrates at boot) - ask dominic, then --confirm.
+     physical (a motor that calibrates at boot) - ask the owner, then --confirm.
   5. Judge a change with the `sanitize` target and end with `ub`.
 
 THE USUAL SESSION
@@ -341,7 +341,7 @@ def printer_start(args) -> None:
                 "  stop it first (kvasir_bench.py printer status / stop): two printers on one "
                 "target fight over its RTT buffer")
     tree.log_dir.mkdir(parents=True, exist_ok=True)
-    cmd = [str(exe), "--device", tree.device, "--speed", "100000",
+    cmd = [str(exe), "--device", tree.device, "--speed", tree.swd_speed,
            "--map_file", f"{tree.target}.map", "--hex_file", f"{tree.target}_flash.hex",
            "--string_constants_file", f"{tree.target}_string_constants.json",
            "--build_command", "true", "--log_dir", str(tree.log_dir), "--disable_ui"]
@@ -378,7 +378,7 @@ def printer_stop(args) -> None:
     # a printer with a window is somebody's `just log`: not ours to end unasked
     windows = [pid for pid, cmd in hit if "--disable_ui" not in cmd]
     if windows and not args.confirm:
-        refuse(f"printer {', '.join(map(str, windows))} has a window - dominic's `just log`, most "
+        refuse(f"printer {', '.join(map(str, windows))} has a window - a `just log`, most "
                "likely. Use it instead (every command goes through it); stop it only when asked, "
                "with --confirm")
     for pid, _ in hit:
@@ -843,7 +843,7 @@ def log(args) -> None:
 
 def nm(tree: Tree, demangle: bool = True) -> str:
     # llvm-nm demangles the kilobyte-long template names GNU nm gives up on. Demangled, the
-    # whole table can be huge (i2c_testing hwtest_sanitize: 253 MB, names up to 2 MB).
+    # whole table can be huge (a large sanitize image: 253 MB, names up to 2 MB).
     tool = shutil.which("llvm-nm") or "arm-none-eabi-nm"
     return subprocess.run([tool, "-C" if demangle else "--no-demangle", "-S", "--defined-only",
                            str(tree.elf)], capture_output=True, text=True).stdout
@@ -1405,8 +1405,8 @@ TRACE_MAGIC = 0x4352544B
 
 
 def trace_rings(all_symbols) -> list:
-    """(descriptor address or None, storage address, storage size) of every Trace::Ring. Since
-    2026-10-06 a ring is two objects, a constant `descriptor` and the RAM `storage` (count, then
+    """(descriptor address or None, storage address, storage size) of every Trace::Ring. Now
+    a ring is two objects, a constant `descriptor` and the RAM `storage` (count, then
     records); before, `storage` alone, starting with the header (descriptor address None)."""
     descriptors = {name[:-len("descriptor")]: a for a, _, name in all_symbols
                    if re.search(r"Trace::Ring<.*>::descriptor$", name)}
@@ -1801,7 +1801,7 @@ def strip_templates(name: str) -> str:
 
 def short_function_names(names: set[str]) -> dict[str, str]:
     """Mangled name -> strip_templates() of its demangled form. A demangled template signature can
-    run to megabytes (i2c_testing hwtest: 7.8 MB), so each is demangled once, streamed, and
+    run to megabytes (7.8 MB seen), so each is demangled once, streamed, and
     abbreviated() (remote_fmt, memoised) before it is stripped."""
     def split(n):   # a mangled name behind a prefix: __Thumbv7ABSLongThunk__ZN..., .Lswitch.table._ZN...
         m = re.search(r"(?<=[._])_Z[A-Z]", n)
@@ -1838,7 +1838,7 @@ def short_function_names(names: set[str]) -> dict[str, str]:
 def symbolize(elf: Path, addresses: typing.Iterable[int]) -> dict[int, list[dict]]:
     """Address -> inline stack (innermost first) with short function names. The output is read
     line by line and each name kept once: mangled, it is still 0.6 GB for 40 000 addresses of
-    i2c_testing hwtest."""
+    a large image."""
     tool = shutil.which("llvm-symbolizer")
     if not tool:
         die("llvm-symbolizer is needed for the inlined frames")

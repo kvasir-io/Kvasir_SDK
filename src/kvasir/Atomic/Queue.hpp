@@ -81,7 +81,7 @@ namespace Kvasir { namespace Atomic {
         // value - but as a std::array<T> the slots are value-initialised, and a T with default
         // member values (a request's default timeout, an empty callback) then makes the whole
         // queue an initialised object: stored in the flash image and copied at start-up
-        // (i2c_testing's request queue: 3332 bytes, an SPI queue: 800). Such a T is an
+        // (an I2C request queue: 3332 bytes, an SPI queue: 800). Such a T is an
         // implicit-lifetime type: the byte array's lifetime starts the elements' as well.
         template<typename T, std::size_t Size>
         struct RawSlots {
@@ -136,7 +136,7 @@ namespace Kvasir { namespace Atomic {
         }
 
         // An index is always below Size, so the wrap is one compare: `% Size` was a division on every
-        // push and pop (a call into the RP2040's divider, software on the SAM D21, 2026-10-06). A
+        // push and pop (a call into the RP2040's divider, software on the SAM D21). A
         // power of two keeps its mask: clang does not find it from the compare.
         static constexpr IndexType next(IndexType in) {
             std::size_t const n = static_cast<std::size_t>(in) + 1;
