@@ -1,0 +1,14 @@
+# Files in lib/libc that are Kvasir's, not upstream's: the port neither overwrites
+# nor deletes them. Paths/globs relative to lib/libc; a trailing / = whole directory.
+# Declarations gcc's C++ mode needs (libc++'s using-declarations; see the files).
+include/__gcc-compat/
+# Compiler-level headers llvm-libc leaves to the compiler; Kvasir's stddef.h has a
+# real max_align_t (llvm-libc's malloc aligns to it).
+# stdbool.h: gcc builds use -nostdinc, and libc++ no longer ships one (gone upstream by 22).
+include/stddef.h
+include/stdarg.h
+include/_types/_ptrdiff_t.h
+include/stdbool.h
+# Kvasir's own implementations: arm/memory_v6m.S (Cortex-M0+) and arm/memory_v7m.S (Thumb-2 cores), the
+# memcpy/memmove/memset and __aeabi_mem* of every core (libc.cmake drops src/string/mem{cpy,move,set}.cpp).
+kvasir/

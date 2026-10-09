@@ -1,0 +1,3 @@
+# Files in lib/compiler-rt that are Kvasir's, not upstream's (see libc/owned.txt).
+# The 64-bit division for cores with a 32-bit divide instruction (udivmoddi4_udiv.c).
+builtins/kvasir/

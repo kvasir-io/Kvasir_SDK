@@ -177,6 +177,8 @@ kvasir_add_host_test(kvasir_test_util_bitfield util_bitfield_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_static_vector util_static_vector_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_static_containers util_static_containers_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_static_function util_static_function_tests.cpp)
+# its interrupt model is a signal handler, raised from a second thread
+target_link_libraries(kvasir_test_util_static_function PRIVATE Threads::Threads)
 kvasir_add_host_test(kvasir_test_mpl mpl_tests.cpp)
 kvasir_add_host_test(kvasir_test_resources resources_tests.cpp)
 kvasir_add_host_test(kvasir_test_startup_list startup_list_tests.cpp)
@@ -266,3 +268,12 @@ add_test(NAME kvasir_test_size_report COMMAND ${Python3_EXECUTABLE} -B
 # cmake/tools/patch_image_crc.py on ARM images built here (a missing toolchain is a skip inside the test)
 add_test(NAME kvasir_test_patch_image_crc COMMAND ${Python3_EXECUTABLE} -B
                                                   ${CMAKE_CURRENT_LIST_DIR}/image_crc/test_patch_image_crc.py)
+
+# cmake/tools/elf_image.py, the flash artefacts from the load view, against llvm-objcopy as the oracle on images linked
+# here with lld and GNU ld (a missing toolchain is a skip inside the test)
+add_test(NAME kvasir_test_elf_image COMMAND ${Python3_EXECUTABLE} -B
+                                            ${CMAKE_CURRENT_LIST_DIR}/elf_image/test_elf_image.py)
+
+# kvasir/Util/Coverage.hpp and the bare-metal profile runtime on the host: the manifest equals the runtime's own buffer
+# writer, llvm-profdata/llvm-cov read it (needs clang and the llvm tools; otherwise a skip inside the test)
+add_test(NAME kvasir_test_coverage COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_LIST_DIR}/coverage/test_coverage.py)

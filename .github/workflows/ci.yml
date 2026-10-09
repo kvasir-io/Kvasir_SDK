@@ -38,7 +38,7 @@ jobs:
             - name: Set up C++ environment
               run: |
                 pacman -Syu --noconfirm
-                pacman -S --noconfirm git cmake base-devel ${{ matrix.compiler.cc == 'clang' && 'clang' || '' }} ${{ matrix.compiler.stdlib == 'libc++' && 'libc++ lld' || '' }}
+                pacman -S --noconfirm git cmake base-devel ${{ matrix.compiler.cc == 'clang' && 'clang llvm lld' || '' }} ${{ matrix.compiler.stdlib == 'libc++' && 'libc++ lld' || '' }}
 
             - name: Checkout repository
               uses: actions/checkout@v6
@@ -60,6 +60,34 @@ jobs:
 
             - name: Run tests
               run: cd build && ctest --output-on-failure
+
+    # lib/{libc,libcxx,compiler-rt} against what tools/llvm_port says they are: upstream at lib/*/UPSTREAM's tag +
+    # Kvasir's patches + its owned files. A finding is an edit the next LLVM port would lose. Monthly and on demand
+    # (a sparse clone of the tag, then a headers-only libc build); the selftest seeds drift into a scratch copy.
+    port-check:
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        runs-on: ubuntu-latest
+        container:
+            image: archlinux:latest
+        steps:
+            - name: Set up the tools
+              run: |
+                pacman -Syu --noconfirm
+                pacman -S --noconfirm git cmake base-devel clang python python-yaml rsync patch diffutils
+
+            - name: Checkout repository
+              uses: actions/checkout@v6
+              with:
+                submodules: recursive
+
+            - name: llvm-project at the ported tag
+              run: echo "LLVM=$(tools/llvm_port/fetch-llvm)" >> "$GITHUB_ENV"
+
+            - name: Drift check
+              run: NO_COLOR=1 tools/llvm_port/libcport --check "$LLVM" .
+
+            - name: Drift check selftest
+              run: tools/llvm_port/tests/check_selftest.sh "$LLVM" .
 
     # everything below only runs when the whole build-and-test matrix succeeded;
     # pull requests never build or push containers

@@ -47,6 +47,10 @@ COMMANDS
   trace    B T [NAME] [--last N] [--delta]    Kvasir::Trace rings, oldest record first
   stack    B T                                the stack's high-water mark (Kvasir::StackUsage)
   ub       B T                                a sanitize build's report counter
+  coverage B T [--merge P.profdata]... [-- LLVM-COV-REPORT-ARGS]
+                          a `coverage` build's source coverage, read live (Kvasir::Coverage in its
+                          Startup list): writes <T>.profraw/.profdata in the tree, prints
+                          llvm-cov's report (runtime libraries filtered out). Through the printer
   crash    B T                                the last halt the printer caught, symbolised
   profile  B T [--seconds S] [--top N] [--inclusive] [--addresses N]
                           where the core spends its time: DWT_PCSR sampled through the printer
@@ -114,6 +118,7 @@ import shlex
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -199,7 +204,16 @@ class Tree:
         self.log_dir = self.build / "rtt_log" / target
 
     def _setting(self, name: str) -> str:
-        return os.environ[name] if name in os.environ else self._cached(name)
+        """JLINK_PROBE / JLINK_IP: the environment, else the target's own log command - which carries
+        what the target was configured with, its own J-Link (target_configure_kvasir JLINK_IP /
+        JLINK_PROBE) or the cache's - else the cache."""
+        if name in os.environ:
+            return os.environ[name]
+        flag = {"JLINK_PROBE": "--probe", "JLINK_IP": "--host"}[name]
+        if self._log_command_words():
+            values = self._log_command_values(flag)
+            return values[0] if values else ""
+        return self._cached(name)
 
     def _cached(self, name: str) -> str:
         m = re.search(rf"^{name}:[A-Za-z]*=(.*)$", self.cache, re.M)
@@ -1401,6 +1415,75 @@ def ub(args) -> None:
     sys.exit(3)
 
 
+COVERAGE_MAGIC = 0x4B434F56   # "KCOV", Kvasir::Coverage::Magic
+COVERAGE_PIECES = 24          # Kvasir::Coverage::Manifest::pieces
+COVERAGE_KINDS = ("memory", "zeros", "inlined")
+
+
+def assemble_profraw(manifest: bytes, flash_bytes, read_live) -> bytes:
+    """The .profraw Kvasir::Coverage's manifest describes: inlined pieces from the manifest's own header copy, zero
+    padding, and the pieces by address - flash_bytes(address, length) for what lies in the image (records, names; None
+    when not), read_live(address, length) for the rest (the counters, live RAM)."""
+    magic, status, count, _used = struct.unpack_from("<4I", manifest, 0)
+    if magic != COVERAGE_MAGIC:
+        raise ValueError(
+            "the manifest is empty: the board has not run Kvasir::Coverage's Startup entry yet")
+    if status != 0:
+        raise ValueError(
+            f"the profile runtime reported {status} laying out the file (manifest too small?)")
+    header_at = (16 + 12 * COVERAGE_PIECES + 7) & ~7
+    out = bytearray()
+    for i in range(count):
+        where, length, kind = struct.unpack_from("<3I", manifest, 16 + 12 * i)
+        if COVERAGE_KINDS[kind] == "zeros":
+            out += bytes(length)
+        elif COVERAGE_KINDS[kind] == "inlined":
+            out += manifest[header_at + where:header_at + where + length]
+        else:
+            data = flash_bytes(where, length)
+            out += data if data is not None else read_live(where, length)
+    return bytes(out)
+
+
+def coverage(args) -> None:
+    """A coverage image's live counters as a .profraw (Kvasir::Coverage's manifest), and llvm-cov's report."""
+    tree = Tree(args.build, args.target)
+    check_build(tree, args.stale_ok)
+    hit = [s for s in symbols(tree) if s[2] == "Kvasir::Coverage::manifest"]
+    if not hit:
+        die(f"{tree.target} has no coverage manifest: not a coverage build, or Kvasir::Coverage is not in its Startup")
+    address, size, _ = hit[0]
+    control = need_printer(tree, "coverage")
+    sys.path.insert(
+        0, str(Path(__file__).resolve().parent.parent / "cmake" / "tools"))
+    import elf_image
+    loaded = elf_image.Elf(tree.elf.read_bytes()).loaded()
+
+    def flash_bytes(where: int, length: int) -> bytes | None:
+        for (_name, lma, data) in loaded:   # the records and names: in the image, identical on the board
+            if lma <= where and where + length <= lma + len(data) and lma < 0x20000000:
+                return data[where - lma:where - lma + length]
+        return None
+
+    try:
+        raw = assemble_profraw(read_target(control, address, size), flash_bytes,
+                               lambda where, length: read_target(control, where, length))
+    except ValueError as e:
+        die(str(e))
+    profraw = tree.elf.with_suffix(".profraw")
+    profraw.write_bytes(raw)
+    profdata = profraw.with_suffix(".profdata")
+    merge = subprocess.run(["llvm-profdata", "merge", "-sparse", str(profraw), *args.merge, "-o", str(profdata)],
+                           capture_output=True, text=True)
+    if merge.returncode != 0:
+        die(f"llvm-profdata refused {profraw}: {merge.stderr.strip()}")
+    report = [a for a in args.llvm_cov if a != "--"]
+    subprocess.run(["llvm-cov", "report", str(tree.elf), f"-instr-profile={profdata}",
+                    "-ignore-filename-regex=/lib/(libc|libcxx|compiler-rt)/", *report])
+    print(f"{profraw}\n{profdata}\n  llvm-cov show {tree.elf} -instr-profile={profdata} -format=html "
+          f"-output-dir={tree.elf.parent / (tree.target + '_coverage_html')}")
+
+
 TRACE_MAGIC = 0x4352544B
 
 
@@ -2184,6 +2267,17 @@ def main() -> None:
             p.add_argument("--stale-ok", action="store_true",
                            help="read symbols even if the board runs another build")
         p.set_defaults(fn=fn)
+
+    p = sub.add_parser("coverage")
+    p.add_argument("build")
+    p.add_argument("target")
+    p.add_argument("--merge", action="append", default=[],
+                   help=".profdata to merge the result with (several runs, both boards)")
+    p.add_argument("--stale-ok", action="store_true",
+                   help="read symbols even if the board runs another build")
+    p.add_argument("llvm_cov", nargs=argparse.REMAINDER,
+                   help="llvm-cov report arguments after --")
+    p.set_defaults(fn=coverage)
 
     p = sub.add_parser("panic")
     p.add_argument("build")

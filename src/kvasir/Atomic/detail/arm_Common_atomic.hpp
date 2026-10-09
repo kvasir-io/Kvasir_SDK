@@ -12,6 +12,7 @@
     #endif
 #endif
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -59,6 +60,15 @@ namespace Kvasir { namespace Nvic {
                 } else {
                     oldState = static_cast<bool>(get<0>(apply(Nvic::makeRead(T{}))));
                     apply(Nvic::makeDisable(T{}));
+                    // The ICER write is a volatile store and nothing more: without this the
+                    // guarded body's plain loads and stores may move above it (and the masked
+                    // interrupt may still be taken after the write, Armv8-M B3.13.7: dsb; isb).
+                    asm volatile(
+                      "dsb\n"
+                      "isb\n"
+                      :
+                      :
+                      : "memory");
                 }
             } else {
                 oldState = false;
@@ -86,6 +96,9 @@ namespace Kvasir { namespace Nvic {
                 if constexpr(std::is_same_v<Global, T>) {
                     enable_all();
                 } else {
+                    // keep the guarded body's stores before the ISER write (the clobber below is
+                    // after it, too late for that)
+                    std::atomic_signal_fence(std::memory_order_seq_cst);
                     apply(Nvic::makeEnable(T{}));
                 }
                 asm(

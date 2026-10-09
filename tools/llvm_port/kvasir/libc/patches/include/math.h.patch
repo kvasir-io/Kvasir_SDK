@@ -1,0 +1,32 @@
+Kvasir patch: libc include/math.h
+Why:       g++ in C++ mode: libc++ declares bool isnan(double) at global scope; clang picks it through its
+           enable_if "preferred overload" attribute, gcc sees two conflicting declarations. So the C
+           int isnan(double) is hidden from g++, and include/__gcc-compat/math.h (owned) supplies what
+           libc++ expects next to it.
+Upstream:  none - Kvasir builds llvm-libc + libc++ with gcc, an upstream-unsupported combination.
+Proof:     any gcc build on llvm-libc (`just compiler=gcc libs=llvm build`) of a file that includes <cmath>.
+Drop when: gcc is no longer built against llvm-libc, or upstream libc++ supports gcc on llvm-libc.
+
+--- a/include/math.h
++++ b/include/math.h
+@@ -260,7 +260,11 @@
+ 
+ int ilogbl(long double) __NOEXCEPT;
+ 
++// Not for gcc in C++: libc++ declares bool isnan(double) at global scope; clang resolves the
++// clash via its enable_if "preferred overload" attribute, on gcc the declarations conflict.
++#if !(defined(__cplusplus) && !defined(__clang__))
+ int isnan(double) __NOEXCEPT;
++#endif
+ 
+ int isnanf(float) __NOEXCEPT;
+ 
+@@ -483,4 +487,8 @@
+ 
+ #include "llvm-libc-macros/math-function-macros.h"
+ 
++#if defined(__cplusplus) && !defined(__clang__)
++#include "__gcc-compat/math.h"
++#endif
++
+ #endif // LLVM_LIBC_MATH_H

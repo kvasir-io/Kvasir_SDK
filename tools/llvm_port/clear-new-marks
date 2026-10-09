@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+#
+# Remove the "  # NEW" tags that libcport's source-list sync adds to
+# newly-discovered entries in Kvasir's libc.cmake / libcxx.cmake / compiler-rt.cmake.
+# Strips only the trailing tag; the entry itself (active or commented) is kept.
+#
+# Usage:
+#   ./clear-new-marks <kvasir-sdk-repo>
+#
+set -euo pipefail
+
+if [ "$#" -ne 1 ]; then
+    echo "usage: $0 <kvasir-sdk-repo>" >&2
+    exit 2
+fi
+
+KVASIR="$(cd "$1" && pwd)"
+files=(
+    "$KVASIR/lib/libc/libc.cmake"
+    "$KVASIR/lib/libcxx/libcxx.cmake"
+    "$KVASIR/lib/compiler-rt/compiler-rt.cmake"
+)
+
+total=0
+for f in "${files[@]}"; do
+    [ -f "$f" ] || { echo "   (no $f -- skipping)"; continue; }
+    n=$(grep -cE '# NEW[[:space:]]*$' "$f" || true)
+    sed -i -E 's/[[:space:]]*# NEW[[:space:]]*$//' "$f"
+    echo "   $(basename "$f"): removed $n '# NEW' mark(s)"
+    total=$((total + n))
+done
+echo ">> done: $total mark(s) removed."

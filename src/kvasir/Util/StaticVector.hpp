@@ -622,7 +622,17 @@ namespace sv_detail {
                 return *this;
             }
 
-            ~non_trivial() noexcept(std::is_nothrow_destructible_v<T>) { unsafe_destroy_all(); }
+            // Elements with no destructor need none run: then the storage is trivially
+            // destructible, and so is every variant, optional and expected that holds it.
+            ~non_trivial()
+                requires std::is_trivially_destructible_v<T>
+            = default;
+
+            ~non_trivial() noexcept(std::is_nothrow_destructible_v<T>)
+                requires(!std::is_trivially_destructible_v<T>)
+            {
+                unsafe_destroy_all();
+            }
 
             /// Constructor from initializer list.
             ///

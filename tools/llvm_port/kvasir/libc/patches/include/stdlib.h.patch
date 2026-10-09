@@ -1,0 +1,21 @@
+Kvasir patch: libc include/stdlib.h
+Why:       g++ in C++ mode: libc++ imports the C library into std with `using ::name _LIBCPP_USING_IF_EXISTS`;
+           clang skips a missing name, gcc has no using_if_exists, so every name libc++ mentions must be
+           declared. The Kvasir-owned include/__gcc-compat/stdlib.h (owned.txt) declares the ones this libc
+           does not build (declarations only: a call fails at link).
+Upstream:  none - Kvasir builds llvm-libc + libc++ with gcc, an upstream-unsupported combination.
+Proof:     any gcc build on llvm-libc (`just compiler=gcc libs=llvm build`, the *_gcc_llvm trees) of a file
+           that includes <cstdlib> fails without it.
+Drop when: gcc is no longer built against llvm-libc, or upstream libc++ supports gcc on llvm-libc.
+
+--- a/include/stdlib.h
++++ b/include/stdlib.h
+@@ -110,4 +110,8 @@
+ 
+ __END_C_DECLS
+ 
++#if defined(__cplusplus) && !defined(__clang__)
++#include "__gcc-compat/stdlib.h"
++#endif
++
+ #endif // _LLVM_LIBC_STDLIB_H

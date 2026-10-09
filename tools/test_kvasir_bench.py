@@ -391,5 +391,46 @@ class TraceRing(unittest.TestCase):
                          [(0x10002000, 0x20000100, 516), (None, 0x20000400, 208)])
 
 
+class CoverageManifest(unittest.TestCase):
+    """assemble_profraw: Kvasir::Coverage's manifest (12-byte pieces on the target) into the .profraw bytes."""
+
+    @staticmethod
+    def manifest(pieces, header, magic=kb.COVERAGE_MAGIC, status=0):
+        import struct
+        raw = bytearray(struct.pack(
+            "<4I", magic, status, len(pieces), len(header)))
+        for p in pieces:
+            raw += struct.pack("<3I", *p)
+        raw += bytes(16 + 12 * kb.COVERAGE_PIECES - len(raw))
+        raw += bytes(((len(raw) + 7) & ~7) - len(raw)) + header
+        return bytes(raw)
+
+    def test_pieces_in_order(self):
+        flash = {0x10001000: b"RECORDS!", 0x10002000: b"names"}
+        ram = {0x20000100: b"\x00\xff\x00"}
+        raw = self.manifest([(0, 4, 2), (0x10001000, 8, 0), (0, 2, 1), (0x20000100, 3, 0), (0x10002000, 5, 0),
+                             (4, 2, 2)], b"HEADxy")
+        reads = []
+
+        def live(address, length):
+            reads.append(address)
+            return ram[address][:length]
+
+        out = kb.assemble_profraw(
+            raw, lambda a, n: flash.get(a, None) and flash[a][:n], live)
+        self.assertEqual(out, b"HEAD" + b"RECORDS!" +
+                         b"\0\0" + b"\x00\xff\x00" + b"names" + b"xy")
+        # only the counters come from the board
+        self.assertEqual(reads, [0x20000100])
+
+    def test_refuses_an_empty_or_failed_manifest(self):
+        with self.assertRaisesRegex(ValueError, "not run Kvasir::Coverage"):
+            kb.assemble_profraw(self.manifest([], b"", magic=0),
+                                lambda a, n: None, lambda a, n: b"")
+        with self.assertRaisesRegex(ValueError, "reported 1"):
+            kb.assemble_profraw(self.manifest(
+                [], b"", status=1), lambda a, n: None, lambda a, n: b"")
+
+
 if __name__ == "__main__":
     unittest.main()

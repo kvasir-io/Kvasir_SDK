@@ -1,0 +1,8 @@
+# libc targets Kvasir takes OUT of upstream's libc/config/baremetal/arm/{entrypoints,headers}.txt.
+# One regex per line, matched against the whole target name. Everything else upstream
+# lists for baremetal/arm is in the build (and so declared in the generated headers).
+# Fixed-point (_Fract/_Accum): gcc has no such types in C++ (see the stdfix-macros.h patch).
+libc\.src\.stdfix\..*
+libc\.include\.stdfix
+# strsignal: its signal_to_string.cpp needs <signal.h>, which this libc does not have (libc.cmake comments it out too)
+libc\.src\.string\.strsignal

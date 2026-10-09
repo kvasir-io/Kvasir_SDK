@@ -1,0 +1,58 @@
+Kvasir patch: libc include/assert.h
+Why:       assert() must end in a catalogued log line (uc_log::log_assert) and a panic record
+           (Kvasir::Panic::raise, Cause::assertion = 0); upstream's __assert_fail has neither and
+           needs a libc exit path Kvasir does not build. In constant evaluation a failed assert is an
+           out-of-bounds write: a compile error.
+Upstream:  none - Kvasir glue (uc_log, Kvasir::Panic), not upstreamable.
+Proof:     test_examples 99_checked_asserts (README "Expected log": an assert logs its expression, then a panic
+           with cause assertion); Kvasir_SDK tests panic_tests.
+Drop when: never; on each port check that upstream's assert.h still has the #else branch it replaces.
+
+--- a/include/assert.h
++++ b/include/assert.h
+@@ -21,12 +21,42 @@
+ #ifdef NDEBUG
+ #define assert(...) ((void)0)
+ #else
++
++namespace uc_log {
++extern void log_assert(int Line, const char* Filename, const char* Expr);
++}
++
++// Kvasir_SDK kvasir/Util/Panic.hpp: every fatal path ends in raise(); Cause::assertion is 0 and
++// the underlying type unsigned char, fixed on both sides.
++#ifndef KVASIR_PANIC_RAISE_DECLARED
++#define KVASIR_PANIC_RAISE_DECLARED 1
++namespace Kvasir { namespace Panic {
++enum class Cause : unsigned char;
++[[noreturn]] void raise(Cause);
++}}
++#endif
++
++#define INTERNAL_assert_lambda(x)                                 \
++    []() __attribute__((__noreturn__)) {                          \
++        if(__builtin_is_constant_evaluated()) {                   \
++            int DO_NOT_USE_see_assert[1];                         \
++            DO_NOT_USE_see_assert[1] = 0;                         \
++        } else {                                                  \
++            uc_log::log_assert(                                   \
++              __LINE__,                                           \
++              __FILE_NAME__,                                      \
++              #x);                                                \
++            ::Kvasir::Panic::raise(                               \
++              static_cast<::Kvasir::Panic::Cause>(0));            \
++        }                                                         \
++    }                                                             \
++    ()
++
+ #ifdef __cplusplus
+ extern "C"
+ #endif
+-_Noreturn void __assert_fail(const char *, const char *, unsigned, const char *) __NOEXCEPT;
+-#define assert(...)  \
+-  ((__VA_ARGS__) ? ((void)0) : __assert_fail(#__VA_ARGS__, __FILE__, __LINE__, __PRETTY_FUNCTION__))
++
++#define assert(x) ((void)((__builtin_expect(!!(x), true)) || (INTERNAL_assert_lambda(x), 0)))
+ #endif
+ 
+ __BEGIN_C_DECLS

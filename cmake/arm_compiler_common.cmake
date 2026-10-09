@@ -19,6 +19,14 @@ set(arm_compiler_common_flags -ffreestanding)
 set(SPEC_REPLACEMENT_STRING spec_replace)
 set(SPEC_REPLACEMENT_EMPTY_MARKER NOTHING_TO_REPLACE)
 
+# Which C library libc++ sits on: llvm-libc's own types (mbstate_t from llvm-libc-types) and, once localization or wide
+# characters are switched on, its locale and wchar support headers. Upstream's libc++ build sets the same macro from
+# RUNTIMES_USE_LIBC. 0 in a try-compile, where CLIB is not passed on.
+set(libcxx_on_llvm_libc 0)
+if("${CLIB}" STREQUAL "llvm")
+    set(libcxx_on_llvm_libc 1)
+endif()
+
 # the vendored libc++'s configuration, shared by arm_clang.cmake and arm_gcc.cmake so the two cannot drift
 set(libcxx_profile_flags
     -D_LIBCPP_ABI_VERSION=2
@@ -35,4 +43,4 @@ set(libcxx_profile_flags
     -D_LIBCPP_HAS_TIME_ZONE_DATABASE=0
     -D_LIBCPP_LIBC_NEWLIB=0
     -D_LIBCPP_LIBC_PICOLIBC=0
-    -D_LIBCPP_LIBC_LLVM_LIBC=0)
+    -D_LIBCPP_LIBC_LLVM_LIBC=${libcxx_on_llvm_libc})

@@ -19,8 +19,11 @@ SRAM; the output names the sections covered and the ones left out.
 changing the program. On the RP2350 that is the picobin block loop in .after_vectors, whose link word picotool seal
 and sign change (chip_rp2350/cmake/chip.cmake, TARGET_IMAGE_CRC_EXCLUDE).
 
-    patch_image_crc.py <elf> --objcopy <llvm-objcopy> --sections .vectors .text .data ... [--exclude START END]
-                       [--delete-on-failure]
+    patch_image_crc.py <elf> --objcopy <llvm-objcopy> (--sections .vectors .text .data ... | --sections-from-load-view)
+                       [--exclude START END] [--delete-on-failure]
+
+--sections-from-load-view takes the sections elf_image.py puts into <name>_flash.hex (every loaded section with
+contents but .eeprom), so the covered bytes are those of the flash hex without a list to keep in step.
 
 Runs before every artefact made from the ELF (.bin, .hex, _flash.elf, .uf2, .lst). Idempotent: the descriptor is
 not part of what it covers, so a second run writes the same bytes. A signing step (RP2350 picobin hash/signature)
@@ -166,6 +169,14 @@ def descriptor_bytes(crc, segments):
     return struct.pack(f'<{len(words)}I', *words)
 
 
+def load_view_sections(elf_path):
+    """The sections of <name>_flash.hex: elf_image.py's selection (same directory), .eeprom left out."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import elf_image
+    pieces = elf_image.Elf(Path(elf_path).read_bytes()).loaded()
+    return [name for (name, _address, _data) in pieces if name != '.eeprom']
+
+
 def flash_hex(elf_path, objcopy, sections):
     with tempfile.TemporaryDirectory() as tmp:
         hex_path = Path(tmp) / 'image.hex'
@@ -253,12 +264,16 @@ def main():
         description=(__doc__ or '').split('\n')[0])
     parser.add_argument('elf', type=Path)
     parser.add_argument('--objcopy', required=True)
-    parser.add_argument('--sections', nargs='+', required=True)
+    names = parser.add_mutually_exclusive_group(required=True)
+    names.add_argument('--sections', nargs='+')
+    names.add_argument('--sections-from-load-view', action='store_true')
     parser.add_argument('--exclude', nargs=2, action='append',
                         default=[], metavar=('START', 'END'))
     parser.add_argument('--delete-on-failure', action='store_true')
     args = parser.parse_args()
     try:
+        if args.sections_from_load_view:
+            args.sections = load_view_sections(args.elf)
         crc, segments, ram_image = patch(
             args.elf, args.objcopy, args.sections, args.exclude)
     except (Refused, ValueError, OSError) as e:

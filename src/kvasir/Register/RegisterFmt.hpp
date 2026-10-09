@@ -1,6 +1,7 @@
 #pragma once
 #include "Register.hpp"
 
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <span>
@@ -141,6 +142,56 @@ struct remote_fmt::detail::host_type<Kvasir::Register::Flags<R>> {
 };
     #endif
 
+namespace Kvasir::Register::Detail {
+// How many single-bit fields are set in `value` (nameId[i] is null for a multi-bit field).
+// Not a template: one copy for every register.
+[[gnu::noinline]] inline std::size_t
+countFlags(unsigned                                     value,
+           std::span<unsigned const>                    masks,
+           std::span<remote_fmt::catalog_id (*const)()> nameId) {
+    std::size_t count = 0;
+    for(std::size_t i = 0; i != masks.size(); ++i) {
+        if(nameId[i] != nullptr && (value & masks[i]) != 0) { ++count; }
+    }
+    return count;
+}
+
+// The names of the set flags, once per Printer, as formatRegisterFields is for whole registers:
+// each as the catalog id of its name. Unrolled per register this was a copy per register *type*
+// -- and I2C0's and I2C1's IC_TX_ABRT_SOURCE are two types with the same names.
+template<typename Printer>
+[[gnu::noinline]] void formatFlagNames(Printer&                                     printer,
+                                       unsigned                                     value,
+                                       std::span<unsigned const>                    masks,
+                                       std::span<remote_fmt::catalog_id (*const)()> nameId) {
+    for(std::size_t i = 0; i != masks.size(); ++i) {
+        if(nameId[i] != nullptr && (value & masks[i]) != 0) {
+            printer.catalogedString(nameId[i]());
+        }
+    }
+}
+
+// The catalog id function of field I's name; null for a multi-bit field, which is a value, not
+// a flag: its name never goes out, so it never reaches the catalog either.
+template<typename R,
+         std::size_t I>
+consteval remote_fmt::catalog_id (*flagNameId())() {
+    if constexpr(std::has_single_bit(R::field_masks[I])) {
+        using Name = std::remove_cvref_t<decltype(SC_LIFT(R::field_names[I]))>;
+    #ifdef __clang__
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wundefined-func-template"
+    #endif
+        return &remote_fmt::catalog<Name>;
+    #ifdef __clang__
+        #pragma clang diagnostic pop
+    #endif
+    } else {
+        return nullptr;
+    }
+}
+}   // namespace Kvasir::Register::Detail
+
 // Mirrors remote_fmt's own bitflag enum encoding -- a counted sequence of cataloged names that
 // the host joins with '|' -- so no change is needed on the printer side.
 template<FlagPrintableRegister R>
@@ -149,6 +200,46 @@ struct remote_fmt::formatter<Kvasir::Register::Flags<R>> {
     constexpr void format(Kvasir::Register::Flags<R> const& flags,
                           Printer&                          printer) const {
         constexpr auto FieldCount = R::field_masks.size();
+
+        if constexpr(remote_fmt::use_catalog) {
+            // A constexpr table per register (its names' catalog ids, its masks); the counting
+            // and the names are one loop each, shared by every register.
+            static constexpr auto nameIds = []<std::size_t... Is>(std::index_sequence<Is...>) {
+                return std::array<remote_fmt::catalog_id (*)(), sizeof...(Is)>{
+                  Kvasir::Register::Detail::flagNameId<R, Is>()...};
+            }(std::make_index_sequence<FieldCount>{});
+            static constexpr auto masks = [] {
+                std::array<unsigned, R::field_masks.size()> out{};
+                for(std::size_t i = 0; i != out.size(); ++i) {
+                    out[i] = static_cast<unsigned>(R::field_masks[i]);
+                }
+                return out;
+            }();
+            auto const        value = static_cast<unsigned>(flags.value);
+            std::size_t const set
+              = Kvasir::Register::Detail::countFlags(value,
+                                                     std::span<unsigned const>{masks},
+                                                     nameIds);
+            // The host rejects an empty flag list, so nothing set is reported as a single "none".
+            auto const rangeSize = ::remote_fmt::detail::sizeToRangeSize(set == 0 ? 1 : set);
+            printer.printHelper(::remote_fmt::detail::rangeTypeIdentifier<
+                                ::remote_fmt::detail::RangeType::bitflag,
+                                ::remote_fmt::detail::RangeLayout::on_ti_each>(rangeSize));
+            ::remote_fmt::detail::appendSized(
+              rangeSize,
+              set == 0 ? 1 : set,
+              [&](auto const&... valueArgs) { printer.printHelper(valueArgs...); });
+            if(set == 0) {
+                static constexpr auto none = SC_LIFT("none");
+                formatter<std::remove_cvref_t<decltype(none)>>{}.format(none, printer);
+                return;
+            }
+            Kvasir::Register::Detail::formatFlagNames(printer,
+                                                      value,
+                                                      std::span<unsigned const>{masks},
+                                                      nameIds);
+            return;
+        }
 
         auto const isSet = [&](std::size_t i) {
             auto const mask = R::field_masks[i];

@@ -33,11 +33,18 @@ namespace Kvasir { namespace Atomic {
     //
     // SyncThread makes the commit a release and the peek an acquire, one dmb each on
     // Armv8-M, so a consumer on the other core sees the data the index promises.
+    //
+    // fence() goes between the data and the commit that publishes it (or frees it), acquire()
+    // between reading an index and the data it covers. The relaxed index loads order nothing by
+    // themselves: without acquire() the compiler may read a slot before the index that says it
+    // is filled (it may always load data_[head]; nothing makes that load wait for tail_).
     struct SyncSignal {
         static constexpr auto load_memory_order{std::memory_order_relaxed};
         static constexpr auto store_memory_order{std::memory_order_relaxed};
 
         static void fence() { std::atomic_signal_fence(std::memory_order_release); }
+
+        static void acquire() { std::atomic_signal_fence(std::memory_order_acquire); }
     };
 
     struct SyncThread {
@@ -45,6 +52,8 @@ namespace Kvasir { namespace Atomic {
         static constexpr auto store_memory_order{std::memory_order_release};
 
         static void fence() { std::atomic_signal_fence(std::memory_order_release); }
+
+        static void acquire() { std::atomic_signal_fence(std::memory_order_acquire); }
     };
 
     // A multicore build (CORE1_STACK_SIZE set, KVASIR_MULTICORE defined) gets cross-core
@@ -207,7 +216,9 @@ namespace Kvasir { namespace Atomic {
         template<typename F>
         void forEachQueued(F&& f) {
             auto const tail = tail_.load(load_memory_order);
-            for(auto i = head_.load(load_memory_order); i != tail; i = next(i)) {
+            auto const head = head_.load(load_memory_order);
+            TSync::acquire();
+            for(auto i = head; i != tail; i = next(i)) {
                 f(data_[i]);   //NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
             }
         }
@@ -216,6 +227,7 @@ namespace Kvasir { namespace Atomic {
             auto const tail = tail_.load(load_memory_order);
             auto const head = head_.load(load_memory_order);
             if(head == tail) { return false; }
+            TSync::acquire();
             out = data_[head];   //NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
             TSync::fence();
             head_.store(next(head), store_memory_order);   // commit
@@ -231,6 +243,7 @@ namespace Kvasir { namespace Atomic {
             auto       head  = head_.load(load_memory_order);
             auto const lsize = distance(head, tail);
             if(lsize < range.size()) { return false; }
+            TSync::acquire();
             if constexpr(CopiesInRuns<TRange>) {
                 std::size_t const count = range.size();
                 std::size_t const first = std::min<std::size_t>(count, Size - head);
@@ -255,12 +268,14 @@ namespace Kvasir { namespace Atomic {
             auto const tail = tail_.load(load_memory_order);
             auto const head = head_.load(load_memory_order);
             if(head == tail) { return; }
+            TSync::fence();   // a front() read of the slot before the producer may reuse it
             head_.store(next(head), store_memory_order);   // commit
         }
 
         TDataType const& front() const {
             auto const head = head_.load(load_memory_order);
             if(head == tail_.load(load_memory_order)) { TOverflowPolicy{}(); }
+            TSync::acquire();
             TDataType const& ret
               = data_[head];   //NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
             return ret;

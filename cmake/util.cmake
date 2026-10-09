@@ -69,12 +69,12 @@ function(check_ram_funcs target)
 endfunction()
 
 # IMAGE_CRC: writes the image CRC descriptor (kvasir/Util/ImageDescriptor.hpp) into the ELF for Kvasir::ImageCheck. Must
-# run before every artefact made from the ELF; removes the .elf on failure so the next build fails again. A RAM image
-# (the descriptor linked into SRAM) is checked where it runs: the patcher keeps only the read-only sections of the list
-# (and the descriptor's own, .text) and prints which. TARGET_IMAGE_CRC_EXCLUDE (chip): pairs of symbols bounding bytes a
-# later step rewrites (the RP2350's picobin block).
+# run before every artefact made from the ELF; removes the .elf on failure so the next build fails again. It covers the
+# sections generate_images puts into the flash hex (the load view). A RAM image (the descriptor linked into SRAM) is
+# checked where it runs: the patcher keeps only the read-only sections (and the descriptor's own, .text) and prints
+# which. TARGET_IMAGE_CRC_EXCLUDE (chip): pairs of symbols bounding bytes a later step rewrites (the RP2350's picobin
+# block).
 function(patch_image_crc target)
-    set(_sections .vectors .text .data ${TARGET_EXTRA_FLASH_SECTIONS})
     set(_excludes)
     set(_pair ${TARGET_IMAGE_CRC_EXCLUDE})
     list(LENGTH _pair _n)
@@ -92,7 +92,7 @@ function(patch_image_crc target)
         COMMAND
             ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
             ${kvasir_cmake_dir}/tools/patch_image_crc.py "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf" --delete-on-failure
-            --objcopy ${CMAKE_OBJCOPY} --sections ${_sections} ${_excludes}
+            --objcopy ${CMAKE_OBJCOPY} --sections-from-load-view ${_excludes}
         COMMENT "Writing the image CRC descriptor into ${target}.elf"
         VERBATIM)
 endfunction()
@@ -128,79 +128,36 @@ function(check_undefined_refs target)
         VERBATIM)
 endfunction()
 
-function(generate_object target suffix type)
-
-    list(TRANSFORM TARGET_EXTRA_FLASH_SECTIONS PREPEND "--only-section=" OUTPUT_VARIABLE extra_flash_sections)
-
+# The flash artefacts from the image's load view (cmake/tools/elf_image.py): every section the linker loads, at its load
+# address - no list of section names to keep in step with the linker scripts. .eeprom's bytes go to the _eeprom* files:
+# <target>_flash.{bin,hex,uf2,elf}, _eeprom.{bin,hex,uf2}, _eeprom_flash.{hex,uf2}.
+function(generate_images target)
+    set(_out "${CMAKE_CURRENT_BINARY_DIR}/${target}")
+    set(_byproducts)
+    foreach(_suffix _flash.bin _flash.hex _flash.elf _eeprom.bin _eeprom.hex _eeprom_flash.hex)
+        list(APPEND _byproducts "${_out}${_suffix}")
+    endforeach()
+    set(_uf2)
+    if(DEFINED TARGET_UF2_CODE)
+        set(_uf2 --uf2-family ${TARGET_UF2_CODE})
+        list(APPEND _byproducts "${_out}_flash.uf2" "${_out}_eeprom.uf2" "${_out}_eeprom_flash.uf2")
+    endif()
     add_custom_command(
         TARGET ${target}
         POST_BUILD
         COMMAND
-            ${CMAKE_OBJCOPY} --output-target ${type} --only-section=.vectors --only-section=.text --only-section=.data
-            ${extra_flash_sections} "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
-            "${CMAKE_CURRENT_BINARY_DIR}/${target}_flash${suffix}"
-        BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${target}_flash${suffix})
-
-    add_custom_command(
-        TARGET ${target}
-        POST_BUILD
-        COMMAND ${CMAKE_OBJCOPY} --output-target ${type} --only-section=.eeprom
-                "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf" "${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom${suffix}"
-        BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom${suffix})
-
-    if(${type} MATCHES ihex)
-        add_custom_command(
-            TARGET ${target}
-            POST_BUILD
-            COMMAND
-                ${CMAKE_OBJCOPY} --output-target ${type} --only-section=.vectors --only-section=.text
-                --only-section=.data --only-section=.eeprom ${extra_flash_sections}
-                "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
-                "${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom_flash${suffix}"
-            BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom_flash${suffix})
-
-        add_custom_command(
-            TARGET ${target}
-            POST_BUILD
-            COMMAND
-                ${CMAKE_OBJCOPY} --only-section=.vectors --only-section=.text --only-section=.data
-                ${extra_flash_sections} "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
-                "${CMAKE_CURRENT_BINARY_DIR}/${target}_flash.elf"
-            COMMAND
-                ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
-                ${kvasir_cmake_dir}/tools/strip_empty_segments.py "${CMAKE_CURRENT_BINARY_DIR}/${target}_flash.elf"
-                "${CMAKE_CURRENT_BINARY_DIR}/${target}_flash.elf"
-            BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${target}_flash.elf)
-
-        add_custom_command(
-            TARGET ${target}
-            POST_BUILD
-            COMMAND
-                ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
-                ${kvasir_cmake_dir}/tools/ihex_to_uf2.py "${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom${suffix}"
-                "${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom.uf2" ${TARGET_UF2_CODE}
-            BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom.uf2)
-        add_custom_command(
-            TARGET ${target}
-            POST_BUILD
-            COMMAND
-                ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
-                ${kvasir_cmake_dir}/tools/ihex_to_uf2.py "${CMAKE_CURRENT_BINARY_DIR}/${target}_flash${suffix}"
-                "${CMAKE_CURRENT_BINARY_DIR}/${target}_flash.uf2" ${TARGET_UF2_CODE}
-            BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${target}_flash.uf2)
-        add_custom_command(
-            TARGET ${target}
-            POST_BUILD
-            COMMAND
-                ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
-                ${kvasir_cmake_dir}/tools/ihex_to_uf2.py "${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom_flash${suffix}"
-                "${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom_flash.uf2" ${TARGET_UF2_CODE}
-            BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${target}_eeprom_flash.uf2)
-    endif()
+            ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
+            ${kvasir_cmake_dir}/tools/elf_image.py "${_out}.elf" --out-prefix "${_out}" ${_uf2} --objcopy
+            ${CMAKE_OBJCOPY}
+        BYPRODUCTS ${_byproducts}
+        COMMENT "Writing the flash images of ${target}.elf"
+        VERBATIM)
 endfunction()
 
+# the listing disassembles a fixed set of names (objdump skips those an image does not have); a section missing here is
+# visible to whoever reads the listing, unlike one missing from a flash image
 function(generate_lst target)
-    list(TRANSFORM TARGET_EXTRA_FLASH_SECTIONS PREPEND "--section=" OUTPUT_VARIABLE extra_flash_sections)
+    set(extra_flash_sections --section=.boot2 --section=.scratch_x --section=.scratch_y)
 
     add_custom_command(
         TARGET ${target}
@@ -270,6 +227,7 @@ endfunction()
 enable_language(ASM)
 
 include(${kvasir_cmake_dir}/../lib/compiler-rt/compiler-rt.cmake)
+include(${kvasir_cmake_dir}/../lib/compiler-rt/profile.cmake)
 include(${kvasir_cmake_dir}/../lib/libcxx/libcxx.cmake)
 include(${kvasir_cmake_dir}/../lib/libc/libc.cmake)
 
@@ -373,10 +331,9 @@ function(
     check_undefined_refs(${name})
     get_target_property(_image_crc ${name} KVASIR_IMAGE_CRC)
     if(_image_crc)
-        patch_image_crc(${name}) # before generate_object: every artefact carries the descriptor
+        patch_image_crc(${name}) # before generate_images: every artefact carries the descriptor
     endif()
-    generate_object(${name} .bin binary)
-    generate_object(${name} .hex ihex)
+    generate_images(${name})
     generate_lst(${name})
     print_size(${name} ${linker_file})
     cmake_git_version_add_headers_with_type(${name} ${optimize})
@@ -410,8 +367,7 @@ function(
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/check_ram_funcs.py)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/patch_image_crc.py)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/pretty_size.py)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/strip_empty_segments.py)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/ihex_to_uf2.py)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/elf_image.py)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/beautify_lst.py)
 
     get_filename_component(linker_file_path ${linker_file} ABSOLUTE)
@@ -456,6 +412,21 @@ function(
             target_link_options(${name} PUBLIC "${current_linker_flag}" ${chip_linker_options})
         endforeach(current_linker_flag)
 
+        # The J-Link this image's flash and log targets reach: the target's own (target_configure_kvasir JLINK_IP /
+        # JLINK_PROBE, for a desk with one probe per board) or else the JLINK_IP / JLINK_PROBE cache variables.
+        get_property(
+            _own_jlink
+            TARGET ${name}
+            PROPERTY KVASIR_JLINK_IP
+            SET)
+        if(_own_jlink)
+            get_target_property(_jlink_ip ${name} KVASIR_JLINK_IP)
+            get_target_property(_jlink_probe ${name} KVASIR_JLINK_PROBE)
+        else()
+            set(_jlink_ip "${JLINK_IP}")
+            set(_jlink_probe "${JLINK_PROBE}")
+        endif()
+
         get_target_property(_kvasir_ram_only ${name} KVASIR_RAM_ONLY)
         if(_kvasir_ram_only)
             set(_jlink_ram_only RAM_ONLY)
@@ -474,9 +445,9 @@ function(
                 SWD_SPEED
                 ${SWD_SPEED}
                 JLINK_IP
-                ${JLINK_IP}
+                ${_jlink_ip}
                 JLINK_PROBE
-                "${JLINK_PROBE}"
+                "${_jlink_probe}"
                 CONNECT_COMMANDS
                 ${TARGET_JLINK_CONNECT_COMMANDS}
                 SUFFIX
@@ -490,9 +461,9 @@ function(
                 SWD_SPEED
                 ${SWD_SPEED}
                 JLINK_IP
-                ${JLINK_IP}
+                ${_jlink_ip}
                 JLINK_PROBE
-                "${JLINK_PROBE}"
+                "${_jlink_probe}"
                 CONNECT_COMMANDS
                 ${TARGET_JLINK_CONNECT_COMMANDS}
                 SUFFIX
@@ -515,9 +486,9 @@ function(
             SWD_SPEED
             ${SWD_SPEED}
             JLINK_IP
-            ${JLINK_IP}
+            ${_jlink_ip}
             JLINK_PROBE
-            "${JLINK_PROBE}"
+            "${_jlink_probe}"
             DUPLEX_BASE_PORT
             ${DUPLEX_BASE_PORT}
             TRANSPORT
@@ -539,8 +510,8 @@ function(kvasir_executable_variants base_name)
         PARSE_ARGV
         1
         PARSED_ARGS
-        "RAM_ONLY;SCRATCH_BANKS;IMAGE_CRC"
-        "OPTIMIZATION;MIN_STACK_SIZE;CORE1_STACK_SIZE;CORE1_STACK_PLACEMENT;HEAP_SIZE;MIN_LOG_LEVEL;MIN_LOG_LEVEL_DEBUG;MIN_LOG_LEVEL_RELEASE;LOG_FILTER;LINKER_FILE;SELFTEST_VARIANT;CHECK_LEVEL;CHECK_LEVEL_RELEASE;DCHECK_LEVEL;DCHECK_LEVEL_RELEASE"
+        "RAM_ONLY;SCRATCH_BANKS;IMAGE_CRC;COVERAGE"
+        "OPTIMIZATION;MIN_STACK_SIZE;CORE1_STACK_SIZE;CORE1_STACK_PLACEMENT;HEAP_SIZE;MIN_LOG_LEVEL;MIN_LOG_LEVEL_DEBUG;MIN_LOG_LEVEL_RELEASE;LOG_FILTER;LINKER_FILE;SELFTEST_VARIANT;CHECK_LEVEL;CHECK_LEVEL_RELEASE;DCHECK_LEVEL;DCHECK_LEVEL_RELEASE;COVERAGE_MODE;COVERAGE_LIST"
         "SOURCES;LIBRARIES;ADDITIONAL_FLAGS;ADDITIONAL_DEBUG_FLAGS;ADDITIONAL_RELEASE_FLAGS;ADDITIONAL_SANITIZE_FLAGS")
 
     if(PARSED_ARGS_UNPARSED_ARGUMENTS)
@@ -635,8 +606,8 @@ function(kvasir_executable_variants base_name)
         set(sanitize_target "${base_name}_sanitize")
     endif()
 
-    # Debug variant - with logging, debug optimization
-    add_executable(${debug_target} ${PARSED_ARGS_SOURCES})
+    # Debug variant - with logging, debug optimization; not in ALL, built when named (or by its flash/log target)
+    add_executable(${debug_target} EXCLUDE_FROM_ALL ${PARSED_ARGS_SOURCES})
     target_configure_kvasir(
         ${debug_target}
         OPTIMIZATION_STRATEGY
@@ -771,6 +742,65 @@ function(kvasir_executable_variants base_name)
                                                  KVASIR_DCHECK_LEVEL=${_dcheck_release} KVASIR_SOFT_CHECK_ESCALATE=0)
     endforeach()
 
+    # Coverage variant (COVERAGE): release_log's image with clang's source-coverage instrumentation on the firmware's
+    # own translation units, the bare-metal profile runtime (lib/compiler-rt/profile.cmake) and KVASIR_COVERAGE=1 for
+    # Kvasir::Coverage (kvasir/Util/Coverage.hpp). COVERAGE_MODE `bytes` (default: one byte a region, covered or not,
+    # race-free) or `counts` (64-bit counters, for PGO); COVERAGE_LIST a -fprofile-list file restricting what is
+    # instrumented. clang only; never with RAM_ONLY; not in ALL, built when named. The runtime libraries are
+    # release_log's own archives, uninstrumented.
+    if(PARSED_ARGS_COVERAGE)
+        if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+            message(STATUS "${base_name}: no coverage variant with ${CMAKE_CXX_COMPILER_ID} (clang's format only)")
+        elseif(PARSED_ARGS_RAM_ONLY)
+            message(FATAL_ERROR "${base_name}: COVERAGE and RAM_ONLY together: a RAM image has no room for it")
+        else()
+            if(NOT PARSED_ARGS_COVERAGE_MODE)
+                set(PARSED_ARGS_COVERAGE_MODE bytes)
+            endif()
+            if(NOT DEFINED coverage_option_${PARSED_ARGS_COVERAGE_MODE})
+                message(FATAL_ERROR "COVERAGE_MODE ${PARSED_ARGS_COVERAGE_MODE}: bytes or counts")
+            endif()
+            if(base_name STREQUAL "")
+                set(coverage_target "coverage")
+            else()
+                set(coverage_target "${base_name}_coverage")
+            endif()
+            add_executable(${coverage_target} EXCLUDE_FROM_ALL ${PARSED_ARGS_SOURCES})
+            target_configure_kvasir(
+                ${coverage_target}
+                OPTIMIZATION_STRATEGY
+                ${PARSED_ARGS_OPTIMIZATION}
+                USE_LOG
+                ${_min_stack}
+                ${_core1_stack}
+                ${_heap}
+                ${_log_filter}
+                ${_image_crc}
+                ${_linker_file}
+                ${_min_log_release}
+                ${PARSED_ARGS_ADDITIONAL_FLAGS}
+                ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
+            target_compile_options(${coverage_target} PRIVATE ${coverage_option_${PARSED_ARGS_COVERAGE_MODE}})
+            if(PARSED_ARGS_COVERAGE_LIST)
+                get_filename_component(_list "${PARSED_ARGS_COVERAGE_LIST}" ABSOLUTE BASE_DIR
+                                       "${CMAKE_CURRENT_SOURCE_DIR}")
+                target_compile_options(${coverage_target} PRIVATE "-fprofile-list=${_list}")
+                set_property(
+                    SOURCE ${PARSED_ARGS_SOURCES}
+                    APPEND
+                    PROPERTY OBJECT_DEPENDS "${_list}")
+            endif()
+            target_compile_definitions(
+                ${coverage_target} PRIVATE KVASIR_COVERAGE=1 KVASIR_SELFTEST=0 KVASIR_CHECK_LEVEL=${_check_release}
+                                           KVASIR_DCHECK_LEVEL=${_dcheck_release} KVASIR_SOFT_CHECK_ESCALATE=0)
+            target_add_shared_kvasir_lib(${coverage_target} prof "${COMPILER_RT_PROFILE_SOURCE_FILES}"
+                                         "${optimize_option_${PARSED_ARGS_OPTIMIZATION}}" "")
+            if(PARSED_ARGS_LIBRARIES)
+                target_link_libraries(${coverage_target} ${PARSED_ARGS_LIBRARIES})
+            endif()
+        endif()
+    endif()
+
 endfunction()
 
 function(target_configure_kvasir target)
@@ -779,7 +809,7 @@ function(target_configure_kvasir target)
         1
         PARSED_ARGS
         "USE_LOG;NOT_USE_ASSERT;ENABLE_SELF_OVERRIDE;USE_SANITIZER;RAM_ONLY;SCRATCH_BANKS;IMAGE_CRC"
-        "LOG;MIN_LOG_LEVEL;LOG_FILTER;MIN_STACK_SIZE;CORE1_STACK_SIZE;CORE1_STACK_PLACEMENT;HEAP_SIZE;OPTIMIZATION_STRATEGY;LINKER_FILE;LINKER_FILE_TEMPLATE;APPLICATION;BOOTLOADER;BOOTLOADER_SIZE"
+        "LOG;MIN_LOG_LEVEL;LOG_FILTER;MIN_STACK_SIZE;CORE1_STACK_SIZE;CORE1_STACK_PLACEMENT;HEAP_SIZE;OPTIMIZATION_STRATEGY;LINKER_FILE;LINKER_FILE_TEMPLATE;APPLICATION;BOOTLOADER;BOOTLOADER_SIZE;JLINK_IP;JLINK_PROBE"
         "")
 
     if(PARSED_ARGS_UNPARSED_ARGUMENTS)
@@ -811,6 +841,14 @@ function(target_configure_kvasir target)
         get_filename_component(_log_filter_dir "${_log_filter}" DIRECTORY)
         target_compile_options(${target} PRIVATE "--embed-dir=${_log_filter_dir}")
         set_target_properties(${target} PROPERTIES UC_LOG_FILTER "${_log_filter}")
+    endif()
+
+    # JLINK_IP / JLINK_PROBE: this image's own J-Link, over the cache variables of the same name -- for a desk with one
+    # probe per board, where one machine-wide setting would point every product at the same one. Either one given names
+    # the whole connection: JLINK_PROBE alone is that probe on USB even when the cache's JLINK_IP is set.
+    if(PARSED_ARGS_JLINK_IP OR PARSED_ARGS_JLINK_PROBE)
+        set_target_properties(${target} PROPERTIES KVASIR_JLINK_IP "${PARSED_ARGS_JLINK_IP}"
+                                                   KVASIR_JLINK_PROBE "${PARSED_ARGS_JLINK_PROBE}")
     endif()
 
     # A second core is opt-in. Without CORE1_STACK_SIZE the image is single-core and, by contract, identical to what it

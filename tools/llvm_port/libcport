@@ -1,0 +1,878 @@
+#!/usr/bin/env bash
+#
+# Port LLVM libc + libc++ + compiler-rt for Cortex-M (baremetal/arm) into a Kvasir_SDK checkout.
+#   - libc:        built (full build) with a curated config, then headers+sources copied.
+#   - libc++:      headers+sources copied only (no build needed).
+#   - compiler-rt: builtins library copied only (no build); keeps generic + arm/ sources.
+#
+# Usage:
+#   ./libcport [options] [components] <llvm-project-repo> <kvasir-sdk-repo>
+#
+#   <llvm-project-repo>  path to an llvm-project checkout (e.g. ~/repos/llvm-project),
+#                        already checked out at the release tag you want to port.
+#   <kvasir-sdk-repo>    path to the Kvasir_SDK repo; files land in <repo>/lib/{libc,libcxx,compiler-rt}.
+#
+# Component selection (flags; if none given, all three are ported):
+#   --libc                port libc
+#   --libcxx              port libc++
+#   --compiler-rt         port compiler-rt
+#   --all                 port all three (the default)
+#   -c, --components LIST  explicit list, space/comma separated (e.g. "libc,libcxx")
+#   selector flags are additive and can be combined, e.g.  --libc --libcxx
+#
+# Modes:
+#   (default)             port: mirror upstream into the submodule, apply Kvasir's patches,
+#                         sync the source lists, record the version in <dest>/UPSTREAM.
+#   --save-patches        the other direction: with the llvm checkout at the version the
+#                         submodule was ported from (<dest>/UPSTREAM; and, for libc, its build
+#                         dir from that port), write every difference of an upstream file in
+#                         the submodule's working tree as kvasir/<component>/patches/<path>.patch.
+#                         Run it after every Kvasir edit to an upstream file in the submodule,
+#                         and after merging the .rej files a port left.
+#   --check               would a port at <dest>/UPSTREAM's tag change anything in <dest>? Builds
+#                         the expected tree (pristine upstream + patches) and lets the port's own
+#                         rsync, owned filter included, tell what it would transfer or delete
+#                         (dry run, by content). Changes nothing; reads the working tree,
+#                         uncommitted and untracked files included. Exit 1 on any finding:
+#                           EDIT p      an upstream file differs from upstream + its patch (--save-patches)
+#                           UNOWNED p   neither upstream nor owned: a port deletes it (owned.txt, or delete)
+#                           MISSING p   an upstream file is absent from the tree
+#                           REJECT p    a patch does not apply to the pristine upstream of that tag
+#                           DEAD p      an owned.txt line matches no file
+#                           NOHEADER p  a patch without its header block (Kvasir patch:, Why:, Upstream:,
+#                                       Proof:, Drop when:) or with a TODO left in it
+#                           TAG         the llvm checkout is not at <dest>/UPSTREAM's tag
+#                         libc's generated headers come from a headers-only libc configure + build in
+#                         a throwaway dir, never the port's build dir.
+#   --skip-libc-headers   with --check: leave libc's generated headers out (no cmake; seconds). The
+#                         libc include/ files that come from the build are then not checked.
+#   -h, --help            show this help
+#
+# Patch header: every kvasir/<component>/patches/*.patch starts with a block GNU patch ignores
+# (no line in it may start with ---, +++, @@, "diff ", "Index:" or "*** "):
+#   Kvasir patch: <component> <path>
+#   Why:       <what breaks or is missing without it>
+#   Upstream:  <link, "none - <reason>", or "fixed in <tag>: drop">
+#   Proof:     <the test or example that fails without it>
+#   Drop when: <the condition that makes it obsolete, or "never">
+# --save-patches keeps each patch's block and gives a new patch one with TODOs.
+#
+# Kvasir's own state lives next to this script, per component:
+#   kvasir/<component>/owned.txt   files Kvasir owns (not from upstream; globs, one per line):
+#                                  never overwritten, never deleted by the mirror.
+#   kvasir/<component>/patches/    one patch per upstream file Kvasir changes, applied after
+#                                  the copy (GNU patch, fuzz 2). A patch that no longer applies
+#                                  leaves a .rej next to the file and a warning.
+#
+# Knobs (override via environment):
+#   LIBC_CONFIG_DIR    a complete libc config folder (entrypoints.txt/headers.txt/config.json)
+#                      to use as is. Default: derived - upstream's libc/config/baremetal/arm
+#                      entrypoints.txt/headers.txt minus kvasir/libc-config/exclude.txt, plus
+#                      <this script's dir>/libc-config/config.json; written to
+#                      <build dir>/kvasir-libc-config.
+#   LIBC_BUILD_DIR     cmake build dir. Default: <llvm-project-repo>/build
+#   LIBC_TARGET_TRIPLE target triple. Default: armv8-m.main-none-eabihf
+#   EXTRA_CMAKE_FLAGS  extra -D flags appended to the cmake configure (cmd line wins
+#                      over config.json), e.g. EXTRA_CMAKE_FLAGS="-DLIBC_CONF_PRINTF_DISABLE_FLOAT=OFF"
+#   COMPONENTS         space-separated default for which to port (CLI flags override).
+#                      Default: "libc libcxx compiler-rt"
+#
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+usage() {
+    sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
+}
+
+# --- args -------------------------------------------------------------------
+# Component selection comes from CLI flags (override the COMPONENTS env default);
+# the two repo paths are positional and may appear before/after/among the flags.
+SELECTED=""
+POSITIONAL=()
+MODE=port
+add_sel() { case " $SELECTED " in *" $1 "*) ;; *) SELECTED="${SELECTED:+$SELECTED }$1" ;; esac; }
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --libc)        add_sel libc ;;
+        --libcxx)      add_sel libcxx ;;
+        --compiler-rt) add_sel compiler-rt ;;
+        --all)         add_sel libc; add_sel libcxx; add_sel compiler-rt ;;
+        -c|--components)
+            [ "$#" -ge 2 ] || { echo "error: $1 needs an argument." >&2; exit 2; }
+            for c in $(echo "$2" | tr ',' ' '); do add_sel "$c"; done
+            shift ;;
+        --components=*) for c in $(echo "${1#*=}" | tr ',' ' '); do add_sel "$c"; done ;;
+        --save-patches) MODE=save ;;
+        --check)        MODE=check ;;
+        --skip-libc-headers) SKIP_LIBC_HEADERS=1 ;;
+        -h|--help)     usage; exit 0 ;;
+        --) shift; while [ "$#" -gt 0 ]; do POSITIONAL+=("$1"); shift; done; break ;;
+        -*) echo "error: unknown option '$1'." >&2; usage >&2; exit 2 ;;
+        *)  POSITIONAL+=("$1") ;;
+    esac
+    shift
+done
+
+if [ "${#POSITIONAL[@]}" -ne 2 ]; then
+    echo "error: expected <llvm-project-repo> and <kvasir-sdk-repo>." >&2
+    usage >&2
+    exit 2
+fi
+
+# CLI selection wins; otherwise fall back to COMPONENTS env (default all three).
+for c in $SELECTED; do
+    case "$c" in
+        libc|libcxx|compiler-rt) ;;
+        *) echo "error: unknown component '$c' (want: libc, libcxx, compiler-rt)." >&2; exit 2 ;;
+    esac
+done
+
+LLVM="$(cd "${POSITIONAL[0]}" && pwd)"
+KVASIR="$(cd "${POSITIONAL[1]}" && pwd)"
+
+LIBC_CONFIG_DIR="${LIBC_CONFIG_DIR:-}"   # empty: derived from upstream (derive_libc_config)
+LIBC_CONFIG_JSON="${LIBC_CONFIG_DIR:-$SCRIPT_DIR/libc-config}/config.json"
+LIBC_BUILD_DIR="${LIBC_BUILD_DIR:-$LLVM/build}"
+LIBC_TARGET_TRIPLE="${LIBC_TARGET_TRIPLE:-armv8-m.main-none-eabihf}"
+EXTRA_CMAKE_FLAGS="${EXTRA_CMAKE_FLAGS:-}"
+COMPONENTS="${SELECTED:-${COMPONENTS:-libc libcxx compiler-rt}}"
+KVASIR_STATE_DIR="${KVASIR_STATE_DIR:-$SCRIPT_DIR/kvasir}"
+SKIP_LIBC_HEADERS="${SKIP_LIBC_HEADERS:-}"
+CHECK_FAILED=0
+
+[ -d "$LLVM/libc" ] || { echo "error: '$LLVM' is not an llvm-project repo (no libc/)." >&2; exit 1; }
+command -v rsync >/dev/null || { echo "error: rsync is needed." >&2; exit 1; }
+command -v patch >/dev/null || { echo "error: GNU patch is needed." >&2; exit 1; }
+
+LLVM_TAG="$(git -C "$LLVM" describe --tags --exact-match 2>/dev/null || git -C "$LLVM" describe --tags 2>/dev/null || echo unknown)"
+LLVM_SHA="$(git -C "$LLVM" rev-parse HEAD 2>/dev/null || echo unknown)"
+
+# colors (disabled when stdout isn't a TTY or NO_COLOR is set)
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'
+    C_YELLOW=$'\033[33m'; C_CYAN=$'\033[36m'; C_GREEN=$'\033[32m'
+else
+    C_RESET=; C_BOLD=; C_YELLOW=; C_CYAN=; C_GREEN=
+fi
+
+# non-fatal warnings/notices are recorded here and replayed (colored) at the end.
+# Lines are "<LEVEL>\t<message>"; LEVEL is WARN (yellow) or NOTE (cyan).
+WORK_DIR="$(mktemp -d)"
+WARN_FILE="$WORK_DIR/warnings"
+: > "$WARN_FILE"
+export WARN_FILE
+trap 'rm -rf "$WORK_DIR"' EXIT
+record() { printf '%s\t%s\n' "$1" "${*:2}" >> "$WARN_FILE"; }   # record <LEVEL> <message...>
+
+echo ">> llvm-project : $LLVM ($LLVM_TAG)"
+echo ">> kvasir       : $KVASIR"
+echo ">> components   : $COMPONENTS"
+echo ">> mode         : $MODE"
+
+# ---------------------------------------------------------------------------
+# Upstream layout: which upstream directories make up each destination dir.
+# Prints "<dest-subdir>\t<upstream-dir>" lines; later lines of one dest-subdir
+# win over earlier ones (libc's generated headers over its source headers).
+# ---------------------------------------------------------------------------
+upstream_map() {
+    case "$1" in
+        libc)
+            printf 'include\t%s\n' "$LLVM/libc/include"
+            [ -n "$SKIP_LIBC_HEADERS" ] || printf 'include\t%s\n' "$LIBC_BUILD_DIR/libc/include"
+            printf 'include/shared\t%s\n' "$LLVM/libc/shared"
+            printf 'hdr\t%s\n' "$LLVM/libc/hdr"
+            printf 'src\t%s\n' "$LLVM/libc/src" ;;
+        libcxx)
+            printf 'include\t%s\n' "$LLVM/libcxx/include"
+            printf 'src\t%s\n' "$LLVM/libcxx/src" ;;
+        compiler-rt)
+            printf 'builtins\t%s\n' "$LLVM/compiler-rt/lib/builtins"
+            # the bare-metal profile runtime (COMPILER_RT_PROFILE_BAREMETAL) and the format header it shares with
+            # llvm-profdata: what a `coverage` image links (profile.cmake)
+            printf 'profile\t%s\n' "$LLVM/compiler-rt/lib/profile"
+            printf 'include/profile\t%s\n' "$LLVM/compiler-rt/include/profile" ;;
+    esac
+}
+
+# Files of the upstream copy Kvasir never takes (build files, docs, other targets).
+# Runs inside the staging copy of one component.
+prune_stage() {
+    case "$1" in
+        libc)
+            find . -type f \( -name CMakeLists.txt -o -name '*.cmake' -o -name Makefile \
+                -o -name '*.h.def' -o -name '*.yaml' -o -name '*.d' -o -name '*.md' -o -name '*.rsp' \) -delete
+            find . -type d -name CMakeFiles -prune -exec rm -rf {} + ;;
+        libcxx)
+            # keep .ipp, .in, .modulemap, README.txt (Kvasir's conventions)
+            find . -type f \( -name CMakeLists.txt -o -name .clang-tidy -o -name module.modulemap.in \) -delete ;;
+        compiler-rt)
+            # only the generic builtins + arm/; no other arch, no macOS-only sources.
+            find builtins -mindepth 1 -maxdepth 1 -type d ! -name arm -exec rm -rf {} +
+            rm -f builtins/CMakeLists.txt builtins/README.txt builtins/.clang-format builtins/apple_versioning.c
+            # profile: what upstream's profile/CMakeLists.txt builds with COMPILER_RT_PROFILE_BAREMETAL, plus its
+            # headers; the file system, value profiling, gcov and the other platforms go
+            rm -f profile/CMakeLists.txt profile/GCDAProfiling.c profile/InstrProfilingFile.c \
+                  profile/InstrProfilingUtil.c profile/InstrProfilingValue.c profile/InstrProfilingRuntime.cpp \
+                  profile/WindowsMMap.c profile/WindowsMMap.h profile/InstrProfilingPlatformAIX.c \
+                  profile/InstrProfilingPlatformDarwin.c profile/InstrProfilingPlatformFuchsia.c \
+                  profile/InstrProfilingPlatformGPU.c profile/InstrProfilingPlatformWindows.c \
+                  profile/InstrProfilingPlatformROCm*
+            find include/profile -type f ! -name 'InstrProfData.inc' ! -name 'instr_prof_interface.h' -delete ;;
+    esac
+}
+
+# Build the pristine upstream tree of one component in $WORK_DIR/stage/<component>.
+stage_upstream() {
+    local comp="$1" stage="$WORK_DIR/stage/$1"
+    rm -rf "$stage"; mkdir -p "$stage"
+    while IFS="$(printf '\t')" read -r sub up; do
+        [ -d "$up" ] || { echo "error: upstream dir '$up' missing." >&2; exit 1; }
+        mkdir -p "$stage/$sub"
+        cp -r "$up/." "$stage/$sub/"
+    done < <(upstream_map "$comp")
+    ( cd "$stage" && prune_stage "$comp" )
+}
+
+# The rsync filter that keeps Kvasir's owned files out of the mirror of one
+# top-level dir (neither overwritten nor deleted). owned.txt: one path/glob per
+# line, relative to <dest>; a trailing / means the whole directory.
+#   args: <component> <top-level dir>
+owned_filter() {
+    local owned="$KVASIR_STATE_DIR/$1/owned.txt" out="$WORK_DIR/$1.$2.filter" p
+    : > "$out"
+    if [ -f "$owned" ]; then
+        while read -r p; do
+            case "$p" in "$2"/*) printf -- '- /%s\n' "${p#"$2"/}" >> "$out" ;; esac
+        done < <(grep -vE '^[[:space:]]*(#|$)' "$owned")
+    fi
+    echo "$out"
+}
+
+# Top-level directories the mirror owns in <dest> (everything else there - the
+# .cmake file, LICENSE, README.md, UPSTREAM - is Kvasir's and left alone).
+mirrored_dirs() { upstream_map "$1" | cut -f1 | cut -d/ -f1 | sort -u; }
+
+# ---------------------------------------------------------------------------
+# Mirror the staged upstream tree into <dest>: changed files are replaced,
+# files upstream no longer has are deleted, owned files are untouched.
+# ---------------------------------------------------------------------------
+mirror_stage() {
+    local comp="$1" dest="$2" stage="$WORK_DIR/stage/$1" filter
+    local d gone=0 n
+    for d in $(mirrored_dirs "$comp"); do
+        filter="$(owned_filter "$comp" "$d")"
+        mkdir -p "$dest/$d"
+        n=$(rsync -a --delete --itemize-changes --filter="merge $filter" \
+                "$stage/$d/" "$dest/$d/" | grep -c '^\*deleting .*[^/]$' || true)
+        gone=$((gone + n))
+    done
+    echo "   mirrored upstream; $gone file(s) upstream no longer has were deleted"
+    [ "$gone" -eq 0 ] || record NOTE "$comp: $gone stale file(s) deleted (gone upstream) -- see git status"
+}
+
+# ---------------------------------------------------------------------------
+# Apply kvasir/<component>/patches/**.patch to <dest> (one patch per file).
+# ---------------------------------------------------------------------------
+apply_patches() {
+    apply_patches_from "$KVASIR_STATE_DIR/$1/patches" "$2" "$1"
+}
+
+#   args: <patch dir> <dest> [<component>, for the messages]
+apply_patches_from() {
+    local pdir="$1" dest="$2" comp="${3:-$(basename "$1")}"
+    [ -d "$pdir" ] || { echo "   (no patches for $comp)"; return 0; }
+    local ok=0 fail=0 p out
+    while IFS= read -r p; do
+        if out=$(cd "$dest" && patch -p1 -N -F2 --no-backup-if-mismatch -i "$p" 2>&1); then
+            ok=$((ok + 1))
+            if grep -q 'with fuzz\|offset' <<<"$out"; then
+                echo "   ~ ${p#"$pdir"/} (applied with offset/fuzz)"
+            fi
+        else
+            fail=$((fail + 1))
+            echo "   !! ${p#"$pdir"/} did NOT apply:"
+            sed 's/^/        /' <<<"$out"
+            record WARN "$comp: patch '${p#"$pdir"/}' did not apply -- merge by hand (.rej in $dest), then --save-patches"
+        fi
+    done < <(find "$pdir" -type f -name '*.patch' | sort)
+    echo "   patches: $ok applied, $fail failed"
+}
+
+# ---------------------------------------------------------------------------
+# --save-patches: diff the submodule's files (working tree) against the pristine
+# upstream stage and write one patch per differing upstream file. Files that are
+# neither upstream nor owned are listed: stale leftovers or new owned files.
+# ---------------------------------------------------------------------------
+save_patches() {
+    local comp="$1" dest="$2" stage="$WORK_DIR/stage/$1"
+    local pdir="$KVASIR_STATE_DIR/$1/patches" rec
+    rec="$(cat "$dest/UPSTREAM" 2>/dev/null | head -1 || true)"
+    if [ -n "$rec" ] && [ "${rec%% *}" != "$LLVM_TAG" ]; then
+        echo "error: $dest/UPSTREAM says '${rec%% *}' but the llvm checkout is at '$LLVM_TAG'." >&2
+        echo "       check out the version the submodule was ported from first." >&2
+        exit 1
+    fi
+    [ -n "$rec" ] || record WARN "$comp: no UPSTREAM file -- trusting that $LLVM_TAG is the version it was ported from"
+    if [ -n "$(find "$dest" -name '*.rej' -print -quit)" ]; then
+        echo "error: $dest still has .rej files; merge them by hand and delete them first." >&2
+        exit 1
+    fi
+    local committed="$dest" headers="$WORK_DIR/$comp.headers.json"
+    # the header block of each patch (everything before the first "--- a/"), carried over to the rewritten patch
+    PDIR="$pdir" OUT="$headers" python3 - <<'PY'
+import json, os
+pdir, out = os.environ["PDIR"], {}
+if os.path.isdir(pdir):
+    for root, _, files in os.walk(pdir):
+        for f in files:
+            if f.endswith(".patch"):
+                text = open(os.path.join(root, f)).read()
+                head = "" if text.startswith("--- a/") else text.split("\n--- a/", 1)[0]
+                if head.strip():
+                    out[os.path.relpath(os.path.join(root, f), pdir)] = head.rstrip("\n") + "\n\n"
+json.dump(out, open(os.environ["OUT"], "w"))
+PY
+    rm -rf "$pdir"; mkdir -p "$pdir"
+    COMP="$comp" STAGE="$stage" COMMITTED="$committed" PDIR="$pdir" HEADERS="$headers" \
+    OWNED="$KVASIR_STATE_DIR/$comp/owned.txt" DIRS="$(mirrored_dirs "$comp" | tr '\n' ' ')" \
+    python3 - <<'PY'
+import os, fnmatch, json, subprocess
+comp, stage, committed, pdir = (os.environ[k] for k in ("COMP", "STAGE", "COMMITTED", "PDIR"))
+headers = json.load(open(os.environ["HEADERS"]))
+dirs = os.environ["DIRS"].split()
+owned = []
+if os.path.exists(os.environ["OWNED"]):
+    owned = [l.strip() for l in open(os.environ["OWNED"]) if l.strip() and not l.lstrip().startswith("#")]
+def is_owned(rel):
+    return any(fnmatch.fnmatch(rel, g) or rel.startswith(g.rstrip("/") + "/") for g in owned)
+written, stale = 0, []
+for d in dirs:
+    for root, _, files in os.walk(os.path.join(committed, d)):
+        for f in files:
+            rel = os.path.relpath(os.path.join(root, f), committed)
+            if is_owned(rel):
+                continue
+            up = os.path.join(stage, rel)
+            if not os.path.isfile(up):
+                stale.append(rel)
+                continue
+            r = subprocess.run(["diff", "-u", "--label", "a/" + rel, "--label", "b/" + rel, up,
+                                os.path.join(committed, rel)], capture_output=True, text=True)
+            if r.returncode == 1:
+                key = rel + ".patch"
+                out = os.path.join(pdir, key)
+                os.makedirs(os.path.dirname(out), exist_ok=True)
+                head = headers.pop(key, None)
+                if head is None:
+                    head = (f"Kvasir patch: {comp} {rel}\nWhy:       TODO\nUpstream:  TODO\n"
+                            f"Proof:     TODO\nDrop when: TODO\n\n")
+                    print(f"   NEW    {rel}  (header block has TODOs - fill it in)")
+                open(out, "w").write(head + r.stdout)
+                written += 1
+                print(f"   patch  {rel}")
+print(f"   {written} patch(es) written to {pdir}")
+for gone in sorted(headers):
+    print(f"   GONE   {gone[:-len('.patch')]}  (no difference left: its header went with it)")
+wf = os.environ.get("WARN_FILE")
+if stale:
+    for s in sorted(stale):
+        print(f"   ?      {s}  (not upstream, not owned: stale, or add it to owned.txt)")
+    open(wf, "a").write(f"NOTE\t{comp}: {len(stale)} committed file(s) neither upstream nor owned -- a port deletes them\n")
+PY
+}
+
+# ---------------------------------------------------------------------------
+# Reconcile a hand-maintained .cmake source list with the copied src/ tree:
+# prune entries whose .cpp no longer exists, keep existing lines (active or
+# commented) verbatim, and insert new .cpp files commented-out + tagged "# NEW"
+# in alphabetical position.
+#   args: <cmake_file> <dest_dir> <primary_var> [extra_var...]
+#   first var receives new entries; all listed vars are pruned & counted as listed.
+# ---------------------------------------------------------------------------
+sync_cmake_sources() {
+    [ -f "$1" ] || { echo "   (no $(basename "$1") -- skipping source-list sync)"; return 0; }
+    python3 - "$@" <<'PY'
+import sys, os, re
+
+cmake_file, dest_dir = sys.argv[1], sys.argv[2]
+target_vars = sys.argv[3:]
+primary = target_vars[0]
+srcdir = os.environ.get('SYNC_SRCDIR', 'src')          # source subdir under dest (libc/libcxx: src; compiler-rt: builtins)
+exts = os.environ.get('SYNC_EXTS', '.cpp').split(',')  # compiled extensions (compiler-rt also has .S)
+ext_alt = '|'.join(re.escape(e.lstrip('.')) for e in exts)
+PATH_RE = re.compile(rf'{re.escape(srcdir)}/[A-Za-z0-9_./-]+\.(?:{ext_alt})(?![A-Za-z0-9_])')  # .c must not match .cpp
+
+lines = open(cmake_file).read().split('\n')
+n = len(lines)
+
+# locate set(<VAR> ... ) blocks for our target vars
+var_block = {}
+i = 0
+while i < n:
+    m = re.match(r'\s*set\(\s*([A-Za-z0-9_]+)', lines[i])
+    if m and m.group(1) in target_vars:
+        var = m.group(1)
+        j = i + 1
+        while j < n and ')' not in lines[j].split('#', 1)[0]:  # end line may carry an inline "entry)"
+            j += 1
+        var_block[var] = (i, j)
+        i = j + 1
+    else:
+        i += 1
+
+for v in target_vars:
+    assert v in var_block, f"list {v} not found in {cmake_file}"
+
+# paths already listed across ALL target blocks
+listed = set()
+for var, (s, e) in var_block.items():
+    for k in range(s + 1, e + 1):              # e+1: the ")" line may also carry the last entry
+        mm = PATH_RE.search(lines[k])
+        if mm:
+            listed.add(mm.group(0))
+
+# source files actually on disk
+disk = set()
+for root, _, files in os.walk(os.path.join(dest_dir, srcdir)):
+    for f in files:
+        if any(f.endswith(e) for e in exts):
+            disk.add(os.path.relpath(os.path.join(root, f), dest_dir).replace(os.sep, '/'))
+
+removed = []
+added = 0
+
+def merge(kept, new_lines):
+    if any(p is None for p, _ in kept):      # block has non-path lines -> don't risk misordering
+        return kept + new_lines
+    res, ia, ib = [], 0, 0
+    while ia < len(kept) and ib < len(new_lines):
+        if kept[ia][0] <= new_lines[ib][0]:
+            res.append(kept[ia]); ia += 1
+        else:
+            res.append(new_lines[ib]); ib += 1
+    res.extend(kept[ia:]); res.extend(new_lines[ib:])
+    return res
+
+out = []
+i = 0
+while i < n:
+    hit = next((v for v, (s, _) in var_block.items() if i == s), None)
+    if hit is None:
+        out.append(lines[i]); i += 1; continue
+    s, e = var_block[hit]
+    out.append(lines[s])                       # the "set(VAR" line
+    close_raw = lines[e]
+    cut = close_raw.split('#', 1)[0].rindex(')')
+    head = close_raw[:cut]                      # entry sharing the ")" line, if any
+    body = list(lines[s + 1:e])
+    if head.strip():                           # inline "lastentry)" -> split paren onto its own line
+        body.append(head.rstrip())
+        close_line = close_raw[cut:]           # ")" (+ any trailing)
+    else:
+        close_line = close_raw                 # ")" already on its own line
+    kept = []
+    for ln in body:
+        mm = PATH_RE.search(ln)
+        if not mm:
+            kept.append((None, ln))            # preserve unknown line verbatim
+        elif mm.group(0) in disk:
+            kept.append((mm.group(0), ln))     # keep existing entry untouched
+        else:
+            # drop: file gone from disk. An ACTIVE entry going away is worth a look
+            # (a function moved or was renamed upstream), a commented one is not.
+            removed.append((mm.group(0), not ln.lstrip().startswith('#')))
+    if hit == primary:
+        new_paths = sorted(disk - listed)
+        added = len(new_paths)
+        kept = merge(kept, [(p, f'    # {p}  # NEW') for p in new_paths])
+    out.extend(ln for _, ln in kept)
+    out.append(close_line)                      # the ")" line
+    i = e + 1
+
+open(cmake_file, 'w').write('\n'.join(out))
+base = os.path.basename(cmake_file)
+active_gone = [p for p, active in removed if active]
+print(f"   {base}: +{added} new, -{len(removed)} removed ({len(active_gone)} of them were active)")
+for p in active_gone:
+    print(f"     - active entry gone: {p}")
+_wf = os.environ.get('WARN_FILE')
+if _wf and (added or removed):
+    bits = []
+    if added:   bits.append(f"{added} new source(s) added (commented '# NEW' -- review & enable)")
+    if removed: bits.append(f"{len(removed)} stale entry(ies) pruned")
+    open(_wf, 'a').write(f"NOTE\t{base}: " + "; ".join(bits) + "\n")
+    if active_gone:
+        open(_wf, 'a').write(f"WARN\t{base}: {len(active_gone)} ACTIVE source(s) gone upstream -- check what replaced them\n")
+PY
+}
+
+# ---------------------------------------------------------------------------
+# Warn if LIBC_CONF_* values in config.json aren't reflected as -D flags in
+# libc.cmake's libc_flags. config.json only drives the throwaway llvm-side build;
+# Kvasir compiles the copied libc sources with libc_flags, so the two must agree
+# (e.g. an errno-mode drift silently breaks the link). Non-fatal (warnings only).
+#   args: <config.json> <libc.cmake>
+# ---------------------------------------------------------------------------
+check_libc_cmake_flags() {
+    [ -f "$1" ] && [ -f "$2" ] || return 0
+    echo "   checking libc.cmake libc_flags vs config.json:"
+    python3 - "$@" <<'PY'
+import json, sys, os
+
+cfg_file, cmake_file = sys.argv[1], sys.argv[2]
+cmake_base = os.path.basename(cmake_file)
+_wf = os.environ.get('WARN_FILE')
+def record(level, msg):
+    if _wf:
+        open(_wf, 'a').write(f"{level}\t{msg}\n")
+vals = {n: o.get('value') for g in json.load(open(cfg_file)).values() for n, o in g.items()}
+
+# extract set(libc_flags ...) via quote-aware balanced-paren scan (closing ')' is at
+# end of the last line, and the math value contains its own parens inside quotes)
+text = open(cmake_file).read()
+i = text.index('(', text.index('set(libc_flags'))
+depth, in_dq, j = 0, False, i
+while j < len(text):
+    c = text[j]
+    if c == '"':
+        in_dq = not in_dq
+    elif not in_dq:
+        if c == '(':
+            depth += 1
+        elif c == ')':
+            depth -= 1
+            if depth == 0:
+                break
+    j += 1
+blob = '\n'.join(l.split('#', 1)[0] for l in text[i + 1:j].split('\n'))  # drop comments
+toks = set(blob.replace('"', '').replace("'", '').split())               # quotes removed
+toks_ns = {t.replace(' ', '') for t in toks}
+def ns(s): return str(s).replace(' ', '')
+
+VAL = {  # LIBC_CONF_* -> expected -D macro (value-style)
+    'LIBC_CONF_ERRNO_MODE': 'LIBC_ERRNO_MODE',
+    'LIBC_CONF_THREAD_MODE': 'LIBC_THREAD_MODE',
+    'LIBC_CONF_QSORT_IMPL': 'LIBC_QSORT_IMPL',
+    'LIBC_CONF_MATH_OPTIMIZATIONS': 'LIBC_MATH',
+    'LIBC_CONF_WCTYPE_MODE': 'LIBC_CONF_WCTYPE_MODE',
+    'LIBC_CONF_STRING_LENGTH_IMPL': 'LIBC_COPT_STRING_LENGTH_IMPL',
+    'LIBC_CONF_FIND_FIRST_CHARACTER_IMPL': 'LIBC_COPT_FIND_FIRST_CHARACTER_IMPL',
+}
+BOOL = {  # bool -> -D present when true (absent when false)
+    'LIBC_ADD_NULL_CHECKS': '-DLIBC_ADD_NULL_CHECKS',
+    'LIBC_CONF_TRAP_ON_RAISE_FP_EXCEPT': '-DLIBC_TRAP_ON_RAISE_FP_EXCEPT',
+    'LIBC_CONF_MATH_USE_SYSTEM_FENV': '-DLIBC_MATH_USE_SYSTEM_FENV',
+}
+warnings = 0
+for conf, dname in VAL.items():
+    if conf not in vals:
+        continue
+    if ns(f"-D{dname}={vals[conf]}") in toks_ns:
+        print(f"     OK   {dname} = {vals[conf]}")
+    else:
+        got = next((t for t in toks if t.startswith(f"-D{dname}=")), "(absent)")
+        warnings += 1
+        print(f"     WARN {dname}: config.json wants '{vals[conf]}' but libc.cmake has {got}")
+for conf, flag in BOOL.items():
+    if conf not in vals:
+        continue
+    if bool(vals[conf]) == (flag in toks):
+        print(f"     OK   {flag[2:]} {'on' if flag in toks else 'off'}")
+    else:
+        warnings += 1
+        print(f"     WARN {conf}={vals[conf]} but {flag} is {'present' if flag in toks else 'absent'}")
+if 'LIBC_CONF_TIME_64BIT' in vals:  # false adds -DLIBC_TYPES_TIME_T_IS_32_BIT; true omits it
+    has32 = '-DLIBC_TYPES_TIME_T_IS_32_BIT' in toks
+    if bool(vals['LIBC_CONF_TIME_64BIT']) != has32:
+        print(f"     OK   TIME_T {'64' if not has32 else '32'}-bit")
+    else:
+        warnings += 1
+        print(f"     WARN TIME_64BIT={vals['LIBC_CONF_TIME_64BIT']} vs -DLIBC_TYPES_TIME_T_IS_32_BIT {'present' if has32 else 'absent'}")
+print("     (printf/scanf + stack-protector/frame-pointer configs are applied elsewhere, not checked)")
+print(f"     -> {warnings} mismatch(es); reconcile libc.cmake libc_flags" if warnings else "     -> in sync")
+if warnings:
+    record('WARN', f"{cmake_base}: {warnings} config/flag mismatch(es) vs config.json -- reconcile libc_flags")
+PY
+}
+
+# ---------------------------------------------------------------------------
+# Regenerate libc-config/OPTIONS.md: every option upstream's config.json knows,
+# its default, and what our config.json sets. Fails the port on an option our
+# config.json sets that upstream no longer has (cmake would refuse it anyway).
+# ---------------------------------------------------------------------------
+write_options_md() {
+    UP="$LLVM/libc/config/config.json" OURS="$LIBC_CONFIG_JSON" \
+    OUT="$SCRIPT_DIR/libc-config/OPTIONS.md" TAG="$LLVM_TAG" python3 - <<'PY'
+import json, os, sys
+up = json.load(open(os.environ["UP"]))
+ours = {n: o.get("value") for g in json.load(open(os.environ["OURS"])).values() for n, o in g.items()}
+known = {n for g in up.values() for n in g}
+unknown = sorted(set(ours) - known)
+if unknown:
+    sys.exit(f"error: config.json sets option(s) upstream {os.environ['TAG']} no longer has: {', '.join(unknown)}")
+fmt = lambda v: "`" + json.dumps(v) + "`"
+n = sum(len(g) for g in up.values())
+out = ["# LLVM libc configuration options", "",
+       "Every `LIBC_CONF_*` option that can be set in `config.json` (or passed on the",
+       "cmake command line as `-D<NAME>=<value>`, which overrides config.json).", "",
+       f"Source: `libc/config/config.json` @ {os.environ['TAG']}. {n} options in {len(up)} groups.",
+       "Generated by libcport; **reference only - cmake does not read this file.**", "",
+       "`set here` = value currently in this folder's `config.json`; blank = using upstream default.", ""]
+for group, opts in up.items():
+    out += [f"## {group}", "", "| option | default | set here | doc |", "|---|---|---|---|"]
+    for name, o in opts.items():
+        here = fmt(ours[name]) if name in ours else ""
+        doc = " ".join(str(o.get("doc", "")).split()).replace("|", "\\|")
+        out.append(f"| `{name}` | {fmt(o.get('value'))} | {here.replace('|', chr(92) + '|')} | {doc} |")
+    out.append("")
+open(os.environ["OUT"], "w").write("\n".join(out))
+print(f"   OPTIONS.md: {n} options @ {os.environ['TAG']}")
+PY
+}
+
+# ---------------------------------------------------------------------------
+# The libc config the build uses: upstream's baremetal/arm entrypoint and header
+# lists minus kvasir/libc-config/exclude.txt, and our config.json. Derived anew on
+# every port, so a new upstream entrypoint is in without anyone syncing a list.
+# ---------------------------------------------------------------------------
+derive_libc_config() {
+    local cfg="$LIBC_BUILD_DIR/kvasir-libc-config" up="$LLVM/libc/config/baremetal/arm"
+    mkdir -p "$cfg"
+    cp "$SCRIPT_DIR/libc-config/config.json" "$cfg/config.json"
+    UP="$up" CFG="$cfg" EXCLUDE="$KVASIR_STATE_DIR/libc-config/exclude.txt" python3 - <<'PY'
+import os, re
+pats = []
+if os.path.exists(os.environ["EXCLUDE"]):
+    pats = [re.compile(l.strip()) for l in open(os.environ["EXCLUDE"])
+            if l.strip() and not l.lstrip().startswith("#")]
+for name in ("entrypoints.txt", "headers.txt"):
+    out, dropped = [], 0
+    for line in open(os.path.join(os.environ["UP"], name)):
+        tok = line.strip()
+        if tok and any(p.fullmatch(tok) for p in pats):
+            dropped += 1
+            continue
+        out.append(line)
+    open(os.path.join(os.environ["CFG"], name), "w").write("".join(out))
+    print(f"   {name}: upstream baremetal/arm, {dropped} target(s) excluded")
+PY
+    LIBC_CONFIG_DIR="$cfg"
+}
+
+# ---------------------------------------------------------------------------
+# libc: full build with curated config (generates the public headers).
+# ---------------------------------------------------------------------------
+build_libc() {
+    [ -n "$LIBC_CONFIG_DIR" ] || derive_libc_config
+    [ -f "$LIBC_CONFIG_DIR/entrypoints.txt" ] || { echo "error: no entrypoints.txt in '$LIBC_CONFIG_DIR'." >&2; exit 1; }
+    [ -f "$LIBC_CONFIG_DIR/headers.txt" ]     || { echo "error: no headers.txt in '$LIBC_CONFIG_DIR'." >&2; exit 1; }
+    # config.json is REQUIRED: setting LIBC_CONFIG_PATH skips libc/config/baremetal/config.json,
+    # so the baremetal LIBC_CONF_* defaults must be carried in our copy or configure fails
+    # (non-existent target libc.src.stdlib.exit_handler).
+    [ -f "$LIBC_CONFIG_DIR/config.json" ]     || { echo "error: no config.json in '$LIBC_CONFIG_DIR' (required, see comment)." >&2; exit 1; }
+
+    write_options_md
+    echo "   config: $LIBC_CONFIG_DIR | build: $LIBC_BUILD_DIR | target: $LIBC_TARGET_TRIPLE"
+    configure_libc "$LIBC_BUILD_DIR"
+    cmake --build "$LIBC_BUILD_DIR"
+}
+
+# The libc configure of a port, into <build dir>. Shared by the port (full build) and --check (headers only), so the
+# two generate the headers from the same entrypoint lists and options.
+configure_libc() {
+    local bdir="$1"
+    mkdir -p "$bdir"
+    # shellcheck disable=SC2086
+    cmake -S "$LLVM/runtimes" -B "$bdir" \
+        -DLLVM_ENABLE_RUNTIMES=libc \
+        -DCMAKE_C_COMPILER=clang \
+        -DCMAKE_CXX_COMPILER=clang++ \
+        -DLLVM_LIBC_FULL_BUILD=ON \
+        -DLIBC_TARGET_TRIPLE="$LIBC_TARGET_TRIPLE" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+        -DLIBC_CONFIG_PATH="$LIBC_CONFIG_DIR" \
+        $EXTRA_CMAKE_FLAGS
+}
+
+# --check: only the generated public headers, in a throwaway build dir, so $LIBC_BUILD_DIR stays what the last
+# port left (--save-patches needs it). write_options_md is not called: a check writes nothing.
+libc_headers_for_check() {
+    LIBC_BUILD_DIR="$WORK_DIR/libc-headers"
+    [ -n "$LIBC_CONFIG_DIR" ] || derive_libc_config > "$WORK_DIR/libc-headers.log"
+    configure_libc "$LIBC_BUILD_DIR" >> "$WORK_DIR/libc-headers.log" 2>&1 \
+        || { echo "error: libc configure failed:" >&2; tail -40 "$WORK_DIR/libc-headers.log" >&2; exit 1; }
+    cmake --build "$LIBC_BUILD_DIR" --target generate-libc-headers >> "$WORK_DIR/libc-headers.log" 2>&1 \
+        || { echo "error: generate-libc-headers failed:" >&2; tail -40 "$WORK_DIR/libc-headers.log" >&2; exit 1; }
+    echo "   libc headers generated (headers-only build)"
+}
+
+# ---------------------------------------------------------------------------
+# --check: would a port at <dest>/UPSTREAM change anything in <dest>? Builds the
+# expected tree (pristine stage + patches) and lets the port's own rsync, owned
+# filter included, tell what it would transfer or delete - dry run, by content.
+# ---------------------------------------------------------------------------
+check_component() {
+    local comp="$1" dest="$2" stage="$WORK_DIR/stage/$1" expect="$WORK_DIR/expect/$1"
+    local pdir="$KVASIR_STATE_DIR/$1/patches" rec d filter line n=0 p applied head
+    rec="$(head -1 "$dest/UPSTREAM" 2>/dev/null || true)"
+    if [ "${rec%% *}" != "$LLVM_TAG" ]; then
+        echo "   TAG      $dest/UPSTREAM says '${rec%% *}', the llvm checkout is at '$LLVM_TAG'"
+        return 1
+    fi
+
+    # expected = pristine upstream + Kvasir's patches; a .rej lands in $expect, never in <dest>
+    rm -rf "$expect"; mkdir -p "$expect"
+    cp -r "$stage/." "$expect/"
+    # without the generated headers, libc's include/ cannot be judged: its patches and files are left out
+    local skip=""
+    [ -z "$SKIP_LIBC_HEADERS" ] || [ "$comp" != libc ] || skip=include
+    if [ -n "$skip" ]; then
+        local kept="$WORK_DIR/patches-checked/$comp"
+        rm -rf "$kept"; mkdir -p "$kept"
+        [ ! -d "$pdir" ] || cp -r "$pdir/." "$kept/"
+        rm -rf "${kept:?}/$skip"
+        applied="$(WARN_FILE="$WORK_DIR/check.warn" \
+                   apply_patches_from "$kept" "$expect" "$comp")"
+    else
+        applied="$(WARN_FILE="$WORK_DIR/check.warn" apply_patches "$comp" "$expect")"
+    fi
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        echo "   REJECT   $p"; n=$((n + 1))
+    done < <(sed -n 's/^   !! \(.*\) did NOT apply:$/\1/p' <<<"$applied")
+    find "$expect" \( -name '*.rej' -o -name '*.orig' \) -delete
+
+    # what a port would do to <dest>: the mirror's own rsync, dry, by checksum (new mtimes in $expect)
+    for d in $(mirrored_dirs "$comp"); do
+        [ "$d" != "$skip" ] || continue
+        filter="$(owned_filter "$comp" "$d")"
+        [ -d "$dest/$d" ] || { echo "   MISSING  $d/"; n=$((n + 1)); continue; }
+        while IFS= read -r line; do
+            case "$line" in
+                '*deleting '*/) ;;                                          # directories follow their files
+                '*deleting '*) p="${line#\*deleting}"; p="${p#"${p%%[! ]*}"}"   # rsync pads with spaces
+                               echo "   UNOWNED  $d/$p"; n=$((n + 1)) ;;
+                '>f+'*)        echo "   MISSING  $d/${line#* }"; n=$((n + 1)) ;;
+                '>f'*)         echo "   EDIT     $d/${line#* }"; n=$((n + 1)) ;;
+            esac
+        done < <(rsync -a --delete --dry-run --checksum --itemize-changes --filter="merge $filter" \
+                     "$expect/$d/" "$dest/$d/")
+    done
+
+    # owned.txt lines that match nothing (relative to <dest>; a trailing / = a directory)
+    if [ -f "$KVASIR_STATE_DIR/$comp/owned.txt" ]; then
+        while read -r p; do
+            compgen -G "$dest/${p%/}" > /dev/null || { echo "   DEAD     owned.txt: $p"; n=$((n + 1)); }
+        done < <(grep -vE '^[[:space:]]*(#|$)' "$KVASIR_STATE_DIR/$comp/owned.txt")
+    fi
+
+    # every patch says why it exists: the header block in front of the first "--- a/"
+    if [ -d "$pdir" ]; then
+        while IFS= read -r p; do
+            head="$(awk '/^--- a\//{exit} {print}' "$p")"
+            if ! grep -q '^Kvasir patch: ' <<<"$head" || ! grep -q '^Why: ' <<<"$head" \
+                    || ! grep -q '^Upstream: ' <<<"$head" || ! grep -q '^Proof: ' <<<"$head" \
+                    || ! grep -q '^Drop when: ' <<<"$head"; then
+                echo "   NOHEADER ${p#"$pdir"/}"; n=$((n + 1))
+            elif grep -q 'TODO' <<<"$head"; then
+                echo "   NOHEADER ${p#"$pdir"/} (a TODO left in its header)"; n=$((n + 1))
+            fi
+        done < <(find "$pdir" -type f -name '*.patch' | sort)
+    fi
+
+    if [ -n "$SKIP_LIBC_HEADERS" ] && [ "$comp" = libc ]; then
+        echo "   (libc: include/ and its patches NOT checked: --skip-libc-headers)"
+    fi
+    if [ "$n" -eq 0 ]; then echo "   clean: a port at $LLVM_TAG changes nothing"; else echo "   $n finding(s)"; fi
+    [ "$n" -eq 0 ]
+}
+
+port_component() {
+    local comp="$1" dest="$KVASIR/lib/$1"
+    [ -d "$dest" ] || { echo "error: dest '$dest' does not exist." >&2; exit 1; }
+    echo
+    echo "== $comp -> $dest ($MODE) =="
+
+    if [ "$comp" = libc ] && [ "$MODE" = port ]; then
+        build_libc
+    fi
+    if [ "$comp" = libc ] && [ "$MODE" = check ] && [ -z "$SKIP_LIBC_HEADERS" ]; then
+        libc_headers_for_check
+    fi
+    if [ "$comp" = libc ] && [ -z "$SKIP_LIBC_HEADERS" ] && [ ! -d "$LIBC_BUILD_DIR/libc/include" ]; then
+        echo "error: no generated libc headers in $LIBC_BUILD_DIR/libc/include (build libc at $LLVM_TAG first)." >&2
+        exit 1
+    fi
+    stage_upstream "$comp"
+
+    if [ "$MODE" = save ]; then
+        save_patches "$comp" "$dest"
+        return
+    fi
+    if [ "$MODE" = check ]; then
+        check_component "$comp" "$dest" || CHECK_FAILED=1
+        return
+    fi
+
+    if ! git -C "$dest" diff --quiet HEAD -- 2>/dev/null || [ -n "$(git -C "$dest" ls-files --others --exclude-standard)" ]; then
+        echo "error: $dest has uncommitted changes; commit or stash them first (the port rewrites the tree)." >&2
+        exit 1
+    fi
+
+    mirror_stage "$comp" "$dest"
+    apply_patches "$comp" "$dest"
+    printf '%s %s\n' "$LLVM_TAG" "$LLVM_SHA" > "$dest/UPSTREAM"
+
+    case "$comp" in
+        libc)
+            # two lists; new entries go to LIBC_SOURCE_FILES.
+            sync_cmake_sources "$dest/libc.cmake" "$dest" LIBC_SOURCE_FILES LIBC_MALLOC_SOURCE_FILES
+            check_libc_cmake_flags "$LIBC_CONFIG_JSON" "$dest/libc.cmake" ;;
+        libcxx)
+            sync_cmake_sources "$dest/libcxx.cmake" "$dest" LIBCXX_SOURCE_FILES ;;
+        compiler-rt)
+            # .c + .S (+ .cpp since LLVM 23) sources rooted at builtins/
+            SYNC_SRCDIR=builtins SYNC_EXTS=.c,.S,.cpp \
+                sync_cmake_sources "$dest/compiler-rt.cmake" "$dest" COMPILER_RT_ALL_SOURCE_FILES
+            SYNC_SRCDIR=profile SYNC_EXTS=.c \
+                sync_cmake_sources "$dest/profile.cmake" "$dest" COMPILER_RT_PROFILE_SOURCE_FILES ;;
+    esac
+}
+
+for c in $COMPONENTS; do
+    case "$c" in
+        libc|libcxx|compiler-rt) port_component "$c" ;;
+        *) echo "error: unknown component '$c' (want: libc, libcxx, compiler-rt)." >&2; exit 1 ;;
+    esac
+done
+
+echo
+if [ "$MODE" = port ]; then
+    echo ">> done. Review changes with:"
+    for c in $COMPONENTS; do echo "     git -C '$KVASIR/lib/$c' status"; done
+elif [ "$MODE" = check ]; then
+    if [ "$CHECK_FAILED" -eq 0 ]; then echo ">> check done: no drift"; else echo ">> check done: drift found (above)"; fi
+else
+    echo ">> done. Review the patches with:  git -C '$SCRIPT_DIR' status"
+fi
+
+# replay all non-fatal warnings/notices collected during the run, colored.
+echo
+if [ -s "$WARN_FILE" ]; then
+    nwarn=$(grep -c '^WARN'"$(printf '\t')" "$WARN_FILE" || true)
+    nnote=$(grep -c '^NOTE'"$(printf '\t')" "$WARN_FILE" || true)
+    echo "${C_BOLD}${C_YELLOW}>> non-fatal warnings & notices (${nwarn} warning(s), ${nnote} notice(s)):${C_RESET}"
+    while IFS="$(printf '\t')" read -r lvl msg; do
+        case "$lvl" in
+            WARN) echo "   ${C_YELLOW}⚠  ${msg}${C_RESET}" ;;
+            NOTE) echo "   ${C_CYAN}•  ${msg}${C_RESET}" ;;
+            *)    echo "   ${msg}" ;;
+        esac
+    done < "$WARN_FILE"
+else
+    echo "${C_BOLD}${C_GREEN}>> no warnings.${C_RESET}"
+fi
+exit "$CHECK_FAILED"

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+#
+# An llvm-project checkout at one tag, for libcport: a shallow, blobless, sparse clone of just that tag with
+# what libcport reads (libc, libcxx, compiler-rt) and what the libc configure needs. Cached; prints its path.
+#
+#   fetch-llvm [<tag>] [<dir>]
+#
+#   <tag>  default: the tag in <kvasir-sdk>/lib/libc/UPSTREAM (refused when the three lib/*/UPSTREAM disagree)
+#   <dir>  default: ~/.cache/kvasir/llvm-<tag> (XDG_CACHE_HOME is honoured)
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SDK="$HERE/../.."
+tag="${1:-}"
+if [ -z "$tag" ]; then
+    tag="$(cut -d' ' -f1 "$SDK/lib/libc/UPSTREAM")"
+    for lib in libcxx compiler-rt; do
+        other="$(cut -d' ' -f1 "$SDK/lib/$lib/UPSTREAM")"
+        [ "$other" = "$tag" ] || { echo "error: lib/$lib is at $other, lib/libc at $tag: name the tag" >&2; exit 2; }
+    done
+fi
+dir="${2:-${XDG_CACHE_HOME:-$HOME/.cache}/kvasir/llvm-$tag}"
+
+if [ ! -d "$dir/.git" ]; then
+    mkdir -p "$(dirname "$dir")"
+    git clone --quiet --depth 1 --branch "$tag" --filter=blob:none --sparse \
+        https://github.com/llvm/llvm-project.git "$dir" >&2
+fi
+# llvm/utils/llvm-lit: the runtimes configure adds it as a subdirectory even for a headers-only libc build
+git -C "$dir" sparse-checkout set libc libcxx libcxxabi compiler-rt runtimes cmake llvm/cmake llvm/utils/lit \
+    llvm/utils/llvm-lit third-party >&2
+[ "$(git -C "$dir" describe --tags --exact-match 2>/dev/null)" = "$tag" ] \
+    || { echo "error: $dir is not at $tag" >&2; exit 2; }
+echo "$dir"

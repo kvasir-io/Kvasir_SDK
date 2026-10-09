@@ -75,8 +75,9 @@ class PatchImageCrc(unittest.TestCase):
         return elf
 
     def patch(self, elf, sections=SECTIONS, extra=()):
+        names = ['--sections', *sections] if sections else []
         result = subprocess.run([sys.executable, '-B', str(PATCH), str(elf), '--objcopy', self.objcopy,
-                                 '--sections', *sections, *extra], capture_output=True, text=True)
+                                 *names, *extra], capture_output=True, text=True)
         return result.returncode, result.stdout + result.stderr
 
     def hex_of(self, elf):
@@ -236,6 +237,25 @@ class PatchImageCrc(unittest.TestCase):
         rc, out = self.patch(elf, SECTIONS + ['.inflash'], EXCLUDE)
         self.assertEqual(rc, 1, out)
         self.assertIn('is not in RAM', out)
+
+    # --sections-from-load-view: the names elf_image.py flashes, so the descriptor covers exactly _flash.hex - the same
+    # descriptor as the list, for a flash image (.boot2 .text .data) and a RAM image (every section)
+    def test_sections_from_load_view(self):
+        toolchain = 'clang' if shutil.which('ld.lld') else 'gcc'
+        for defines, script, exclude in ((('KVASIR_IMAGE_CRC=1',), 'test.ld', []),
+                                         (('KVASIR_IMAGE_CRC=1', 'RAM_IMAGE'), 'test_ram.ld', EXCLUDE)):
+            with self.subTest(script=script):
+                view = self.build(toolchain, *defines, script=script)
+                listed = Path(self.tmp.name) / f'listed_{view.name}'
+                listed.write_bytes(view.read_bytes())
+                rc, out = self.patch(listed, extra=exclude)
+                self.assertEqual(rc, 0, out)
+                rc, out_view = self.patch(view, sections=(), extra=[
+                                          '--sections-from-load-view', *exclude])
+                self.assertEqual(rc, 0, out_view)
+                self.assertEqual(out_view, out)
+                self.assertEqual(self.descriptor(
+                    view)[1], self.descriptor(listed)[1])
 
     def test_refuses_an_exclude_the_image_does_not_have(self):
         elf = self.build('clang' if shutil.which('ld.lld')

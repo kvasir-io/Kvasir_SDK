@@ -39,11 +39,13 @@ function(target_add_flash_jlink target)
     endif()
 
     # Which J-Link on USB. The commander's USB command takes a serial number or a nickname (it resolves the nickname
-    # itself; quoted, or a nickname with a space is cut at the space and the connect fails); a bare USB with two probes
-    # on the bus fails to connect, and -USB on the command line clashes with the USB line in the script, so the name
-    # goes into the script.
+    # itself; quoted, or a nickname with a space is cut at the space and the connect fails - but a QUOTED serial number
+    # is taken for a nickname and fails, so a serial goes in bare); a bare USB with two probes on the bus fails to
+    # connect, and -USB on the command line clashes with the USB line in the script, so the name goes into the script.
     if(NOT PARSED_ARGS_JLINK_IP OR "${PARSED_ARGS_JLINK_IP}" STREQUAL "")
-        if(PARSED_ARGS_JLINK_PROBE AND NOT PARSED_ARGS_JLINK_PROBE STREQUAL "")
+        if(PARSED_ARGS_JLINK_PROBE MATCHES "^[0-9]+$")
+            set(jlink_connect_command "USB ${PARSED_ARGS_JLINK_PROBE}\nconnect\nr\nh\n")
+        elseif(PARSED_ARGS_JLINK_PROBE AND NOT PARSED_ARGS_JLINK_PROBE STREQUAL "")
             set(jlink_connect_command "USB \"${PARSED_ARGS_JLINK_PROBE}\"\nconnect\nr\nh\n")
         else()
             set(jlink_connect_command "USB\nconnect\nr\nh\n")

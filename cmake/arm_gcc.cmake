@@ -13,8 +13,8 @@ set(CMAKE_AR arm-none-eabi-ar)
 set(CMAKE_NM arm-none-eabi-nm)
 set(CMAKE_RANLIB arm-none-eabi-ranlib)
 # llvm-objcopy when it is installed, as in the clang trees: GNU objcopy warns "empty loadable segment detected" for
-# every <target>_flash.elf it cuts out of an image with an .eeprom segment (the segments cmake/tools/
-# strip_empty_segments.py removes right after), and a warning fails a build.
+# every <target>_flash.elf it cuts out of an image with an .eeprom segment (the segments cmake/tools/elf_image.py
+# removes right after), and a warning fails a build.
 find_program(KVASIR_LLVM_OBJCOPY llvm-objcopy)
 if(KVASIR_LLVM_OBJCOPY)
     set(CMAKE_OBJCOPY llvm-objcopy)

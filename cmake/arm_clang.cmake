@@ -113,6 +113,20 @@ if(NOT "${KVASIR_LTO_LEVEL}" STREQUAL "")
     set(kvasir_lto_level ${KVASIR_LTO_LEVEL})
 endif()
 
+# -fvirtual-function-elimination with default visibility and lld's --lto-whole-program-visibility nulls EVERY vtable
+# slot, called ones too (clang/lld 23.1.1): under default visibility a virtual call is a plain load, which VFE does not
+# count as a use of the slot. With -fvisibility=hidden the calls are type.checked.load and VFE is exact.
+if("-fvirtual-function-elimination" IN_LIST KVASIR_EXTRA_COMPILE_FLAGS AND NOT "-fvisibility=hidden" IN_LIST
+                                                                           KVASIR_EXTRA_COMPILE_FLAGS)
+    message(FATAL_ERROR "-fvirtual-function-elimination needs -fvisibility=hidden here (see cmake/arm_clang.cmake)")
+endif()
+
+# Source coverage (the `coverage` variant of kvasir_executable_variants): the instrumentation the bare-metal profile
+# runtime reads. `bytes`: one byte a region, a plain store, covered or not; `counts`: 64-bit counters (non-atomic adds),
+# for PGO. Compile-time only: under LTO the counters are lowered before the bitcode is written.
+set(coverage_option_bytes -fprofile-instr-generate -fcoverage-mapping "SHELL:-mllvm -enable-single-byte-coverage=true")
+set(coverage_option_counts -fprofile-instr-generate -fcoverage-mapping)
+
 # The stack protector per variant: compiler_common.cmake's -fstack-protector-strong guards every function that takes a
 # local's address, about 24 bytes a function (0.5 to 1.3 KB in a firmware). The release sets take plain
 # -fstack-protector (char arrays only; the later flag wins), debug keeps strong, sanitize puts strong back below. The
