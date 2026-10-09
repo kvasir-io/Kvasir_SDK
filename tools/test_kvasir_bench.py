@@ -252,17 +252,55 @@ class PanicCommand(unittest.TestCase):
 
 
 class TreeSettings(unittest.TestCase):
-    def tree(self, cache):
+    def tree(self, build, cache, log_command=None):
         tree = kb.Tree.__new__(kb.Tree)
-        tree.cache = cache
+        tree.build, tree.target, tree.cache = Path(build), "t", cache
+        if log_command is not None:
+            Path(build, "build.ninja").write_text(
+                "# Custom command for CMakeFiles/log_t\n"
+                "build CMakeFiles/log_t | ${cmake_ninja_workdir}CMakeFiles/log_t: CUSTOM_COMMAND\n"
+                f"  COMMAND = {log_command}\n")
         return tree
 
     def test_the_environment_overrides_the_cache_even_when_empty(self):
-        tree = self.tree("JLINK_IP:STRING=192.168.4.180\n")
-        with unittest.mock.patch.dict(kb.os.environ, {"JLINK_IP": ""}):
-            self.assertEqual(tree._setting("JLINK_IP"), "")
-        with unittest.mock.patch.dict(kb.os.environ, {}, clear=True):
-            self.assertEqual(tree._setting("JLINK_IP"), "192.168.4.180")
+        with tempfile.TemporaryDirectory() as b:
+            tree = self.tree(b, "JLINK_IP:STRING=192.0.2.10\n")
+            with unittest.mock.patch.dict(kb.os.environ, {"JLINK_IP": ""}):
+                self.assertEqual(tree._setting("JLINK_IP"), "")
+            with unittest.mock.patch.dict(kb.os.environ, {}, clear=True):
+                self.assertEqual(tree._setting("JLINK_IP"), "192.0.2.10")
+
+    def test_the_log_command_overrides_the_cache(self):
+        with tempfile.TemporaryDirectory() as b:
+            tree = self.tree(b, "JLINK_IP:STRING=192.0.2.10\nJLINK_PROBE:STRING=PROBE\n",
+                             "cd /x && printer --device D --host 192.0.2.20")
+            with unittest.mock.patch.dict(kb.os.environ, {}, clear=True):
+                self.assertEqual(tree._setting("JLINK_IP"), "192.0.2.20")
+                self.assertEqual(tree._setting("JLINK_PROBE"), "",
+                                 "a log command without --probe names no USB probe")
+
+
+class ShortPath(unittest.TestCase):
+    def tree(self, cache):
+        with tempfile.TemporaryDirectory() as b:
+            Path(b, "CMakeCache.txt").write_text(cache)
+            Path(b, "t.elf").touch()
+            with unittest.mock.patch.object(kb.Tree, "_device", return_value="D"):
+                return kb.Tree(b, "t")
+
+    def test_paths_are_shown_from_the_directory_above_the_source(self):
+        tree = self.tree("CMAKE_HOME_DIRECTORY:INTERNAL=/src/work/firmware\n")
+        self.assertEqual(tree.short_path(
+            "/src/work/firmware/src/main.cpp"), "firmware/src/main.cpp")
+        self.assertEqual(tree.short_path(
+            "/src/work/sdk/src/a.hpp"), "sdk/src/a.hpp")
+        self.assertEqual(tree.short_path(
+            "/usr/include/c++/v1/vector"), "/usr/include/c++/v1/vector")
+        self.assertEqual(tree.short_path(
+            "/src/workshop/x.cpp"), "/src/workshop/x.cpp")
+
+    def test_without_a_source_directory_the_path_stays_whole(self):
+        self.assertEqual(self.tree("").short_path("/a/b.cpp"), "/a/b.cpp")
 
 
 class RamImage(unittest.TestCase):
@@ -430,6 +468,90 @@ class CoverageManifest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "reported 1"):
             kb.assemble_profraw(self.manifest(
                 [], b"", status=1), lambda a, n: None, lambda a, n: b"")
+
+
+def tiny_elf(sections):
+    """A little-endian ELF32 image: `sections` are (name, sh_flags, address, load address, bytes), each in a PT_LOAD
+    segment of its own, followed by .shstrtab."""
+    import struct
+    names = b"\0"
+    name_at = []
+    for (name, *_rest) in sections:
+        name_at.append(len(names))
+        names += name.encode() + b"\0"
+    shstrtab_name = len(names)
+    names += b".shstrtab\0"
+    phoff = 52
+    data_at = phoff + 32 * len(sections)
+    blob, offsets = b"", []
+    for (*_rest, data) in sections:
+        offsets.append(data_at + len(blob))
+        blob += data + bytes(-len(data) % 4)
+    names_at = data_at + len(blob)
+    shoff = names_at + len(names) + (-len(names) % 4)
+    shnum = len(sections) + 2
+    out = bytearray(b"\x7fELF\x01\x01\x01" + bytes(9))
+    out += struct.pack("<HHIIIIIHHHHHH", 2, 40, 1, 0, phoff,
+                       shoff, 0, 52, 32, len(sections), 40, shnum, shnum - 1)
+    for (_name, _flags, address, lma, data), at in zip(sections, offsets):
+        out += struct.pack("<8I", 1, at, address, lma,
+                           len(data), len(data), 5, 4)
+    out += blob + names + bytes(shoff - names_at - len(names))
+    out += bytes(40)
+    for (_name, flags, address, _lma, data), at, n in zip(sections, offsets, name_at):
+        out += struct.pack("<10I", n, 1, flags, address,
+                           at, len(data), 0, 0, 4, 0)
+    out += struct.pack("<10I", shstrtab_name, 3, 0, 0,
+                       names_at, len(names), 0, 0, 1, 0)
+    return bytes(out)
+
+
+class CoverageImageOrBoard(unittest.TestCase):
+    """coverage takes a piece from the ELF only where the board holds exactly the ELF's bytes: a section that runs
+    where it is loaded and is not writable. Decided from the section, never from its address."""
+
+    @staticmethod
+    def reader(sections):
+        sys.path.insert(
+            0, str(Path(__file__).resolve().parent.parent / "cmake" / "tools"))
+        import elf_image
+        return kb.image_reader(elf_image.Elf(tiny_elf(sections)).resident())
+
+    ALLOC, WRITE = 0x2, 0x1
+
+    def test_records_in_flash_come_from_the_image(self):
+        read = self.reader(
+            [("__llvm_prf_data", self.ALLOC, 0x10001000, 0x10001000, b"RECORDS!")])
+        self.assertEqual(read(0x10001002, 4), b"CORD")
+
+    def test_counters_copied_to_ram_are_read_live(self):
+        # .data: runs in RAM, loaded from flash, writable - neither address is the image's to answer
+        read = self.reader(
+            [(".data", self.ALLOC | self.WRITE, 0x20000100, 0x10002000, b"\0\0\0\0")])
+        self.assertIsNone(read(0x20000100, 4))
+        self.assertIsNone(read(0x10002000, 4))
+
+    def test_writable_memory_below_0x20000000_is_read_live(self):
+        # RAM at a low address (tightly coupled memory): the old `lma < 0x20000000` took it from the image
+        read = self.reader(
+            [(".dtcm", self.ALLOC | self.WRITE, 0x00000400, 0x00000400, b"live")])
+        self.assertIsNone(read(0x00000400, 4))
+
+    def test_read_only_section_above_0x20000000_comes_from_the_image(self):
+        # flash at a high address: the old check sent it to the board
+        read = self.reader(
+            [("__llvm_prf_names", self.ALLOC, 0x30000000, 0x30000000, b"names")])
+        self.assertEqual(read(0x30000000, 5), b"names")
+
+    def test_read_only_code_copied_to_ram_is_read_live(self):
+        read = self.reader(
+            [(".ramfunc", self.ALLOC, 0x20000000, 0x10003000, b"code")])
+        self.assertIsNone(read(0x20000000, 4))
+
+    def test_a_piece_past_the_section_end_is_read_live(self):
+        read = self.reader(
+            [("__llvm_prf_data", self.ALLOC, 0x10001000, 0x10001000, b"RECORDS!")])
+        self.assertIsNone(read(0x10001004, 8))
 
 
 if __name__ == "__main__":

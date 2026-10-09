@@ -202,6 +202,15 @@ class Tree:
         self.swd_speed = self._cached("SWD_SPEED") or "100000"
         self.device = os.environ.get("JLINK_DEVICE") or self._device()
         self.log_dir = self.build / "rtt_log" / target
+        # source paths are shown relative to the directory that holds the firmware's checkout,
+        # where its sibling libraries usually sit too; a path elsewhere stays whole
+        source = self._cached("CMAKE_HOME_DIRECTORY")
+        self.path_root = str(Path(source).parent).rstrip(
+            "/") + "/" if source else ""
+
+    def short_path(self, path: str) -> str:
+        root = self.path_root
+        return path[len(root):] if root and path.startswith(root) else path
 
     def _setting(self, name: str) -> str:
         """JLINK_PROBE / JLINK_IP: the environment, else the target's own log command - which carries
@@ -1150,7 +1159,7 @@ def addr2line(tree: Tree, addresses: list[int]) -> dict[int, str]:
         if 2 * i + 1 < len(out):
             fn = re.sub(
                 r"<[^<>]*(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>[^<>]*)*>", "<>", out[2 * i])[:90]
-            where = out[2 * i + 1].split("/kvasir_work/")[-1]
+            where = tree.short_path(out[2 * i + 1])
             result[a] = f"{fn}  {where}"
     return result
 
@@ -1445,6 +1454,18 @@ def assemble_profraw(manifest: bytes, flash_bytes, read_live) -> bytes:
     return bytes(out)
 
 
+def image_reader(resident):
+    """-> read(where, length): the bytes from the ELF when [where, where + length) lies inside one section of
+    `resident` (elf_image.Elf.resident(): runs where it is loaded, not writable - the records and names of a coverage
+    image), else None: the caller reads it from the board (the counters, in .data)."""
+    def read(where: int, length: int) -> bytes | None:
+        for (_name, start, data) in resident:
+            if start <= where and where + length <= start + len(data):
+                return data[where - start:where - start + length]
+        return None
+    return read
+
+
 def coverage(args) -> None:
     """A coverage image's live counters as a .profraw (Kvasir::Coverage's manifest), and llvm-cov's report."""
     tree = Tree(args.build, args.target)
@@ -1457,13 +1478,7 @@ def coverage(args) -> None:
     sys.path.insert(
         0, str(Path(__file__).resolve().parent.parent / "cmake" / "tools"))
     import elf_image
-    loaded = elf_image.Elf(tree.elf.read_bytes()).loaded()
-
-    def flash_bytes(where: int, length: int) -> bytes | None:
-        for (_name, lma, data) in loaded:   # the records and names: in the image, identical on the board
-            if lma <= where and where + length <= lma + len(data) and lma < 0x20000000:
-                return data[where - lma:where - lma + length]
-        return None
+    flash_bytes = image_reader(elf_image.Elf(tree.elf.read_bytes()).resident())
 
     try:
         raw = assemble_profraw(read_target(control, address, size), flash_bytes,
@@ -1753,7 +1768,8 @@ print("mode  %%s" %% ("thread" if xpsr == 0 else "exception %%d (%%s)" %% (xpsr,
 f, n = gdb.newest_frame(), 0
 while f is not None and n < %(frames)d:
     sal = f.find_sal()
-    where = sal.symtab.filename.split("/kvasir_work/")[-1] if sal.symtab else "?"
+    where = sal.symtab.filename if sal.symtab else "?"
+    where = where[len(%(root)r):] if %(root)r and where.startswith(%(root)r) else where
     print("#%%-2d %%s  %%s:%%s" %% (n, short(f.name()), where, sal.line))
     f, n = f.older(), n + 1
 for addr, size, name in %(vars)r:
@@ -1808,7 +1824,7 @@ def snapshot(args) -> None:
     with gdb_server(tree) as port:
         with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
             f.write(GDB_SCRIPT %
-                    {"port": port, "frames": args.frames, "vars": wanted})
+                    {"port": port, "frames": args.frames, "vars": wanted, "root": tree.path_root})
         t0 = time.time()
         debugger = arm_gdb()
         if debugger is None:

@@ -47,9 +47,13 @@ struct StaticFunction<R(Args...), Size> {
     constexpr StaticFunction(F&& f)
       : invoke_ptr{[](std::byte const* s,
                       Args... args) -> R {
-          // via void*: storage is aligned for F (static_assert below), gcc -Wcast-align cannot tell
-          return (*static_cast<std::remove_cvref_t<F> const*>(static_cast<void const*>(s)))(
-            args...);
+          // Calls a copy of the function object - its own size, not the slot's: a function that
+          // replaces itself (or is replaced by a nested interrupt) while it runs keeps its own
+          // captures to the end. Via void*: storage is aligned for F (static_assert below), gcc
+          // -Wcast-align cannot tell.
+          std::remove_cvref_t<F> const copy
+            = *static_cast<std::remove_cvref_t<F> const*>(static_cast<void const*>(s));
+          return copy(args...);
       }} {
         using FF = std::remove_cvref_t<F>;
         static_assert(std::is_trivially_destructible_v<FF>,
@@ -121,11 +125,12 @@ struct StaticFunction<R(Args...), Size> {
         }
     }
 
-    // Calls a copy of the captures, read after the invoker: a function that replaces itself
-    // (or is replaced by a nested interrupt) while it runs keeps its own captures to the end,
-    // and publish()'s order means an invoker read here never belongs to other captures.
-    // Not for a call that a higher-priority context may publish() into while it runs: that
-    // direction (an interrupt assigning what thread code calls) no driver has.
+    // The invoker calls a copy of the captures (sizeof the function object), read after the
+    // invoker: a function that replaces itself (or is replaced by a nested interrupt) while it
+    // runs keeps its own captures to the end, and publish()'s order means an invoker read here
+    // never belongs to other captures. Not for a call that a higher-priority context may
+    // publish() into while it runs: that direction (an interrupt assigning what thread code
+    // calls) no driver has.
     template<typename... AArgs>
     constexpr R operator()(AArgs&&... args) const {
         if consteval {
@@ -134,9 +139,7 @@ struct StaticFunction<R(Args...), Size> {
             auto const fn = loadInvoker();
             assert(fn != nullptr);
             std::atomic_signal_fence(std::memory_order_seq_cst);
-            // aligned as the storage is: the invoker reads the function object through it
-            alignas(StaticFunction) Storage_t const captures = storage;
-            return std::invoke(fn, captures.data(), std::forward<AArgs>(args)...);
+            return std::invoke(fn, storage.data(), std::forward<AArgs>(args)...);
         }
     }
 

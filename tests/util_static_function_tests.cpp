@@ -402,6 +402,17 @@ static void interruptNeverSeesATornFunction() {
     CHECK_EQ(torn.load(), 0U);
 }
 
+// TSan holds an asynchronous signal back until the thread's next intercepted call, so the
+// handler never runs between two plain stores: nothing can tear there, and the check that it
+// does is left out. The publish() test still runs; it is the plain build that proves it.
+#if defined(__SANITIZE_THREAD__)
+    #define STATIC_FUNCTION_TEST_SIGNALS_DEFERRED 1
+#elif defined(__has_feature)
+    #if __has_feature(thread_sanitizer)
+        #define STATIC_FUNCTION_TEST_SIGNALS_DEFERRED 1
+    #endif
+#endif
+
 // The same stress against a plain memberwise assignment, what operator= did before: it must
 // tear, or the test above proves nothing.
 static void plainAssignmentDoesTear() {
@@ -425,7 +436,11 @@ static void plainAssignmentDoesTear() {
     std::printf("  plain copy: %llu calls, %llu torn\n",
                 static_cast<unsigned long long>(calls.load()),
                 static_cast<unsigned long long>(torn.load()));
+#ifdef STATIC_FUNCTION_TEST_SIGNALS_DEFERRED
+    CHECK(true);
+#else
     CHECK(torn.load() > 0U);
+#endif
 }
 
 int main() {

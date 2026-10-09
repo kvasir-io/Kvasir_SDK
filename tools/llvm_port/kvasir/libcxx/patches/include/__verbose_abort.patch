@@ -6,7 +6,7 @@ Why:       every libc++ abort (_LIBCPP_VERBOSE_ABORT: an empty optional's value(
            include/__assertion_handler tests to route the hardening checks the same way. Constant
            evaluation gets an out-of-bounds write instead: a compile error.
 Upstream:  none - Kvasir glue (uc_log, Kvasir::Panic), not upstreamable.
-Proof:     test_examples 99_checked_asserts, request 8 in the sanitize build (std::array out of range): libc++'s
+Proof:     on a device, a sanitize build indexing a std::array out of range logs libc++'s
            message, then a panic with cause assertion - without this patch __assertion_handler falls
            back to _LIBCPP_VERBOSE_ABORT("%s", ...).
 Drop when: never; on each port check that upstream still defines _LIBCPP_VERBOSE_ABORT in this file.

@@ -4,8 +4,8 @@ Why:       assert() must end in a catalogued log line (uc_log::log_assert) and a
            needs a libc exit path Kvasir does not build. In constant evaluation a failed assert is an
            out-of-bounds write: a compile error.
 Upstream:  none - Kvasir glue (uc_log, Kvasir::Panic), not upstreamable.
-Proof:     test_examples 99_checked_asserts (README "Expected log": an assert logs its expression, then a panic
-           with cause assertion); Kvasir_SDK tests panic_tests.
+Proof:     on a device an assert logs its expression, then a panic with cause assertion; Kvasir_SDK
+           tests panic_tests.
 Drop when: never; on each port check that upstream's assert.h still has the #else branch it replaces.
 
 --- a/include/assert.h

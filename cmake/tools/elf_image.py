@@ -29,6 +29,7 @@ from pathlib import Path
 
 PT_LOAD = 1
 SHT_NOBITS = 8
+SHF_WRITE = 0x1
 SHF_ALLOC = 0x2
 
 
@@ -53,8 +54,8 @@ class Elf:
             self.sections.append({'name': data[names_off + name:end].decode(), 'type': type_, 'flags': flags,
                                   'addr': addr, 'offset': offset, 'size': size})
 
-    def loaded(self):
-        """(name, load address, bytes) of every section the image carries, by load address."""
+    def _loaded(self):
+        """(section, load address, bytes) of every section the image carries, by load address."""
         out = []
         for sec in self.sections:
             if not (sec['flags'] & SHF_ALLOC) or sec['type'] == SHT_NOBITS or sec['size'] == 0:
@@ -64,9 +65,21 @@ class Elf:
                         and sec['offset'] + sec['size'] <= p_offset + p_filesz:
                     lma = p_paddr + sec['offset'] - p_offset
                     out.append(
-                        (sec['name'], lma, self.data[sec['offset']:sec['offset'] + sec['size']]))
+                        (sec, lma, self.data[sec['offset']:sec['offset'] + sec['size']]))
                     break
         return sorted(out, key=lambda piece: piece[1])
+
+    def loaded(self):
+        """(name, load address, bytes) of every section the image carries, by load address."""
+        return [(sec['name'], lma, data) for (sec, lma, data) in self._loaded()]
+
+    def resident(self):
+        """(name, address, bytes) of every loaded section that runs where it is loaded (address == load address)
+        and is not writable (SHF_WRITE clear): what a running target holds there is exactly these bytes. A section
+        copied elsewhere at boot (.data, code run from RAM) or one the program may write is left out, whatever its
+        address."""
+        return [(sec['name'], lma, data) for (sec, lma, data) in self._loaded()
+                if sec['addr'] == lma and not sec['flags'] & SHF_WRITE]
 
 
 def ihex_line(type_, addr, payload):
