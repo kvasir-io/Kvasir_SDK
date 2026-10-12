@@ -3,9 +3,14 @@
 import contextlib
 import importlib.util
 import io
+import json
+import os
 import shutil
+import socket
 import sys
 import tempfile
+import threading
+import types
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -19,6 +24,90 @@ spec = importlib.util.spec_from_file_location(
 assert spec is not None and spec.loader is not None
 kb = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(kb)
+
+
+class WaitForDropped(unittest.TestCase):
+    """A printer that dropped lines for this connection: wait-for fails (exit 5) instead of waiting."""
+
+    def test_a_dropped_event_ends_the_wait_with_exit_5(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "control.sock"
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(str(path))
+            server.listen(1)
+
+            def printer():
+                conn, _ = server.accept()
+                with conn:
+                    conn.recv(65536)   # the subscribe
+                    log = {"cmd": "log", "recv_time": "t", "channel": 0, "file": "f.cpp", "line": 1,
+                           "function": "f", "level": "info", "uc_time_ns": 1, "message": "other",
+                           "module": "", "seq": 0}
+                    lines = [{"cmd": "subscribe", "protocol": kb.PROTOCOL}, log,
+                             {"cmd": "dropped", "lines": 7}]
+                    conn.sendall(
+                        "".join(json.dumps(x) + "\n" for x in lines).encode())
+                    conn.recv(1)   # until the client closes
+
+            thread = threading.Thread(target=printer, daemon=True)
+            thread.start()
+            args = types.SimpleNamespace(build="b", target="t", regex="never", timeout=5.0,
+                                         from_now=True, from_start=False, module=None,
+                                         not_module=None, width=200, last=5)
+            out = io.StringIO()
+            err = io.StringIO()
+            with unittest.mock.patch.object(kb, "Tree"), \
+                    unittest.mock.patch.object(kb, "need_printer", return_value=path), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                    self.assertRaises(SystemExit) as exit_:
+                kb.wait_for(args)
+            self.assertEqual(exit_.exception.code, 5)
+            self.assertIn("7 lines dropped for this client", out.getvalue())
+            # a caller acts only after this line (scenario harnesses: no race with what it waits for)
+            self.assertEqual(err.getvalue().splitlines()
+                             [0], "wait-for: subscribed")
+            server.close()
+
+
+class PrinterGdbStub(unittest.TestCase):
+    """snapshot under a printer: gdb's remote protocol answered from the printer's registers and reads."""
+
+    def exchange(self, packets: list[str]) -> list[str]:
+        ours, theirs = socket.socketpair()
+        memory = {0x20000000 + i: i & 0xFF for i in range(64)}
+        regs = list(range(0x100, 0x111))
+        thread = threading.Thread(target=kb.serve_gdb, args=(
+            theirs, regs,
+            lambda a, n: bytes(memory[a + i] for i in range(n)) if all(a + i in memory for i in range(n))
+            else None))
+        thread.start()
+        replies = []
+        with ours:
+            for p in packets:
+                ours.sendall(kb.gdb_packet(p))
+                data = b""
+                while not (data.count(b"#") and len(data) >= data.rindex(b"#") + 3):
+                    data += ours.recv(65536)
+                body = data[data.index(b"$") + 1:data.rindex(b"#")].decode()
+                self.assertEqual(data[:1], b"+", "every packet acknowledged")
+                replies.append(body)
+        thread.join(timeout=5)
+        theirs.close()
+        return replies
+
+    def test_registers_memory_target_description_and_detach(self):
+        g, p15, p16, m, bad, xml, d = self.exchange(
+            ["g", "pf", "p10", "m20000004,4", "m30000000,4", "qXfer:features:read:target.xml:0,fff", "D"])
+        self.assertEqual(len(g), 17 * 8)
+        self.assertEqual(g[:8], "00010000")
+        self.assertEqual(p15, (0x10F).to_bytes(4, "little").hex(), "pc")
+        self.assertEqual(p16, (0x110).to_bytes(4, "little").hex(), "xpsr")
+        self.assertEqual(m, "04050607")
+        self.assertEqual(
+            bad, "E01", "an unreadable address is an error, not zeros")
+        self.assertTrue(xml.startswith("l<?xml")
+                        and "org.gnu.gdb.arm.m-profile" in xml)
+        self.assertEqual(d, "OK")
 
 
 class Profile(unittest.TestCase):
@@ -156,10 +245,14 @@ class PanicRecord(unittest.TestCase):
             int(magic.group(1).replace("'", ""), 16), kb.PANIC_MAGIC)
         body = re.search(
             r"enum class Cause : unsigned char \{(.*?)\};", header, re.S).group(1)
-        values = [int(v) for v in re.findall(r"=\s*(\d+)", body)]
+        enumerators = re.findall(r"(\w+)\s*=\s*(\d+)", body)
+        values = [int(v) for _, v in enumerators]
         self.assertEqual(values, list(range(len(values))),
                          "consecutive from 0")
-        self.assertEqual(len(values), len(kb.PANIC_CAUSES))
+        names = dict(re.findall(
+            r'case Cause::(\w+):\s*return "([^"]*)";', header))
+        self.assertEqual([names.get(e) for e, _ in enumerators], kb.PANIC_CAUSES,
+                         "name(), in Cause order")
 
 
 class FullRecords(unittest.TestCase):
@@ -232,52 +325,202 @@ class PanicCommand(unittest.TestCase):
 
     def test_register_writes_r0_xpsr_without_it_ici_then_pc(self):
         # a halt inside an IT block of an exception handler: IT/ICI bits set, IPSR 3
-        steps = kb.panic_register_writes(0x20026439, 8, 0x89002803, 0x10001234)
-        self.assertEqual(steps[0], [(kb.DCRDR, 8), (kb.DCRSR, 0x10000)])
-        self.assertEqual(steps[1], [(kb.DCRDR, 0x10001237), (kb.DCRSR, 0x1000E)],
+        writes = kb.panic_register_writes(
+            0x20026439, 8, 0x89002803, 0x10001234)
+        self.assertEqual(writes[0], (0, 8), "R0 = the cause")
+        self.assertEqual(writes[1], (14, 0x10001237),
                          "LR = a call from where the core stood: the record's site is that PC")
-        self.assertEqual(steps[2], [(kb.DCRDR, 0x89000003), (kb.DCRSR, 0x10010)],
+        self.assertEqual(writes[2], (16, 0x89000003),
                          "IT/ICI cleared (DDI0553B.y RQLRN), flags, T and IPSR kept")
-        self.assertEqual(steps[3], [(kb.DCRDR, 0x20026438), (kb.DCRSR, 0x1000F)],
+        self.assertEqual(writes[3], (15, 0x20026438),
                          "the PC without the Thumb bit")
+        self.assertEqual(kb.REGISTER_NAMES[0], "r0")
+        self.assertEqual([kb.REGISTER_NAMES[i] for i in (14, 15, 16)], ["lr", "pc", "xpsr"],
+                         "the indices are the printer's (uc_log_client REGISTER_NAMES)")
 
     def test_it_ici_mask(self):
         self.assertEqual(kb.EPSR_IT_ICI, 0x0600FC00)
 
-    def test_gdb_commands(self):
-        self.assertEqual(kb.panic_gdb_commands(0x20026439, 3),
-                         ["monitor halt", "set $r0 = 3", "set $lr = ($pc + 2) | 1",
-                          "set $xpsr = $xpsr & ~0x600fc00",
-                          "set $pc = 0x20026438", "monitor go", "detach"])
-
 
 class TreeSettings(unittest.TestCase):
-    def tree(self, build, cache, log_command=None):
+    """The target's printer options come from the tree's <target>.printer_args, one argument a line."""
+
+    def tree(self, build, cache="", args=("--device", "D")):
         tree = kb.Tree.__new__(kb.Tree)
         tree.build, tree.target, tree.cache = Path(build), "t", cache
-        if log_command is not None:
-            Path(build, "build.ninja").write_text(
-                "# Custom command for CMakeFiles/log_t\n"
-                "build CMakeFiles/log_t | ${cmake_ninja_workdir}CMakeFiles/log_t: CUSTOM_COMMAND\n"
-                f"  COMMAND = {log_command}\n")
+        if args is not None:
+            Path(build, "t.printer_args").write_text(
+                "".join(f"{a}\n" for a in args))
         return tree
 
-    def test_the_environment_overrides_the_cache_even_when_empty(self):
+    def test_the_environment_overrides_the_file_even_when_empty(self):
         with tempfile.TemporaryDirectory() as b:
-            tree = self.tree(b, "JLINK_IP:STRING=192.0.2.10\n")
+            tree = self.tree(b, args=("--device", "D", "--host", "192.0.2.10"))
             with unittest.mock.patch.dict(kb.os.environ, {"JLINK_IP": ""}):
                 self.assertEqual(tree._setting("JLINK_IP"), "")
             with unittest.mock.patch.dict(kb.os.environ, {}, clear=True):
                 self.assertEqual(tree._setting("JLINK_IP"), "192.0.2.10")
-
-    def test_the_log_command_overrides_the_cache(self):
-        with tempfile.TemporaryDirectory() as b:
-            tree = self.tree(b, "JLINK_IP:STRING=192.0.2.10\nJLINK_PROBE:STRING=PROBE\n",
-                             "cd /x && printer --device D --host 192.0.2.20")
-            with unittest.mock.patch.dict(kb.os.environ, {}, clear=True):
-                self.assertEqual(tree._setting("JLINK_IP"), "192.0.2.20")
                 self.assertEqual(tree._setting("JLINK_PROBE"), "",
-                                 "a log command without --probe names no USB probe")
+                                 "options without --probe name no USB probe")
+
+    def test_one_argument_a_line_values_with_spaces_and_empty_ones(self):
+        with tempfile.TemporaryDirectory() as b:
+            tree = self.tree(b, args=("--device", "RP2350_M33_0", "--speed", "4000", "--probe", "Base Probe",
+                                      "--stall_recovery", "w4 0x1 0x2", "--stall_recovery", "w4 0x3 0x4",
+                                      "--log_filter", ""))
+            self.assertEqual(tree._device(), "RP2350_M33_0")
+            self.assertEqual(tree._arg_values("--speed"), ["4000"])
+            self.assertEqual(tree._arg_values(
+                "--stall_recovery"), ["w4 0x1 0x2", "w4 0x3 0x4"])
+            self.assertEqual(tree._arg_values("--log_filter"), [""])
+            with unittest.mock.patch.dict(kb.os.environ, {}, clear=True):
+                self.assertEqual(tree._setting("JLINK_PROBE"), "Base Probe")
+
+    def test_the_printer_command_is_the_file_with_the_bench_s_own_probe_and_log(self):
+        with tempfile.TemporaryDirectory() as b:
+            tree = self.tree(b, args=("--device", "D", "--speed", "4000", "--probe", "Old",
+                                      "--pre_reset_command", "w4 0x5 0x6", "--ram_image"))
+            tree.log_dir = Path(b, "log")
+            tree.host, tree.probe = "", "New"
+            with unittest.mock.patch.dict(kb.os.environ, {}, clear=True):
+                cmd = tree.printer_command(Path("/p"))
+            self.assertEqual(cmd, ["/p", "--device", "D", "--speed", "4000", "--pre_reset_command", "w4 0x5 0x6",
+                                   "--ram_image", "--probe", "New", "--build_command", "true",
+                                   "--log_dir", str(Path(b, "log")), "--disable_ui"])
+            tree.host = "192.0.2.30"
+            with unittest.mock.patch.dict(kb.os.environ, {"JLINK_DEVICE": "E"}, clear=True):
+                cmd = tree.printer_command(Path("/p"))
+            self.assertEqual(cmd[:3], ["/p", "--device", "E"],
+                             "JLINK_DEVICE replaces the file's device")
+            self.assertIn("192.0.2.30", cmd)
+            self.assertNotIn(
+                "New", cmd, "a network J-Link instead of the USB probe")
+
+    def test_a_tree_without_the_file_is_said(self):
+        with tempfile.TemporaryDirectory() as b:
+            tree = self.tree(b, args=None)
+            with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
+                tree.printer_args()
+            self.assertIn(
+                f"no t.printer_args: run cmake {b} once", err.getvalue())
+
+
+class PrinterBinaryOverride(unittest.TestCase):
+    """UC_LOG_PRINTER_BIN: that printer is started as it is - the tree's printer is not built."""
+
+    def test_the_override_is_started_and_not_built(self):
+        with tempfile.TemporaryDirectory() as b:
+            tree = TreeSettings.tree(None, b)
+            tree.device, tree.swd_speed, tree.host, tree.probe = "D", "4000", "", ""
+            tree.log_dir = Path(b, "log")
+            runs = []
+
+            def run(cmd, **_kw):
+                runs.append(cmd)
+                return kb.subprocess.CompletedProcess(cmd, 0, "", "")
+
+            started = []
+
+            class Proc:
+                pid = 7
+
+                def __init__(self, cmd, **_kw):
+                    started.append(cmd)
+
+                def poll(self):
+                    return None
+
+            with unittest.mock.patch.dict(kb.os.environ, {"UC_LOG_PRINTER_BIN": sys.executable}), \
+                    unittest.mock.patch.object(kb.subprocess, "run", run), \
+                    unittest.mock.patch.object(kb.subprocess, "Popen", Proc), \
+                    unittest.mock.patch.object(kb, "control_socket", return_value=None), \
+                    unittest.mock.patch.object(kb, "printers", return_value=[]), \
+                    unittest.mock.patch.object(kb.time, "sleep"):
+                self.assertEqual(kb.start_printer(tree), 7)
+            self.assertFalse([c for c in runs if "cmake" in c],
+                             "the tree's printer is not built")
+            self.assertEqual(started[0][0], sys.executable,
+                             "the override is the printer started")
+
+
+class PrinterStop(unittest.TestCase):
+    """`printer stop` returns once the printer is gone (and with it its hold on the probe); one that does not go is an
+    error, not a success."""
+
+    def run_stop(self, gone_after: int | None):
+        with tempfile.TemporaryDirectory() as b:
+            tree = TreeSettings.tree(None, b)
+            tree.log_dir = Path(b, "log")
+            looks = {"n": 0}
+
+            def exists(path):
+                if not str(path).startswith("/proc/4242"):
+                    return os.path.exists(path)
+                looks["n"] += 1
+                return gone_after is None or looks["n"] <= gone_after
+            clock = iter(range(0, 1000))
+            args = types.SimpleNamespace(build=b, target="t", confirm=False)
+            with unittest.mock.patch.object(kb, "Tree", return_value=tree), \
+                    unittest.mock.patch.object(kb, "printers", return_value=[(4242, f"p --disable_ui --log_dir {tree.log_dir}", 1.0)]), \
+                    unittest.mock.patch.object(kb.os, "kill") as kill, \
+                    unittest.mock.patch.object(kb.Path, "exists", lambda self: exists(self)), \
+                    unittest.mock.patch.object(kb.time, "sleep"), \
+                    unittest.mock.patch.object(kb.time, "monotonic", lambda: next(clock) * 0.05), \
+                    contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+                try:
+                    kb.printer_stop(args)
+                    code = 0
+                except SystemExit as e:
+                    code = e.code
+            kill.assert_called_once()
+            return code, out.getvalue() + err.getvalue(), looks["n"]
+
+    def test_waits_until_gone(self):
+        code, text, looks = self.run_stop(gone_after=5)
+        self.assertEqual(code, 0)
+        self.assertIn("stopped printer 4242", text)
+        self.assertGreater(looks, 5)
+
+    def test_one_that_stays_is_an_error(self):
+        code, text, _ = self.run_stop(gone_after=None)
+        self.assertNotEqual(code, 0)
+        self.assertIn("still exiting", text)
+
+
+class NoSecondPrinter(unittest.TestCase):
+    """A command never starts a printer beside one that serves the target but does not answer yet: it waits for that
+    one's socket and uses it, or refuses."""
+
+    def tree(self, b):
+        tree = TreeSettings.tree(None, b)
+        tree.log_dir = Path(b, "log")
+        return tree
+
+    def test_a_starting_printer_is_waited_for_and_used(self):
+        with tempfile.TemporaryDirectory() as b:
+            tree = self.tree(b)
+            answers = iter([None, None, Path(b, "sock")])
+            with unittest.mock.patch.object(kb, "control_socket", lambda t: next(answers)), \
+                    unittest.mock.patch.object(kb, "printers", return_value=[(os.getpid(), f"p --log_dir {tree.log_dir}", 1.0)]), \
+                    unittest.mock.patch.object(kb, "start_printer") as start, \
+                    unittest.mock.patch.object(kb.time, "sleep"):
+                self.assertEqual(kb.need_printer(tree, "t"), Path(b, "sock"))
+                start.assert_not_called()
+
+    def test_one_that_never_answers_is_refused_not_doubled(self):
+        with tempfile.TemporaryDirectory() as b:
+            tree = self.tree(b)
+            clock = iter(range(0, 100))
+            with unittest.mock.patch.object(kb, "control_socket", return_value=None), \
+                    unittest.mock.patch.object(kb, "printers", return_value=[(os.getpid(), f"p --log_dir {tree.log_dir}", 1.0)]), \
+                    unittest.mock.patch.object(kb, "start_printer") as start, \
+                    unittest.mock.patch.object(kb.time, "sleep"), \
+                    unittest.mock.patch.object(kb.time, "monotonic", lambda: next(clock)), \
+                    contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as e:
+                kb.need_printer(tree, "t")
+            start.assert_not_called()
+            self.assertEqual(e.exception.code, 4)
+            self.assertIn("not starting a second one", err.getvalue())
 
 
 class ShortPath(unittest.TestCase):
@@ -285,8 +528,8 @@ class ShortPath(unittest.TestCase):
         with tempfile.TemporaryDirectory() as b:
             Path(b, "CMakeCache.txt").write_text(cache)
             Path(b, "t.elf").touch()
-            with unittest.mock.patch.object(kb.Tree, "_device", return_value="D"):
-                return kb.Tree(b, "t")
+            Path(b, "t.printer_args").write_text("--device\nD\n")
+            return kb.Tree(b, "t")
 
     def test_paths_are_shown_from_the_directory_above_the_source(self):
         tree = self.tree("CMAKE_HOME_DIRECTORY:INTERNAL=/src/work/firmware\n")
@@ -306,31 +549,13 @@ class ShortPath(unittest.TestCase):
 class RamImage(unittest.TestCase):
     """A RAM_ONLY image goes through a printer only when that one starts it (--ram_image)."""
 
-    def tree(self, build, ninja_command=None, script=None):
-        tree = kb.Tree.__new__(kb.Tree)
-        tree.build, tree.target = Path(build), "t"
-        if ninja_command is not None:
-            Path(build, "build.ninja").write_text(
-                "# Custom command for CMakeFiles/log_t\n"
-                "build CMakeFiles/log_t | ${cmake_ninja_workdir}CMakeFiles/log_t: CUSTOM_COMMAND\n"
-                f"  COMMAND = {ninja_command}\n")
-        if script is not None:
-            Path(build, "t_flash.jlink").write_text(script)
-        return tree
-
-    def test_the_log_command_or_the_jlink_script_tells(self):
+    def test_the_printer_options_tell(self):
         with tempfile.TemporaryDirectory() as b:
-            self.assertFalse(self.tree(b, "cd /x && printer --device D --hex_file t.hex",
-                                       "loadfile t.hex\nr\nh\nr\ng\nq").ram_image())
+            self.assertFalse(TreeSettings.tree(None, b, args=(
+                "--device", "D", "--hex_file", "t.hex")).ram_image())
         with tempfile.TemporaryDirectory() as b:
-            tree = self.tree(
-                b, "cd /x && printer --device D --ram_image --log_filter f.txt")
-            self.assertTrue(tree.ram_image())
-            self.assertEqual(tree._log_command_values(
-                "--log_filter"), ["f.txt"])
-        with tempfile.TemporaryDirectory() as b:
-            self.assertTrue(self.tree(b, None, "loadfile t.hex\nwreg MSP 0x20082000\n"
-                                      "SetPC 0x20000198\ng\nq").ram_image())
+            self.assertTrue(TreeSettings.tree(None, b, args=(
+                "--device", "D", "--ram_image")).ram_image())
 
     def guard(self, status, ram_image=True):
         tree = type("Tree", (), {"ram_image": lambda self: ram_image,
@@ -552,6 +777,169 @@ class CoverageImageOrBoard(unittest.TestCase):
         read = self.reader(
             [("__llvm_prf_data", self.ALLOC, 0x10001000, 0x10001000, b"RECORDS!")])
         self.assertIsNone(read(0x10001004, 8))
+
+
+class PrinterOnly(unittest.TestCase):
+    """kvasir_bench never opens a probe itself: no J-Link tool, GDB server or J-Link DLL anywhere
+    in it - every command goes through the printer that holds the probe."""
+
+    def test_no_jlink_tool_or_library_is_named(self):
+        source = (HERE / "kvasir_bench.py").read_text()
+        code = "\n".join(l for l in source.splitlines()
+                         if not l.lstrip().startswith("#"))
+        for forbidden in ("JLinkExe", "JLinkGDBServer", "JLinkRTT", "libjlinkarm", "pylink",
+                          "ctypes", "-CommandFile"):
+            self.assertNotIn(
+                forbidden, code, f"kvasir_bench names {forbidden}")
+
+    def test_probes_come_from_sysfs(self):
+        with tempfile.TemporaryDirectory() as d:
+            for name, vendor, serial, product in (("3-1", "1366", "000012345678", "J-Link_Bench One"),
+                                                  ("3-2", "1366",
+                                                   "000087654321", "J-Link"),
+                                                  ("1-4", "046d", "x", "Mouse")):
+                dev = Path(d) / name
+                dev.mkdir()
+                (dev / "idVendor").write_text(vendor + "\n")
+                (dev / "serial").write_text(serial + "\n")
+                (dev / "product").write_text(product + "\n")
+            self.assertEqual(kb.probes_on_usb(Path(d)),
+                             [("12345678", "J-Link Bench One", "Bench One"), ("87654321", "J-Link", "")])
+
+
+class HealthRecords(unittest.TestCase):
+    """crash's view of Health's KHLT/KHRV and the boot guard's KBTG records."""
+
+    @staticmethod
+    def record(tag, values):
+        import zlib
+        words = [kb.persistent_id(tag), 1 | (4 * len(values)) << 16] + values
+        raw = b"".join(w.to_bytes(4, "little") for w in words)
+        return raw + zlib.crc32(raw).to_bytes(4, "little")
+
+    @staticmethod
+    def guard(boot, consecutive, total, failure, detail, flags):
+        import zlib
+        value = (boot.to_bytes(4, "little") + consecutive.to_bytes(2, "little") + total.to_bytes(2, "little")
+                 + bytes([failure, detail, flags, 0]))
+        raw = kb.persistent_id("KBTG").to_bytes(
+            4, "little") + (1 | 12 << 16).to_bytes(4, "little") + value
+        return raw + zlib.crc32(raw).to_bytes(4, "little")
+
+    TABLE = [(0x2000_0000, 36, "Kvasir::Health::lastStarvation"),
+             (0x2000_0100, 36, "Kvasir::Health::lastRecovery"),
+             (0x2000_0200, 24, "Kvasir::BootGuard::state")]
+    RESIDENT = [
+        (".text", 0x1000_0000, b"\x00\x01tick\x00engine\x00core1\x00\xffxled\x00")]
+
+    def lines(self, memory, table=None):
+        def read(where, size):
+            return memory.get(where, bytes(size))[:size].ljust(size, b"\x00")
+        return kb.health_lines(table or self.TABLE, read, self.RESIDENT)
+
+    def test_fields_match_the_headers(self):
+        import re
+        header = (HERE.parent / "src/kvasir/Util/HealthRecords.hpp").read_text()
+        for struct, fields in [("Starvation", kb.HEALTH_STARVATION_FIELDS),
+                               ("Recoveries", kb.HEALTH_RECOVERY_FIELDS)]:
+            body = re.search(
+                rf"struct {struct} \{{(.*?)\}};", header, re.S).group(1)
+            self.assertEqual(re.findall(
+                r"std::uint32_t (\w+);", body), fields, struct)
+        self.assertIn('persistentId("KHLT")', header)
+        self.assertIn('persistentId("KHRV")', header)
+        self.assertIn("(check + 1) | (attempt << 16U)", header)
+        rules = (HERE.parent / "src/kvasir/Util/BootGuardRules.hpp").read_text()
+        failures = re.search(
+            r"enum class Failure : std::uint8_t \{([^}]*)\}", rules).group(1)
+        self.assertEqual([f.strip()
+                         for f in failures.split(",")], kb.BOOT_GUARD_FAILURES)
+        flags = re.findall(r"(\w+)\s*=\s*(\d+),", re.search(r"enum Flag : std::uint8_t \{(.*?)\};", rules,
+                                                            re.S).group(1))
+        self.assertEqual([n for n, _ in flags], kb.BOOT_GUARD_FLAGS)
+        self.assertEqual([int(v) for _, v in flags], [
+                         1 << i for i in range(len(flags))])
+        self.assertIn('persistentId("KBTG")', rules)
+
+    def test_fnv1a_is_the_header_s(self):
+        # the FNV-1a reference values; HealthRecords.hpp's loop is the same offset basis and prime
+        self.assertEqual(kb.fnv1a(b""), 0x811C9DC5)
+        self.assertEqual(kb.fnv1a(b"a"), 0xE40C292C)
+        self.assertEqual(kb.fnv1a(b"foobar"), 0xBF9CF968)
+        header = (HERE.parent / "src/kvasir/Util/HealthRecords.hpp").read_text()
+        self.assertIn("0x811C'9DC5U", header)
+        self.assertIn("0x0100'0193U", header)
+
+    def test_names_whole_strings_and_merged_tails(self):
+        wanted = {kb.fnv1a(b"engine"), kb.fnv1a(b"led"), kb.fnv1a(b"nowhere")}
+        self.assertEqual(kb.names_by_hash(self.RESIDENT, wanted),
+                         {kb.fnv1a(b"engine"): "engine", kb.fnv1a(b"led"): "led"})
+
+    def test_a_starvation(self):
+        memory = {0x2000_0000: self.record(
+            "KHLT", [1, kb.fnv1a(b"engine"), 812, 500, 4321, 0x6])}
+        out = self.lines(memory)
+        self.assertIn(
+            "check 'engine' (#1) starved, silent 812 ms of the 500 ms allowed, 4321 ms after boot", out[0])
+        self.assertIn("0x6", out[0])
+        self.assertIn("lastRecovery) is empty", out[1])
+
+    def test_a_reset_inside_on_starved_names_the_check_and_the_attempt(self):
+        memory = {0x2000_0100: self.record("KHRV", [2, 3, kb.fnv1a(b"core1"), 9000, (3 + 1) | (2 << 16), 0]),
+                  0x2000_0200: self.guard(7, 1, 4, 4, 3, 1 | 16)}
+        out = "\n".join(self.lines(memory))
+        self.assertIn(
+            "2 recoveries this run, the last check 'core1' (#3) at 9000 ms", out)
+        self.assertIn(
+            "check 'core1' (#3)'s onStarved was running, attempt 2", out)
+        self.assertIn("boot 7, 1 failed run(s) in a row, 4 in all, the last failure starvation "
+                      "(check 'core1' (#3)); runOpen healthyThisRun", out)
+
+    def test_an_index_without_a_hash_and_a_hash_not_in_the_image(self):
+        memory = {0x2000_0000: self.record("KHLT", [0, kb.fnv1a(b"renamed"), 1, 1, 1, 0]),
+                  0x2000_0100: self.record("KHRV", [0, 0, 0, 0, (5 + 1) | (1 << 16), 1])}
+        out = "\n".join(self.lines(memory))
+        self.assertIn("check #0 (name hash", out)
+        self.assertIn("no such name in this image", out)
+        self.assertIn("check #5's onStarved was running, attempt 1", out)
+        self.assertIn(
+            "escalated to the policy after 1 recovery attempt(s)", out)
+
+    def test_a_panic_in_the_guard_and_no_records_at_all(self):
+        memory = {0x2000_0200: self.guard(3, 2, 2, 1, 2, 1)}
+        self.assertIn("the last failure panic (stack smash)",
+                      "\n".join(self.lines(memory)))
+        self.assertEqual(kb.health_lines(
+            [], lambda w, s: bytes(s), self.RESIDENT), [])
+
+    @unittest.skipUnless(__import__("os").environ.get("KVASIR_HEALTH_ELF"),
+                         "KVASIR_HEALTH_ELF=<an image with a health supervisor that has onStarved and names "
+                         "'engine'> runs the decoder against a built image")
+    def test_a_built_image(self):
+        import os
+        import subprocess
+        elf = Path(os.environ["KVASIR_HEALTH_ELF"])
+        sys.path.insert(0, str(HERE.parent / "cmake" / "tools"))
+        import elf_image
+        out = subprocess.run([shutil.which("llvm-nm") or "arm-none-eabi-nm", "-C", "-S", "--defined-only",
+                              str(elf)], capture_output=True, text=True, check=True).stdout
+        table = [(int(a, 16), int(n, 16), name) for a, n, name in
+                 __import__("re").findall(r"^([0-9a-f]{8}) ([0-9a-f]{8}) [bBdD] (.+)$", out, __import__("re").M)]
+        at = {name: addr for addr, _, name in table}
+        memory = {at["Kvasir::Health::lastStarvation"]: self.record("KHLT", [2, kb.fnv1a(b"engine"), 1, 1, 1, 0]),
+                  at["Kvasir::Health::lastRecovery"]: self.record("KHRV", [1, 2, kb.fnv1a(b"engine"), 5,
+                                                                           3 | (1 << 16), 0])}
+        if "Kvasir::BootGuard::state" in at:
+            memory[at["Kvasir::BootGuard::state"]
+                   ] = self.guard(4, 1, 1, 4, 2, 1)
+        lines = kb.health_lines(table, lambda w, s: memory.get(w, bytes(s))[:s],
+                                elf_image.Elf(elf.read_bytes()).resident())
+        text = "\n".join(lines)
+        self.assertIn("check 'engine' (#2) starved", text)
+        self.assertIn("onStarved was running, attempt 1", text)
+        if "Kvasir::BootGuard::state" in at:
+            self.assertIn(
+                "the last failure starvation (check 'engine' (#2))", text)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@
 //         [[noreturn]] static void operator()(Kvasir::Panic::Info const& info) {
 //             Startup::run<Kvasir::Hook::SafeState>();   // outputs off
 //             Kvasir::Panic::record(info);               // the next boot's log names it
-//             Kvasir::Panic::halt(info.cause);           // or reset
+//             Kvasir::Panic::halt(info.cause);           // or: uc_log::drain(); then reset
 //         }
 //     };
 //     template<>
@@ -20,17 +20,28 @@
 //
 // The handler runs with interrupts masked, maybe on the fault stack, maybe with the flash busy:
 // register writes only, no waiting, no logging. A panic inside the handler halts at once.
+//
+// Every fatal path starts with beginFatal(), before its log line: with uc_log's
+// LossPolicy::Counted, the log lines from there on wait for room while a host reads (bounded, the
+// one wait a panic does), so the panic's own line is not dropped by a full ring. Nothing otherwise.
 
 #include "kvasir/StartUp/LinkerSymbols.hpp"
 #include "kvasir/Util/CrashRecord.hpp"
 #include "kvasir/Util/Persistent.hpp"
 #include "kvasir/Util/attributes.hpp"
 
+#if defined(USE_UC_LOG) && __has_include("uc_log/LossPolicy.hpp")
+    #include "uc_log/LossPolicy.hpp"
+    #define KVASIR_PANIC_DETAIL_UC_LOG 1
+#endif
+
 #include <cassert>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <optional>
+#include <string_view>
 #include <type_traits>
 
 namespace Kvasir::Panic {
@@ -53,6 +64,8 @@ enum class Cause : unsigned char {
     healthCheck = 12,   // Health::Supervisor's RaisePanic policy; detail = the starved check's index (Health.hpp)
     imageCorrupt = 13,   // ImageCheck's Panic policies: the image (in flash, or a RAM image's code) differs from its
                          // build; detail = the CRC computed (ImageCheck.hpp)
+    clockFailure = 14,   // Clocks::Resus with panicOnFailure: clk_sys stopped and the restart did not verify;
+                         // detail = clk_sys in kHz after it (chip_rp2350 ClockOutput.hpp)
 };
 
 [[nodiscard]] constexpr char const* name(Cause c) {
@@ -71,9 +84,19 @@ enum class Cause : unsigned char {
     case Cause::bootLoop:           return "boot loop";
     case Cause::healthCheck:        return "health check starved";
     case Cause::imageCorrupt:       return "image CRC mismatch";
+    case Cause::clockFailure:       return "clock restart failed";
     }
     return "unknown";
 }
+
+/// One past the last Cause: the first value name() does not know. The copies of the table outside
+/// the SDK are checked against it (tests/panic_cross_tests.cpp, tools/test_kvasir_bench.py, and an
+/// application's API enum where it mirrors Cause).
+inline constexpr std::size_t CauseCount = [] {
+    std::size_t n = 0;
+    while(std::string_view{name(static_cast<Cause>(n))} != "unknown") { ++n; }
+    return n;
+}();
 
 struct Info {
     Cause         cause;
@@ -292,6 +315,16 @@ namespace Detail {
                           std::uint32_t pc,
                           std::uint32_t detail = 0);
 
+// The first statement of every fatal path, before its log line (header comment). A template so the
+// log backend is looked up where it is used: the application's ComBackend may come later.
+template<typename... Dummy>
+    requires(sizeof...(Dummy) == 0)
+inline void beginFatal() {
+#ifdef KVASIR_PANIC_DETAIL_UC_LOG
+    uc_log::panicMode<std::conditional_t<sizeof...(Dummy) == 0, uc_log::Tag::User, void>>();
+#endif
+}
+
 // For Fault::Handler's TFaultAction: a fault goes the same way as every other fatal path.
 struct FaultAction {
     [[noreturn]] void operator()() { raise(Cause::fault); }
@@ -301,6 +334,7 @@ struct FaultAction {
 // Log the reason, then panic. The message goes through the catalog like any log line.
 #define KVASIR_PANIC(...)                                     \
     do {                                                      \
+        ::Kvasir::Panic::beginFatal();                        \
         UC_LOG_C(__VA_ARGS__);                                \
         ::Kvasir::Panic::raise(::Kvasir::Panic::Cause::user); \
     } while(false)

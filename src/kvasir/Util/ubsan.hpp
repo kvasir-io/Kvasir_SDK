@@ -86,6 +86,7 @@ KVASIR_UBSAN_HANDLER void __ubsan_handle_negate_overflow_minimal() { UBSAN_REPOR
 [[gnu::used,
   noreturn]] inline void
 __ubsan_handle_builtin_unreachable_minimal() {
+    ::Kvasir::Panic::beginFatal();
     UBSAN_REPORT();
     ::Kvasir::Panic::raiseAt(::Kvasir::Panic::Cause::undefinedBehaviour,
                              reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
@@ -98,6 +99,7 @@ KVASIR_UBSAN_HANDLER void __ubsan_handle_function_type_mismatch_minimal() { UBSA
 [[gnu::used,
   noreturn]] inline void
 __ubsan_handle_missing_return_minimal() {
+    ::Kvasir::Panic::beginFatal();
     UBSAN_REPORT();
     ::Kvasir::Panic::raiseAt(::Kvasir::Panic::Cause::undefinedBehaviour,
                              reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
@@ -204,6 +206,7 @@ KVASIR_UBSAN_HANDLER void __ubsan_handle_nonnull_return_v1(void const*,
 [[gnu::used,
   noreturn]] inline void
 __ubsan_handle_builtin_unreachable(UbsanSourceLocation const* data) {
+    ::Kvasir::Panic::beginFatal();
     ::Kvasir::Ubsan::ubsanReport("builtin_unreachable", data, __builtin_return_address(0));
     ::Kvasir::Panic::raiseAt(::Kvasir::Panic::Cause::undefinedBehaviour,
                              reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
@@ -212,6 +215,7 @@ __ubsan_handle_builtin_unreachable(UbsanSourceLocation const* data) {
 [[gnu::used,
   noreturn]] inline void
 __ubsan_handle_missing_return(UbsanSourceLocation const* data) {
+    ::Kvasir::Panic::beginFatal();
     ::Kvasir::Ubsan::ubsanReport("missing_return", data, __builtin_return_address(0));
     ::Kvasir::Panic::raiseAt(::Kvasir::Panic::Cause::undefinedBehaviour,
                              reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));

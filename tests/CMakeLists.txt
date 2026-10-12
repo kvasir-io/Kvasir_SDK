@@ -115,8 +115,10 @@ kvasir_add_host_test(kvasir_test_boot_guard boot_guard_tests.cpp)
 kvasir_add_host_test(kvasir_test_health health_tests.cpp)
 kvasir_add_host_test(kvasir_test_health_scenarios health_scenarios_tests.cpp)
 kvasir_add_host_test(kvasir_test_health_logonly health_logonly_tests.cpp)
+kvasir_add_host_test(kvasir_test_health_recovery health_recovery_tests.cpp)
 kvasir_add_host_test(kvasir_test_image_check image_check_tests.cpp)
 kvasir_add_host_test(kvasir_test_cell_store cell_store_tests.cpp)
+kvasir_add_host_test(kvasir_test_retry retry_tests.cpp)
 kvasir_add_host_test(kvasir_test_executor executor_tests.cpp)
 kvasir_add_host_test(kvasir_test_loop_profiler loop_profiler_tests.cpp)
 target_compile_definitions(kvasir_test_image_check PRIVATE KVASIR_IMAGE_CRC_TEST=1)
@@ -126,6 +128,19 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME kvasir_test_check_must_fail
          COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_LIST_DIR}/check_must_fail/test_check_must_fail.py
                  ${CMAKE_CXX_COMPILER} ${CMAKE_CURRENT_LIST_DIR}/../src)
+# Health's refusals of a recovery (rungs out of range, a budget the watchdog would not survive), with this compiler
+add_test(NAME kvasir_test_health_must_fail
+         COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_LIST_DIR}/health_must_fail/test_health_must_fail.py
+                 ${CMAKE_CXX_COMPILER} ${CMAKE_CURRENT_LIST_DIR}/../src)
+# every fatal path calls Panic::beginFatal() before its log line (LossPolicy::Counted lets that line wait for room); the
+# fixture must be refused
+add_test(NAME kvasir_test_fatal_sites
+         COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_LIST_DIR}/../tools/check_fatal_sites.py
+                 ${CMAKE_CURRENT_LIST_DIR}/../src)
+add_test(NAME kvasir_test_fatal_sites_must_fail
+         COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_LIST_DIR}/../tools/check_fatal_sites.py
+                 ${CMAKE_CURRENT_LIST_DIR}/fatal_sites)
+set_tests_properties(kvasir_test_fatal_sites_must_fail PROPERTIES WILL_FAIL TRUE)
 add_test(NAME kvasir_test_cell_store_must_fail
          COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_LIST_DIR}/cell_store_must_fail/test_cell_store_must_fail.py
                  ${CMAKE_CXX_COMPILER} ${CMAKE_CURRENT_LIST_DIR}/../src ${CMAKE_CURRENT_LIST_DIR})
@@ -168,7 +183,19 @@ add_test(NAME kvasir_test_util_crc_must_fail
 kvasir_add_host_test(kvasir_test_util_periodic util_periodic_tests.cpp)
 kvasir_add_host_test(kvasir_test_hooks hooks_tests.cpp)
 kvasir_add_host_test(kvasir_test_panic panic_tests.cpp)
+# Panic::Cause against uc_log's names for it (nested here, absent in a checkout without its submodules)
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../uc_log/src/uc_log/detail/TargetRecords.hpp)
+    kvasir_add_host_test(kvasir_test_panic_cross panic_cross_tests.cpp)
+    target_include_directories(kvasir_test_panic_cross PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../uc_log/src)
+    # beginFatal() with uc_log: the backend's panic mode (LossPolicy::Counted)
+    kvasir_add_host_test(kvasir_test_panic_fatal panic_fatal_tests.cpp)
+    target_include_directories(kvasir_test_panic_fatal PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../uc_log/src)
+endif()
 kvasir_add_host_test(kvasir_test_announced_reset announced_reset_tests.cpp)
+# the printer's side of the handshake, where the nested uc_log checkout is (its headers include each other)
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../uc_log/src/uc_log/detail/AnnouncedReset.hpp)
+    target_include_directories(kvasir_test_announced_reset PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../uc_log/src)
+endif()
 kvasir_add_host_test(kvasir_test_util_control_pid util_control_pid_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_control_filters util_control_filters_tests.cpp)
 target_link_libraries(kvasir_test_util_periodic PRIVATE kvasir::test_support)
@@ -236,6 +263,9 @@ add_test(NAME kvasir_test_header_self_containment COMMAND ${CMAKE_COMMAND} --bui
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME kvasir_test_check_ram_funcs COMMAND ${Python3_EXECUTABLE}
                                                   ${CMAKE_CURRENT_LIST_DIR}/ram_funcs/test_check_ram_funcs.py)
+# cmake/tools/check_reset_entry.py (the post-link reset entry check): its instruction rules on hand-assembled code
+add_test(NAME kvasir_test_check_reset_entry COMMAND ${Python3_EXECUTABLE} -B
+                                                    ${CMAKE_CURRENT_LIST_DIR}/reset_entry/test_check_reset_entry.py)
 
 # linker/common_stack_body.inc.ld: the stack fills what RAM the other sections leave, in one link, with lld and GNU ld
 # (a missing linker is a skip inside the test)

@@ -721,6 +721,31 @@ namespace Kvasir { namespace Startup {
         (callPreEnableRuntimeInit<Ts>(), ...);
     }
 
+    // preMemoryInit(): before .data and .bss are initialised (the clocks run, nothing else). For what must change
+    // before an initial value is copied in - uc_log's RTT epoch moves before its control block is rewritten. Only
+    // plain code: no static of the image is set yet.
+    template<typename T>
+    void callPreMemoryInit() {
+        if constexpr(requires { T::preMemoryInit(); }) { T::preMemoryInit(); }
+    }
+
+    template<typename... Ts>
+    void callPreMemoryInits() {
+        (callPreMemoryInit<Ts>(), ...);
+    }
+
+    // postMemoryInit(): right after .data and .bss (and the chip's extra RAM sections) are initialised, before any
+    // constructor - the counterpart of preMemoryInit(): uc_log's RTT epoch says its control block is rewritten.
+    template<typename T>
+    void callPostMemoryInit() {
+        if constexpr(requires { T::postMemoryInit(); }) { T::postMemoryInit(); }
+    }
+
+    template<typename... Ts>
+    void callPostMemoryInits() {
+        (callPostMemoryInit<Ts>(), ...);
+    }
+
     template<typename T>
     void callRuntimeInit() {
         if constexpr(has_runtimeInit<T>::value) { T::runtimeInit(); }
@@ -816,33 +841,55 @@ namespace Kvasir { namespace Startup {
         // An image does not always start from a clean reset: a RAM image the debugger starts, or an
         // application a bootloader jumps into, inherits whatever ran before (e.g. the RP2040 boot ROM's
         // USB interrupt, enabled and pending). Every NVIC enable and pending bit is cleared before
-        // anything else; Startup enables what the list claims. Armv6-M: one NVIC_ICER / NVIC_ICPR (DDI0419E B3.4, 0xE000E180 / 0xE000E280); Armv8-M:
-        // NVIC_ICERn / NVIC_ICPRn, n = 0..15, "always implemented" (DDI0553B.y D1.2.183/184).
+        // anything else; Startup enables what the list claims. The words and their registers: the core
+        // package (core_cortex_common Nvic.hpp).
         inline void disableAllInterrupts() {
 #ifdef __arm__
-    #if defined(__ARM_ARCH_6M__)
-            constexpr std::uint32_t Words = 1;
-    #else
-            constexpr std::uint32_t Words = 16;
-    #endif
-            for(std::uint32_t n = 0; n != Words; ++n) {
-                *reinterpret_cast<std::uint32_t volatile*>(0xE000E180U + 4U * n) = 0xFFFFFFFFU;
-                *reinterpret_cast<std::uint32_t volatile*>(0xE000E280U + 4U * n) = 0xFFFFFFFFU;
-            }
-            asm volatile("dsb\n isb" ::: "memory");
+            Nvic::Detail::clearAllEnablesAndPending();
 #endif
         }
 
-        // Gives the reset entry - a member function of the firmware's Startup type - the name
-        // ResetISR in the image, for `--entry=ResetISR` (compiler_common.cmake), debuggers and
-        // backtraces. Only directives, no instruction. Two Startups in one image are a duplicate
-        // symbol at link time.
-        template<Nvic::IsrFunctionPointer Reset>
-        [[gnu::always_inline]] inline void nameResetEntry() {
+        // What a warm reset would have done and the entry stub (KVASIR_RESET_ENTRY_ASM) does not. An image not
+        // entered from a reset (a RAM image the debugger starts, an application a bootloader jumps into, an RP
+        // debugger reset: SYSRESETREQ restarts the core only, RP2040 DS 2.4.2.9) inherits a running SysTick, a
+        // pending PendSV/SysTick, FAULTMASK, the FPU's lazy state and old fault status bits; SysTick and PendSV
+        // are stopped first. What a core has of these, and the registers: the core package's Core::cleanCore()
+        // (core/StartUp.hpp).
+        [[gnu::always_inline]] inline void cleanCore() {
 #ifdef __arm__
-            asm(".globl ResetISR\n\t.thumb_set ResetISR, %c0" ::"i"(Reset));
+            Core::cleanCore();
 #endif
         }
+
+        // The whole body of the naked ResetISR (Startup, StartupWithProfiling). Naked, so no compiled code runs
+        // first: a bootloader or debugger may enter with PRIMASK clear, CONTROL.SPSEL = 1 or a stale MSPLIM above
+        // SP, and a prologue's `sub sp` would itself be the STKOF UsageFault (DDI0553B.y B3.21 IBJHX; MSR to
+        // MSPLIM/PSPLIM is not limit-checked, RBRLT). PRIMASK = 1 until Nvic::enable_all(); MSPLIM/PSPLIM = 0 as
+        // after a warm reset (D1.2.177; Core::startup() arms MSPLIM again); CONTROL = 0: privileged, MSP, FPCA = 0
+        // (DDI0419E B1.4.4, DDI0403E B1.4.4, DDI0553B.y B3.4), then ISB (DDI0553B.y B3.4, DDI0403E B5.2.3); MSP =
+        // vector table word 0. Then the noreturn C++ body (the literal pool may follow the bl). `.syntax unified`:
+        // gcc passes Thumb-1 inline asm in divided syntax (FaultHandler.hpp). Also names the entry ResetISR for
+        // `--entry=ResetISR` (compiler_common.cmake), debuggers and backtraces; two Startups in one image are a
+        // duplicate symbol at link time. Operands: 0 the body, 1 the entry itself, 2 _LINKER_stack_end_.
+#if defined(__ARM_ARCH_8M_MAIN__) || defined(__ARM_ARCH_8M_BASE__)
+    #define KVASIR_RESET_ENTRY_LIMITS \
+        "msr msplim, r0 \n"           \
+        "msr psplim, r0 \n"
+#else
+    #define KVASIR_RESET_ENTRY_LIMITS ""
+#endif
+#define KVASIR_RESET_ENTRY_ASM                                             \
+    ".globl ResetISR                         \n"                           \
+    ".thumb_set ResetISR, %c1                \n"                           \
+    ".syntax unified                         \n"                           \
+    "cpsid i                                 \n"                           \
+    "movs r0, #0                             \n" KVASIR_RESET_ENTRY_LIMITS \
+    "msr control, r0                         \n"                           \
+    "isb                                     \n"                           \
+    "ldr r0, =%c2                            \n"                           \
+    "msr msp, r0                             \n"                           \
+    "bl %c0                                  \n"                           \
+    ".ltorg                                  \n"
 
         template<typename ClockSettings, typename... Peripherals>
         struct StartupImpl {
@@ -850,6 +897,7 @@ namespace Kvasir { namespace Startup {
             [[noreturn,
               gnu::always_inline]] static void
             ResetISR() {
+                Detail::cleanCore();
                 FirstInitStep<Kvasir::Tag::User>{}();
                 Detail::disableAllInterrupts();
                 Hook{}();
@@ -858,8 +906,10 @@ namespace Kvasir { namespace Startup {
 
                 ClockSettings::coreClockInit();
 
+                callPreMemoryInits<Peripherals...>();
                 initMemory();
                 ExtraMemoryInit<Kvasir::Tag::User>{}();   // the chip's extra RAM sections, if any
+                callPostMemoryInits<Peripherals...>();
 
                 // after the clocks (a chip's entropy may need them), before any constructor
                 Detail::seedStackGuard();
@@ -1081,11 +1131,20 @@ namespace Kvasir { namespace Startup {
                       "the masked-record mode, or, for an unknown level, set the priority with "
                       "a literal");
 
-        // The reset entry (vector table word 1), named ResetISR in the image.
-        [[KVASIR_RESETISR_ATTRIBUTES,
+        // The reset entry (vector table word 1): KVASIR_RESET_ENTRY_ASM, then ResetBody.
+        [[gnu::naked,
           gnu::noinline]] static void
         ResetISR() {
-            Detail::nameResetEntry<&ResetISR>();
+#ifdef __arm__
+            asm volatile(KVASIR_RESET_ENTRY_ASM ::"i"(&ResetBody),
+                         "i"(&ResetISR),
+                         "i"(&_LINKER_stack_end_));
+#endif
+        }
+
+        [[KVASIR_RESETISR_ATTRIBUTES,
+          gnu::noinline]] static void
+        ResetBody() {
             Detail::StartupImplOf<ClockSettings, AllPeripherals>::type::ResetISR();
         }
 
@@ -1142,11 +1201,20 @@ namespace Kvasir { namespace Startup {
              typename ProfilePolicy,
              typename TimeSource>
     struct StartupWithProfiling<Startup<ClockSettings, Peripherals...>, ProfilePolicy, TimeSource> {
-        // The reset entry (vector table word 1), named ResetISR in the image.
-        [[KVASIR_RESETISR_ATTRIBUTES,
+        // The reset entry (vector table word 1): KVASIR_RESET_ENTRY_ASM, then ResetBody.
+        [[gnu::naked,
           gnu::noinline]] static void
         ResetISR() {
-            Detail::nameResetEntry<&ResetISR>();
+#ifdef __arm__
+            asm volatile(KVASIR_RESET_ENTRY_ASM ::"i"(&ResetBody),
+                         "i"(&ResetISR),
+                         "i"(&_LINKER_stack_end_));
+#endif
+        }
+
+        [[KVASIR_RESETISR_ATTRIBUTES,
+          gnu::noinline]] static void
+        ResetBody() {
             Detail::StartupImplOf<ClockSettings,
                                   typename Startup<ClockSettings, Peripherals...>::AllPeripherals>::
               type::template ResetISR<EnableTimeSourceHook<TimeSource>>();
@@ -1235,6 +1303,7 @@ void log_assert([[maybe_unused]] int         line,
                 [[maybe_unused]] char const* filename,
                 [[maybe_unused]] char const* expr) {
     UC_LOG_SCOPE_MODULE("assert");
+    ::Kvasir::Panic::beginFatal();
     UC_LOG_C("libc/libc++ assert({}) {}:{}",
              std::string_view{expr},
              std::string_view{filename},
@@ -1284,6 +1353,7 @@ __assert_func(char const* file,
   gnu::used]] void
 abort() {
     UC_LOG_SCOPE_MODULE("assert");
+    ::Kvasir::Panic::beginFatal();
     UC_LOG_C("abort() called (libstdc++ __throw_* or libc)");
     Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::abort,
                            reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
@@ -1316,6 +1386,7 @@ extern "C" {
   gnu::used]] void
 abort() noexcept {
     UC_LOG_SCOPE_MODULE("assert");
+    ::Kvasir::Panic::beginFatal();
     UC_LOG_C("abort() called");
     Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::abort,
                            reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
@@ -1327,6 +1398,7 @@ abort() noexcept {
   gnu::used]] void
 exit(int status) noexcept {
     UC_LOG_SCOPE_MODULE("assert");
+    ::Kvasir::Panic::beginFatal();
     UC_LOG_C("exit({}) called", status);
     Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::abort,
                            reinterpret_cast<std::uint32_t>(__builtin_return_address(0)),
@@ -1337,6 +1409,7 @@ exit(int status) noexcept {
   gnu::used]] void
 _Exit(int status) noexcept {
     UC_LOG_SCOPE_MODULE("assert");
+    ::Kvasir::Panic::beginFatal();
     UC_LOG_C("_Exit({}) called", status);
     Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::abort,
                            reinterpret_cast<std::uint32_t>(__builtin_return_address(0)),
@@ -1452,6 +1525,7 @@ long                   __llvm_libc_stdio_write(void*,
   gnu::used]] void
 __llvm_libc_exit(int status) {
     UC_LOG_SCOPE_MODULE("libc");
+    ::Kvasir::Panic::beginFatal();
     UC_LOG_C("libc exit({})", status);
     Kvasir::Panic::raise(Kvasir::Panic::Cause::abort);
 }
@@ -1562,6 +1636,7 @@ extern "C" {
   gnu::used]] inline void
 __stack_chk_fail() {
     UC_LOG_SCOPE_MODULE("assert");
+    ::Kvasir::Panic::beginFatal();
     UC_LOG_C("stack smashed: a -fstack-protector canary was overwritten");
     Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::stackSmash,
                            reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
@@ -1572,6 +1647,7 @@ __stack_chk_fail() {
     std::uint32_t ipsr{};
     asm volatile("mrs %0, ipsr" : "=r"(ipsr));
     auto const irq = static_cast<std::int32_t>(ipsr) - 16;
+    ::Kvasir::Panic::beginFatal();
     UC_LOG_C("unhandled interrupt fired, IRQ={}", irq);
     // no program site caused it (pc 0): the record names the interrupt instead - the exception
     // number in detail, IRQ = detail - 16, a negative IRQ a system exception (IPSR, Armv6-M ARM
@@ -1605,6 +1681,7 @@ __aeabi_idiv0(int);
   gnu::used]] inline int
 __aeabi_idiv0(int) {
 #ifdef __arm__
+    ::Kvasir::Panic::beginFatal();
     UC_LOG_C("integer division by zero");
     Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::divideByZero,
                            reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
@@ -1621,6 +1698,7 @@ __aeabi_ldiv0(long long);
   gnu::used]] inline long long
 __aeabi_ldiv0(long long) {
 #ifdef __arm__
+    ::Kvasir::Panic::beginFatal();
     UC_LOG_C("64-bit integer division by zero");
     Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::divideByZero,
                            reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
@@ -1651,6 +1729,7 @@ void operator delete[](void*,
 
 void* operator new(std::size_t) {
     #ifdef __arm__
+    ::Kvasir::Panic::beginFatal();
     UC_LOG_C("operator new without a heap (HEAP_SIZE)");
     Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::allocation,
                            reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
@@ -1662,6 +1741,7 @@ void* operator new(std::size_t) {
 
 void* operator new[](std::size_t) {
     #ifdef __arm__
+    ::Kvasir::Panic::beginFatal();
     UC_LOG_C("operator new[] without a heap (HEAP_SIZE)");
     Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::allocation,
                            reinterpret_cast<std::uint32_t>(__builtin_return_address(0)));
@@ -1684,6 +1764,7 @@ namespace Kvasir::Startup::Detail {
 [[gnu::always_inline]] inline void* allocateOrPanic(void* block,
                                                     void* caller) {
     if(block == nullptr) {
+        ::Kvasir::Panic::beginFatal();
         UC_LOG_C("operator new: the heap (HEAP_SIZE) is exhausted");
         Kvasir::Panic::raiseAt(Kvasir::Panic::Cause::allocation,
                                reinterpret_cast<std::uint32_t>(caller));
@@ -1755,6 +1836,7 @@ libstdcxxThrow(std::string_view exception,
                char const*      what,
                void*            caller) {
     UC_LOG_SCOPE_MODULE("assert");
+    ::Kvasir::Panic::beginFatal();
     UC_LOG_C("libstdc++ would throw std::{}: {}",
              exception,
              std::string_view{what == nullptr ? "" : what});

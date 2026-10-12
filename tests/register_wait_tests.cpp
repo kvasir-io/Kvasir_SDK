@@ -7,6 +7,7 @@
 #include <csetjmp>
 #include <cstdint>
 #include <optional>
+#include <type_traits>
 
 using namespace Kvasir::Register;
 using namespace Kvasir::Test;
@@ -145,6 +146,29 @@ int main() {
     becomesTrueAfter(1'000'000);
     auto const i = waitUntil<Bound::Polls<3>>(isSet(CtrlReg::en));
     CHECK(i.timedOut && i.polls == 3);
+
+    test(
+      "FieldValue on a whole 32-bit register: the one-hot SELECTED shape (chip_rp_common "
+      "clock_config.hpp)");
+    {
+        using Full = Kvasir::Register::FieldLocation<CtrlReg::Addr,
+                                                     Kvasir::Register::maskFromRange(31, 0),
+                                                     Kvasir::Register::ReadOnlyAccess,
+                                                     std::uint32_t>;
+        constexpr auto selectedIs2 = Kvasir::Register::FieldValue<Full, (std::uint32_t{1} << 2)>{};
+        static_assert(std::is_same_v<decltype(selectedIs2) const,
+                                     decltype(Kvasir::Register::FieldValue<Full, 4U>{}) const>);
+        auto& m = recorder.model(CtrlReg::Addr::value);
+        auto  n = 0U;
+        // "may briefly show all-0s" while switching, then the new source's bit; the old one first
+        m.onRead     = [&n](unsigned) { return ++n < 3 ? 1U : (n < 5 ? 0U : 4U); };
+        auto const k = waitUntil<Bound::Polls<10>, OnTimeout::Report>(selectedIs2);
+        CHECK(k && k.polls == 5);
+        m.onRead     = [](unsigned) { return 5U; };   // two bits: not the value
+        auto const l = waitUntil<Bound::Polls<4>, OnTimeout::Report>(selectedIs2);
+        CHECK(l.timedOut);
+        m.onRead = nullptr;
+    }
 
     test("Unbounded: the loop, no count");
     becomesTrueAfter(3);

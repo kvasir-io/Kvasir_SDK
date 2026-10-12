@@ -30,9 +30,8 @@
           gnu::no_sanitize("undefined", "bounds-strict"), gnu::no_stack_protector
     #define KVASIR_RAM_FUNC_INLINE_ATTRIBUTES                              \
         gnu::always_inline, gnu::no_sanitize("undefined", "bounds-strict")
-    // not naked: gcc builds no frame for a naked function (its manual allows only basic asm in
-    // one), and ResetISR is the whole start-up in C++ - its locals would lie above the initial SP,
-    // in core 1's stack on a multicore image. SP comes from the vector table.
+    // the C++ body behind the naked reset entry (StartUp.hpp KVASIR_RESET_ENTRY_ASM): not naked
+    // itself, gcc builds no frame for a naked function and the body is the whole start-up in C++
     #define KVASIR_RESETISR_ATTRIBUTES noreturn
     #define KVASIR_ALWAYS_INLINE       gnu::always_inline
     // gcc has no no_destroy; the atexit() registration lands in StartUp.hpp's stub instead

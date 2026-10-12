@@ -209,6 +209,7 @@ namespace Detail {
                 [](::Kvasir::Check::Detail::Arg<decltype(kvasir_check_ha.value)> kvasir_check_va, \
                    ::Kvasir::Check::Detail::Arg<decltype(kvasir_check_hb.value)> kvasir_check_vb, \
                    auto const&... kvasir_check_extra) __attribute__((cold, noinline, noreturn)) { \
+                    ::Kvasir::Panic::beginFatal();                                                \
                     KVASIR_DETAIL_CHECK_LOG(                                                      \
                       crit,                                                                       \
                       KVASIR_DETAIL_CHECK_TEXT(what "(" #a " " opText " " #b ")")                 \
@@ -251,6 +252,7 @@ namespace Detail {
                 ::Kvasir::Check::Detail::checkFailedInConstantExpression();                       \
             } else {                                                                              \
                 [](auto const&... kvasir_check_extra) __attribute__((cold, noinline, noreturn)) { \
+                    ::Kvasir::Panic::beginFatal();                                                \
                     KVASIR_DETAIL_CHECK_LOG(crit,                                                 \
                                             KVASIR_DETAIL_CHECK_TEXT(text)                        \
                                               KVASIR_DETAIL_CHECK_USER_FMT(__VA_ARGS__),          \

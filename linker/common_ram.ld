@@ -13,12 +13,24 @@ SECTIONS {
         INCLUDE common_stack1_body.inc.ld
     } > ram
 
-    .data : AT(_LINKER_INTERN_data_start_flash_) {
+    /* MPU region boundaries (chip Mpu.hpp): .data (with the RAM functions) stays executable, the RAM below and above
+       it does not. The sections' own ALIGN, so .data's size in flash and in RAM stay the same (and lld places a
+       section of a MEMORY region at the region's cursor, not at `.`). */
+    .data : AT(_LINKER_INTERN_data_start_flash_) ALIGN(32) {
         INCLUDE common_data_body.inc.ld
     } > ram
     _LINKER_INTERN_data_end_flash_ = _LINKER_INTERN_data_start_flash_ + SIZEOF(.data);
 
-    .bss (NOLOAD) : AT(ADDR(.bss)) {
+    /* Code written at run time and then executed (chip bootrom_functions.hpp: the bootrom's XIP setup function, copied
+       out of BOOTRAM): the image's one writable and executable range, an MPU region of its own (chip Mpu.hpp) */
+    .ramExec (NOLOAD) : AT(ADDR(.ramExec)) ALIGN(32) {
+        _LINKER_INTERN_ramExec_start_ = .;
+        *(.ramExec*)
+        . = ALIGN(32);
+        _LINKER_INTERN_ramExec_end_ = .;
+    } > ram
+
+    .bss (NOLOAD) : AT(ADDR(.bss)) ALIGN(32) {
         INCLUDE common_bss_body.inc.ld
     } > ram
 
@@ -35,5 +47,5 @@ SECTIONS {
    A chip whose script puts a section of its own into ram (chip_rp2040's RAM-only .boot2) sets
    _LINKER_INTERN_chip_ram_other_size_ BEFORE it includes this file. */
 PROVIDE(_LINKER_INTERN_chip_ram_other_size_ = 0);
-_LINKER_INTERN_ram_other_size_ = SIZEOF(.noInitLowRam) + SIZEOF(.stack1) + SIZEOF(.data) + SIZEOF(.bss) + SIZEOF(.noInit)
+_LINKER_INTERN_ram_other_size_ = SIZEOF(.noInitLowRam) + SIZEOF(.stack1) + SIZEOF(.data) + SIZEOF(.ramExec) + SIZEOF(.bss) + SIZEOF(.noInit)
                                + _LINKER_INTERN_chip_ram_other_size_;

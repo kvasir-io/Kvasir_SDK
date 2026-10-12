@@ -4,12 +4,15 @@
 // 2/3/4-sector stores with 1/2/16-page cells and a cell bigger than a sector - after each cut the store holds the
 // last value stored or the one in flight, never an older one, never nothing; torn cells skipped and a sector of
 // noise erased before use; the import of a SimpleEeprom record that never erases it before the copy exists (a cut
-// at every operation of the import too); a version change with and without migrate.
+// at every operation of the import too); a version change with and without migrate. Failures without a power cut: a
+// locked sector, a refused program, a program that claims success and writes nothing (with and without the
+// read-back); CellEeprom's retry of a refused store.
 #include "kvasir/Util/CellStore.hpp"
 #include "support/FakeNorFlash.hpp"
 #include "test_harness.hpp"
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -202,6 +205,21 @@ struct V2Migrate : V2Cfg {
 
 struct EraseAheadCfg : KF::CellStoreDefaults {
     static constexpr std::size_t EraseAhead = 2;
+};
+
+struct NoVerifyCfg : KF::CellStoreDefaults {
+    static constexpr bool VerifyAfterWrite = false;
+};
+
+// a clock the test moves by hand, for CellEeprom's retry
+struct TestClock {
+    using rep        = std::int64_t;
+    using period     = std::milli;
+    using duration   = std::chrono::milliseconds;
+    using time_point = std::chrono::time_point<TestClock>;
+    static inline time_point t{};
+
+    static time_point now() { return t; }
 };
 }   // namespace
 
@@ -404,6 +422,111 @@ int main() {
         CHECK(w && w->block == 1 && w->cell == 0 && !w->erased);
         static_assert(!std::is_same_v<S::Extends, brigand::list<>>);
         static_assert(std::is_same_v<KF::CellStore<Flash2, V8>::Extends, brigand::list<>>);
+    }
+
+    {
+        test(
+          "a locked sector: store reports flash and changes nothing; unlocked, the same store goes "
+          "in");
+        using S = KF::CellStore<Flash2, V8>;
+        Flash2::blank();
+        S::forget();
+        for(std::uint32_t i = 1; i <= 16; ++i) { (void)S::store(V8::make(i)); }   // sector 0 full
+        Flash2::lockSectors(0b10);   // sector 1 (blank, so no erase): its program is refused
+        auto const ops    = Flash2::ops;
+        auto const locked = S::store(V8::make(17));
+        CHECK(!locked && locked.error() == KF::CellError::flash && Flash2::ops == ops);
+        CHECK(S::load() == V8::make(16) && S::stats().sequence == 16);
+        S::forget();
+        CHECK(S::load() == V8::make(16));
+        Flash2::lockSectors(0);
+        auto const w = S::store(V8::make(17));
+        CHECK(w && w->sequence == 17 && w->block == 1 && w->cell == 0 && !w->erased);
+        S::forget();
+        CHECK(S::load() == V8::make(17));
+    }
+
+    {
+        test("a refused program (failNext): flash error, nothing changed, the next store works");
+        using S = KF::CellStore<Flash2, V8>;
+        Flash2::blank();
+        S::forget();
+        (void)S::store(V8::make(1));
+        Flash2::failNext(1);
+        auto const refused = S::store(V8::make(2));
+        CHECK(!refused && refused.error() == KF::CellError::flash);
+        S::forget();
+        CHECK(S::load() == V8::make(1));
+        auto const w = S::store(V8::make(2));
+        CHECK(w && w->sequence == 2 && w->cell == 1);
+    }
+
+    {
+        test(
+          "a dropped program (claims success, writes nothing): the read-back moves on, the "
+          "sequence is not reused");
+        using S = KF::CellStore<Flash2, V8>;
+        Flash2::blank();
+        S::forget();
+        (void)S::store(V8::make(1));
+        Flash2::dropNext(1);
+        auto const w = S::store(V8::make(2));
+        // cell 1 was left blank, but the store moved past it; sequence 2 was spent on the dropped cell
+        CHECK(w && w->sequence == 3 && w->cell == 2);
+        S::forget();
+        CHECK(S::load() == V8::make(2) && S::stats().sequence == 3);
+    }
+
+    {
+        test(
+          "a dropped program without VerifyAfterWrite: unnoticed until the next load (why the "
+          "read-back exists)");
+        using S = KF::CellStore<Flash2, V8, NoVerifyCfg>;
+        Flash2::blank();
+        S::forget();
+        (void)S::store(V8::make(1));
+        Flash2::dropNext(1);
+        auto const w = S::store(V8::make(2));
+        CHECK(w && w->sequence == 2 && w->cell == 1);
+        S::forget();
+        CHECK(S::load() == V8::make(1));
+    }
+
+    {
+        test(
+          "CellEeprom retries a refused store by itself: pending, a growing pause, in once the "
+          "flash takes it");
+        using S = KF::CellStore<Flash2, V8>;
+        using E = KF::CellEeprom<S, TestClock>;
+        static_assert(!std::is_same_v<E::Extends, brigand::list<>>);
+        static_assert(std::is_same_v<KF::CellEeprom<S>::Extends, brigand::list<>>);
+        Flash2::blank();
+        S::forget();
+        E::forget();
+        TestClock::t = TestClock::time_point{};
+        Flash2::lockSectors(0b11);
+        E::value() = V8::make(5);
+        CHECK(!E::writeValue() && E::pending() && E::retry().failures == 1);
+        TestClock::t += std::chrono::milliseconds{999};
+        E::maintain();   // before the pause: no attempt
+        CHECK(E::retry().failures == 1);
+        TestClock::t += std::chrono::milliseconds{1};
+        E::maintain();   // 1 s: tried, refused again, the pause doubled
+        CHECK(E::pending() && E::retry().failures == 2
+              && E::retry().next == TestClock::t + std::chrono::seconds{2});
+        Flash2::lockSectors(0);
+        TestClock::t += std::chrono::seconds{1};
+        E::maintain();
+        CHECK(E::pending());   // not due yet
+        TestClock::t += std::chrono::seconds{1};
+        E::maintain();
+        CHECK(!E::pending() && E::retry().failures == 0);
+        S::forget();
+        CHECK(S::load() == V8::make(5));
+        TestClock::t += std::chrono::hours{1};
+        auto const ops = Flash2::ops;
+        E::maintain();   // nothing pending: nothing done
+        CHECK(Flash2::ops == ops);
     }
 
     return Kvasir::Test::report();

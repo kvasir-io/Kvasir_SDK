@@ -45,9 +45,17 @@
 // All accesses are volatile, which keeps LTO from splitting or folding it.
 //
 // announce() is safe from a panic or fault handler: interrupts may be masked, no logging, no
-// allocation, no clock or timer - memory and register accesses and a counted loop only.
+// allocation, no clock set-up - memory and register accesses only. Its waits are timed by a free-running
+// microsecond counter when the chip package provides one (kvasir_announced_reset_time_us(), a register read) and it
+// runs; else, or while it stands still, by counted polls at the fastest clock. Interrupts are masked while it waits,
+// so interrupt load cannot stretch a wait past the host's pause; a caller that goes on (not armed, timed out) had
+// them masked for at most the ack wait.
 
 #include <cstdint>
+
+/// A free-running microsecond counter, if the chip package has one (a weak definition there; chip_rp_common: the
+/// TIMER's raw low word). Not defined: null, and announce() counts polls.
+extern "C" [[gnu::weak]] std::uint32_t kvasir_announced_reset_time_us();
 
 namespace Kvasir::AnnouncedReset {
 
@@ -98,6 +106,23 @@ namespace detail {
         return static_cast<std::uint32_t>(MaxCoreHz * microseconds / 1'000'000 / MinCyclesPerPoll);
     }
 
+    // PRIMASK set for its lifetime, the previous value back at the end (Armv6-M / Armv7-M / Armv8-M: MRS/MSR PRIMASK,
+    // CPSID i). Elsewhere (the host, RISC-V) nothing.
+    struct IrqMask {
+#if defined(__ARM_ARCH_6M__) || defined(__ARM_ARCH_7M__) || defined(__ARM_ARCH_7EM__) \
+  || defined(__ARM_ARCH_8M_MAIN__) || defined(__ARM_ARCH_8M_BASE__)
+        std::uint32_t saved{};
+
+        IrqMask() { asm volatile("mrs %0, primask\n\tcpsid i" : "=r"(saved)::"memory"); }
+
+        ~IrqMask() { asm volatile("msr primask, %0" ::"r"(saved) : "memory"); }
+#else
+        IrqMask() = default;
+#endif
+        IrqMask(IrqMask const&)            = delete;
+        IrqMask& operator=(IrqMask const&) = delete;
+    };
+
     // DHCSR, Armv8-M ARM DDI0553B.y D1.2.39 (0xE000EDF0, C_DEBUGEN bit 0).
     inline constexpr std::uintptr_t DhcsrAddress = 0xE000'EDF0;
 
@@ -114,6 +139,39 @@ namespace detail {
 
 /// ~0.5 s for the ack, ~0.1 s of grace, at the fastest clock (see detail::MinCyclesPerPoll).
 inline constexpr Polls DefaultPolls{detail::pollsFor(500'000), detail::pollsFor(100'000)};
+
+/// The same waits in microseconds, for a chip with a running microsecond counter.
+struct Waits {
+    std::uint32_t ackUs;
+    std::uint32_t graceUs;
+};
+
+inline constexpr Waits DefaultWaits{500'000, 100'000};
+
+namespace detail {
+    // One wait: `us` by the counter while it runs, else `polls` polls. A counter that has not moved after
+    // StillPolls polls is taken as stopped (a timer whose tick is not set up) and the polls decide.
+    struct Deadline {
+        std::uint32_t (*now)();
+        std::uint32_t us;
+        std::uint32_t polls;
+        std::uint32_t start{now != nullptr ? now() : 0};
+        std::uint32_t done{};
+        bool          moving{};
+
+        static constexpr std::uint32_t StillPolls = pollsFor(2'000);
+
+        bool expired() {
+            if(now != nullptr) {
+                auto const elapsed = now() - start;   // modulo 2^32: a wrap of the counter is fine
+                moving             = moving || elapsed != 0;
+                if(moving) { return elapsed >= us; }
+                if(done >= StillPolls) { now = nullptr; }   // stopped: count from here on
+            }
+            return done++ >= polls;
+        }
+    };
+}   // namespace detail
 
 enum class Field : std::uint8_t { magic, armed, request, ack };
 
@@ -168,18 +226,23 @@ template<typename Access>
 Outcome announceVia(Access const& access,
                     bool          debugEnabled,
                     Polls         polls,
-                    std::uint32_t stayAwayMs = 0) {
+                    std::uint32_t stayAwayMs = 0,
+                    std::uint32_t (*nowUs)() = nullptr,
+                    Waits waits              = DefaultWaits) {
     if(!debugEnabled || access.load(Field::magic) != Magic
        || access.load(Field::armed) != HostArmed)
     {
         return Outcome::notArmed;
     }
+    // Interrupts masked while it waits: a busy interrupt load would stretch the grace past the host's pause and the
+    // reset would fall into the host's reconnect. PRIMASK is put back for a caller that goes on.
+    [[maybe_unused]] detail::IrqMask const masked{};
     std::uint32_t const request = nextRequest(access.load(Field::request), stayAwayMs);
     access.store(Field::request, request);
-    for(std::uint32_t i = 0; i != polls.ack; ++i) {
+    for(detail::Deadline ack{nowUs, waits.ackUs, polls.ack}; !ack.expired();) {
         if(access.load(Field::ack) == request) {
             // the host closes its session after the ack: let it finish before the reset
-            for(std::uint32_t j = 0; j != polls.grace; ++j) {
+            for(detail::Deadline grace{nowUs, waits.graceUs, polls.grace}; !grace.expired();) {
                 // a volatile read per pass, so the loop is not optimised away
                 if(access.load(Field::magic) != Magic) { break; }
             }
@@ -230,10 +293,11 @@ namespace Kvasir::AnnouncedReset {
 /// for the boot after it.
 inline Outcome announce([[maybe_unused]] std::uint32_t stayAwayMs = 0) {
 #if defined(USE_UC_LOG)
-    return announceOn(kvasir_announced_reset,
-                      detail::haltingDebugMayBeEnabled(),
-                      DefaultPolls,
-                      stayAwayMs);
+    return announceVia(VolatileAccess{kvasir_announced_reset},
+                       detail::haltingDebugMayBeEnabled(),
+                       DefaultPolls,
+                       stayAwayMs,
+                       &kvasir_announced_reset_time_us);
 #else
     return Outcome::notArmed;
 #endif

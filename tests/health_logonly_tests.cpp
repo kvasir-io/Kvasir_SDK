@@ -1,6 +1,7 @@
 // Kvasir::Health::Supervisor under a policy that keeps feeding (LogOnly's shape): the watchdog is fed through a
 // starvation, the check gets a fresh window and is reported again each time it runs out, the record holds the
-// latest, and a check that beats again is simply healthy.
+// latest, and a check that beats again is simply healthy. With an onStarved: after the escalation the ladder starts
+// over on the next silence.
 #include "kvasir/Util/Health.hpp"
 
 #include "test_harness.hpp"
@@ -55,6 +56,27 @@ struct KeepFeeding {
 
 using Sup = H::Supervisor<FakeStartup, FakeWatchdog, FakeClock>;   // the default Config: 10 ms
 
+// one rung of 20 ms that never helps
+struct RescuedHealth {
+    static constexpr std::string_view name           = "rescued";
+    static constexpr auto             maxInterval    = 50ms;
+    static constexpr auto             graceAfterBoot = 0ms;
+    static constexpr auto             recoveryWindow = 20ms;
+    static inline int                 calls          = 0;
+
+    static void onStarved() { ++calls; }
+};
+
+struct RescueStartup {
+    template<typename Hook>
+    using ExtendsOn = brigand::list<H::Check<RescuedHealth>>;
+
+    template<typename Hook>
+    static void run() {}
+};
+
+using RescueSup = H::Supervisor<RescueStartup, FakeWatchdog, FakeClock>;
+
 void turn(bool beat) {
     FakeClock::t += 10ms;
     if(beat) { H::checkIn<OnlyHealth>(); }
@@ -94,6 +116,21 @@ int main() {
     for(int i = 0; i < 100; ++i) { turn(true); }
     CHECK(KeepFeeding::calls == 2 && FakeWatchdog::feeds == fed + 112);
     CHECK(Sup::worstMs(0) == 60);
+
+    test("keepFeeding with onStarved: rung, escalation, and the next silence starts a new ladder");
+    {
+        int const before = KeepFeeding::calls;
+        RescueSup::service();
+        int policyAt = 0;
+        for(int i = 1; i <= 20; ++i) {
+            FakeClock::t += 10ms;
+            RescueSup::service();
+            if(KeepFeeding::calls != before && policyAt == 0) { policyAt = i; }
+        }
+        // 60 ms: rung 1; 30 ms more: escalation (window 20 ms + one period) at turn 9; the same again at 15 and 18
+        CHECK(policyAt == 9 && RescuedHealth::calls == 2 && KeepFeeding::calls == before + 2);
+        CHECK(KeepFeeding::last.name == "rescued" && KeepFeeding::last.allowedMs == 20);
+    }
 
     return Kvasir::Test::report();
 }

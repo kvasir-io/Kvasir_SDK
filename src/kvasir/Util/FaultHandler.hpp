@@ -212,6 +212,7 @@ namespace Kvasir { namespace Fault {
         // boot does not print "ended in a fault" next to the panic. The clean-up still runs.
         if(Panic::lastPanic.magic == Panic::Record::Magic && detail::isBkpt(stack_ptr[6])) {
             Core::Log(stack_ptr, lr_value);
+            Core::clearFaultStatus();
             return;
         }
         // keep the first fault: later ones before the next boot are its consequences
@@ -230,7 +231,9 @@ namespace Kvasir { namespace Fault {
             lastFault.excReturn = lr_value;
             lastFault.magic     = Record::Magic;
         }
+        Panic::beginFatal();   // the dump's lines wait for room while a host reads (Panic.hpp)
         Core::Log(stack_ptr, lr_value);
+        Core::clearFaultStatus();
     }
 
     namespace Detail {
@@ -485,6 +488,7 @@ namespace Kvasir { namespace Fault {
             // a panic's own bkpt escalating (RecordAndLog's rule): the panic record names it
             if(Panic::Detail::panicRecorded<>() && frameOk && detail::isBkpt(frame[6])) {
                 logFull(frame, excReturn, frameOk);
+                Core::clearFaultStatus(sys.cfsr, sys.hfsr);
                 return;
             }
             // keep the first fault: later ones before the next boot are its consequences
@@ -492,6 +496,7 @@ namespace Kvasir { namespace Fault {
                 old->count = old->count + 1;
                 lastFaultV2.store(*old);
                 logFull(frame, excReturn, frameOk);
+                Core::clearFaultStatus(sys.cfsr, sys.hfsr);
                 return;
             }
 
@@ -569,13 +574,18 @@ namespace Kvasir { namespace Fault {
             }
             lastFaultV2.store(r);
             logFull(frame, excReturn, frameOk);
+            Core::clearFaultStatus(sys.cfsr, sys.hfsr);
         }
 
         static void logFull([[maybe_unused]] std::uint32_t const* frame,
                             [[maybe_unused]] std::uint32_t        excReturn,
                             [[maybe_unused]] bool                 frameOk) {
 #ifdef USE_UC_LOG
-            if(frameOk) { Core::Log(frame, excReturn); }
+            if(frameOk) {
+                Panic::
+                  beginFatal();   // the dump's lines wait for room while a host reads (Panic.hpp)
+                Core::Log(frame, excReturn);
+            }
 #endif
         }
 

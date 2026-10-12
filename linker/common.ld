@@ -240,6 +240,12 @@ ASSERT( DEFINED(ResetISR),
 /* Low RAM check (only if noInitLowRam section exists) */
 ASSERT( !DEFINED(_LINKER_INTERN_noInitLowRam_end_) || 0xffff > _LINKER_INTERN_noInitLowRam_end_ - _LINKER_INTERN_ram_start_, "ERROR: low RAM too full");
 
+_LINKER_ram_start_        = _LINKER_INTERN_ram_start_;
+_LINKER_ram_end_          = _LINKER_INTERN_ram_end_;
+
+_LINKER_ramExec_start_    = _LINKER_INTERN_ramExec_start_;
+_LINKER_ramExec_end_      = _LINKER_INTERN_ramExec_end_;
+
 _LINKER_heap_start_       = _LINKER_INTERN_heap_start_;
 _LINKER_heap_end_         = _LINKER_INTERN_heap_end_;
 

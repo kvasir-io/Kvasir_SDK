@@ -14,7 +14,9 @@
 #include <utility>
 
 namespace Kvasir::BootGuard {
-enum class Failure : std::uint8_t { none, panic, fault, watchdog };
+// starvation: a health check starved and the watchdog bit (a Health "KHLT" record, or "KHRV" naming the onStarved
+// a reset cut short); the detail is the check's index
+enum class Failure : std::uint8_t { none, panic, fault, watchdog, starvation };
 
 enum Flag : std::uint8_t {
     runOpen             = 1,   // the run started and was not closed by plannedReset()
@@ -47,6 +49,8 @@ struct Evidence {
     std::optional<std::uint32_t> panicCause;
     bool                         fault;
     ResetKind                    reset;
+    // the check a health supervisor's record names (Health::starvedCheck()); empty without one
+    std::optional<std::uint32_t> starvedCheck{};
 };
 
 enum class Verdict : std::uint8_t { fresh, neutral, planned, failure, stillHalted };
@@ -64,19 +68,21 @@ enum class Verdict : std::uint8_t { fresh, neutral, planned, failure, stillHalte
 
 [[nodiscard]] constexpr std::string_view name(Failure f) {
     switch(f) {
-    case Failure::none:     return "none";
-    case Failure::panic:    return "panic";
-    case Failure::fault:    return "fault";
-    case Failure::watchdog: return "watchdog, no record";
+    case Failure::none:       return "none";
+    case Failure::panic:      return "panic";
+    case Failure::fault:      return "fault";
+    case Failure::watchdog:   return "watchdog, no record";
+    case Failure::starvation: return "health check starved";
     }
     return "?";
 }
 
 struct Rules {
     bool countWatchdogWithoutRecord = true;
-    bool resetOnPowerOn             = true;
-    bool resetOnExternal            = false;
-    bool rp2040StaleReason          = false;
+    bool countStarvation   = true;   // a watchdog reset with a Health record is a failed run
+    bool resetOnPowerOn    = true;
+    bool resetOnExternal   = false;
+    bool rp2040StaleReason = false;
 };
 
 /// What the run before this one was, and the state after it; pure, host-tested. The checks below run in priority
@@ -106,6 +112,12 @@ judge(std::optional<State> const& previous,
     if(e.panic && e.panicCause == bootLoopCause) { return {Verdict::neutral, s}; }
     if(e.panic) { return fail(s, Failure::panic, e.panicCause.value_or(0)); }
     if(e.fault) { return fail(s, Failure::fault, 0); }
+    // the supervisor stopped feeding (or the watchdog bit inside a check's onStarved): a record, so it counts even
+    // where a watchdog reset without one does not. A record next to another reset (LogOnly, then a debugger reset)
+    // is no failure: the supervisor did not end that run.
+    if(r.countStarvation && e.starvedCheck && e.reset == ResetKind::watchdogTimeout) {
+        return fail(s, Failure::starvation, *e.starvedCheck);
+    }
     if((s.flags & plannedResetPending) != 0) { return {Verdict::planned, s}; }
     if(e.reset == ResetKind::watchdogTimeout && r.countWatchdogWithoutRecord
        && (!r.rp2040StaleReason || (s.flags & runOpen) != 0))

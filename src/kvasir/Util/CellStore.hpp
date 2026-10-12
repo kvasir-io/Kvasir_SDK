@@ -26,9 +26,11 @@
 // fail with overlapsImage and touch nothing.
 #include "kvasir/StartUp/Hooks.hpp"
 #include "kvasir/Util/Crc.hpp"
+#include "kvasir/Util/Retry.hpp"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -479,10 +481,26 @@ private:
     static inline CellStats     stats_{};
 };
 
+namespace Detail {
+    template<typename Clock>
+    struct CellRetry {
+        Kvasir::Retry<Clock, CellError> retry{};
+    };
+
+    template<>
+    struct CellRetry<void> {};
+}   // namespace Detail
+
 /// SimpleEeprom's API over a CellStore: value() loads once (T{} when nothing), writeValue() stores the RAM copy (true
-/// when it wrote).
-template<typename Store, typename T = std::remove_cvref_t<decltype(*Store::load())>>
+/// when it wrote). With a Clock, a store that fails keeps the value pending, and - the CellEeprom listed in the
+/// Startup list - maintain() (Hook::MainLoop) stores it again after a pause that doubles up to 10 min
+/// (Kvasir::Retry) until it is in; without one (void) a failed store is only logged.
+template<typename Store,
+         typename Clock = void,
+         typename T     = std::remove_cvref_t<decltype(*Store::load())>>
 struct CellEeprom {
+    static constexpr bool Retries = !std::is_void_v<Clock>;
+
     static T& value() {
         if(!read_) {
             if(!Store::load(ram_)) { ram_ = T{}; }
@@ -494,16 +512,69 @@ struct CellEeprom {
     static bool writeValue() {
         auto const w = Store::store(value());
         if(!w) {
+            if constexpr(Retries) {
+                auto const now = Clock::now();
+                state_.retry.failed(w.error(), now);
 #ifdef USE_UC_LOG
-            UC_LOG_E("cell store: not stored ({})", static_cast<unsigned>(w.error()));
+                UC_LOG_E(
+                  "cell store: not stored ({}, failure {}, retry in {})",
+                  w.error(),
+                  state_.retry.failures,
+                  std::chrono::duration_cast<std::chrono::milliseconds>(state_.retry.next - now));
 #endif
+            } else {
+#ifdef USE_UC_LOG
+                UC_LOG_E("cell store: not stored ({})", static_cast<unsigned>(w.error()));
+#endif
+            }
             return false;
+        }
+        if constexpr(Retries) {
+            if(state_.retry.pending) {
+#ifdef USE_UC_LOG
+                UC_LOG_I("cell store: stored after {} failures", state_.retry.failures);
+#endif
+            }
+            state_.retry.succeeded();
         }
         return !w->unchanged;
     }
 
+    /// A value that has not reached the flash yet (always false without a Clock).
+    [[nodiscard]] static bool pending() {
+        if constexpr(Retries) {
+            return state_.retry.pending;
+        } else {
+            return false;
+        }
+    }
+
+    [[nodiscard]] static auto const& retry()
+        requires Retries
+    {
+        return state_.retry;
+    }
+
+    static void maintain() {
+        if constexpr(Retries) {
+            if(state_.retry.due(Clock::now())) { static_cast<void>(writeValue()); }
+        }
+    }
+
+    using Extends = std::conditional_t<
+      Retries,
+      brigand::list<Kvasir::Startup::Extend<Kvasir::Hook::MainLoop, &CellEeprom::maintain>>,
+      brigand::list<>>;
+
+    /// Forget what is known in RAM (a test's "reboot").
+    static void forget() {
+        read_  = false;
+        state_ = {};
+    }
+
 private:
-    static inline T    ram_{};
-    static inline bool read_{};
+    static inline T                        ram_{};
+    static inline bool                     read_{};
+    static inline Detail::CellRetry<Clock> state_{};
 };
 }   // namespace Kvasir::Flash

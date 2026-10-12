@@ -68,6 +68,20 @@ function(check_ram_funcs target)
         VERBATIM)
 endfunction()
 
+# The reset entry (ResetISR) starts with `cpsid i` and touches no stack before its bl into the C++ body: nothing a
+# compiler emits runs before the core is in reset state (kvasir/StartUp/StartUp.hpp, KVASIR_RESET_ENTRY_ASM).
+function(check_reset_entry target)
+    add_custom_command(
+        TARGET ${target}
+        POST_BUILD
+        COMMAND
+            ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
+            ${kvasir_cmake_dir}/tools/check_reset_entry.py --delete-on-failure
+            "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
+        COMMENT "Checking the reset entry of ${target}.elf"
+        VERBATIM)
+endfunction()
+
 # IMAGE_CRC: writes the image CRC descriptor (kvasir/Util/ImageDescriptor.hpp) into the ELF for Kvasir::ImageCheck. Must
 # run before every artefact made from the ELF; removes the .elf on failure so the next build fails again. It covers the
 # sections generate_images puts into the flash hex (the load view). A RAM image (the descriptor linked into SRAM) is
@@ -328,6 +342,7 @@ function(
     target_include_directories(${name} PUBLIC ${CHIP_ROOT_DIR}/src)
     target_include_directories(${name} PUBLIC ${CHIP_ROOT_DIR}/core/src)
     check_ram_funcs(${name})
+    check_reset_entry(${name})
     check_undefined_refs(${name})
     get_target_property(_image_crc ${name} KVASIR_IMAGE_CRC)
     if(_image_crc)
@@ -365,6 +380,7 @@ function(
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/find_undefined_refs.py)
     # POST_BUILD commands have no dependencies of their own: relink when one of their scripts changes
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/check_ram_funcs.py)
+    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/check_reset_entry.py)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/patch_image_crc.py)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/pretty_size.py)
     add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/elf_image.py)
@@ -495,6 +511,18 @@ function(
             ${UC_LOG_TRANSPORT}
             PRE_RESET_COMMANDS
             ${TARGET_JLINK_CONNECT_COMMANDS}
+            PARK_SIGNATURE
+            "${TARGET_JLINK_PARK_SIGNATURE}"
+            STALL_SIGNATURE
+            "${TARGET_JLINK_STALL_SIGNATURE}"
+            FLASH_READY_SIGNATURE
+            "${TARGET_JLINK_FLASH_READY_SIGNATURE}"
+            FLASH_WINDOW
+            "${TARGET_JLINK_FLASH_WINDOW}"
+            FLASH_UNCACHED_OFFSET
+            "${TARGET_JLINK_FLASH_UNCACHED_OFFSET}"
+            STALL_RECOVERY
+            ${TARGET_JLINK_STALL_RECOVERY}
             LOG_FILTER
             "${_uc_log_filter}"
             MAP_FILE

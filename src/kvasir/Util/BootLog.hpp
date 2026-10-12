@@ -154,10 +154,26 @@ namespace Kvasir { namespace Boot {
         }
     }
 
+    /// One more line when the chip package can tell that this start was not the reset the cause names: a chip
+    /// whose start code resets the chip once when it was entered without a reset (a debugger's or the image's own
+    /// jump) has `bool restartedAfterJump(ResetCause)` next to its reset cause type, found by argument-dependent
+    /// lookup. Without one this is nothing.
+    template<typename ResetCause>
+    void logStartKind([[maybe_unused]] ResetCause cause) {
+        if constexpr(requires { static_cast<bool>(restartedAfterJump(cause)); }) {
+            if(restartedAfterJump(cause)) {
+                UC_LOG_W(
+                  "boot: restarted after a jump: the image was entered without a reset and reset "
+                  "the chip itself (the reset cause above is that reset)");
+            }
+        }
+    }
+
     template<typename ResetCause>
     void logBoot(ResetCause      cause,
                  Previous const& previous) {
         UC_LOG_I("boot: {} reset cause: {}", CMakeGitVersion::FullVersion, cause);
+        logStartKind(cause);
         logPrevious(previous);
     }
 
@@ -169,6 +185,7 @@ namespace Kvasir { namespace Boot {
         } else {
             // the lines and the order of before Boot::Previous existed
             UC_LOG_I("boot: {} reset cause: {}", CMakeGitVersion::FullVersion, cause);
+            logStartKind(cause);
             Fault::logLastFault();
             Panic::logLastPanic();
         }

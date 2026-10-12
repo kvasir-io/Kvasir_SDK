@@ -34,6 +34,19 @@ extern std::size_t    _LINKER_data_size_;
 
 extern std::uintptr_t _LINKER_bss_start_;
 extern std::size_t    _LINKER_bss_size_;
+
+// The bounds an MPU layout needs (chip Mpu.hpp): the RAM region, the end of the flash image (flash builds), and the
+// code's bounds with the end of the vectors before it (common_ram_only.ld, common_flash.ld). Addresses only; never read.
+extern void _LINKER_ram_start_();
+extern void _LINKER_ram_end_();
+extern void _LINKER_data_end_flash_();
+extern void _LINKER_data_end_();
+extern void _LINKER_vectors_end_();
+extern void _LINKER_text_start_();
+extern void _LINKER_text_end_();
+// .ramExec: code written at run time (common_ram.ld, common_ram_only.ld)
+extern void _LINKER_ramExec_start_();
+extern void _LINKER_ramExec_end_();
 }
 
 // Which stack a component that needs "the top of this core's stack" (the fault handler's

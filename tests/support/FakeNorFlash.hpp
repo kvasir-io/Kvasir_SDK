@@ -12,6 +12,10 @@
 /// overprogram, a store bug, and not done). cutAfter(n): the operation after n completed ones does a random part of
 /// its work - a prefix of a program with a noisy last byte, a part of an erase with noise at its edge - and every
 /// later call fails until powerOn(). The model of fs/test/Ram.hpp's RamFlash, in Kvasir's terms.
+/// Failures without a power cut, as a flash controller reports them: lockSectors(mask) - program and erase in those
+/// sectors return false and change nothing (a locked region, SAM LOCKE); failNext(n) - the n-th program from now
+/// returns false and changes nothing (a refused command, SAM PROGE); dropNext(n) - the n-th program from now returns
+/// TRUE and writes nothing (a driver that ignores the controller's status).
 namespace Kvasir::Test {
 
 template<typename Tag, std::uint32_t SectorBytesV, std::uint32_t PageBytesV, std::uint32_t SectorsV>
@@ -38,6 +42,9 @@ struct FakeNorFlash {
     static inline std::array<std::uint32_t, Pages> pagePrograms{};   // since the page's last erase
     static inline std::array<std::uint32_t, SectorsV> erases{};
     static inline std::uint64_t                       reads{};
+    static inline std::uint64_t                       lockedSectors{};   // bit s: sector s refuses
+    static inline std::uint32_t failIn{};   // 0: off, else programs to the failing one
+    static inline std::uint32_t dropIn{};   // 0: off, else programs to the dropped one
 
     static void blank() {
         mem.fill(std::byte{0xFF});
@@ -46,7 +53,15 @@ struct FakeNorFlash {
         ops = overprograms = pageCrossings = reads = 0;
         cutAt                                      = ~0ULL;
         powered                                    = true;
+        lockedSectors                              = 0;
+        failIn = dropIn = 0;
     }
+
+    static void lockSectors(std::uint64_t mask) { lockedSectors = mask; }
+
+    static void failNext(std::uint32_t n) { failIn = n; }
+
+    static void dropNext(std::uint32_t n) { dropIn = n; }
 
     /// The operation after `n` completed ones (counted from now) is cut.
     static void cutAfter(std::uint64_t n) { cutAt = ops + n; }
@@ -71,6 +86,9 @@ struct FakeNorFlash {
     static bool program(std::uint32_t              addr,
                         std::span<std::byte const> in) {
         if(!powered || std::uint64_t{addr} + in.size() > Bytes || in.empty()) { return false; }
+        if(sectorLocked(addr / SectorBytes)) { return false; }
+        if(failIn != 0 && --failIn == 0) { return false; }
+        if(dropIn != 0 && --dropIn == 0) { return true; }
         if(addr / PageBytes != (addr + static_cast<std::uint32_t>(in.size()) - 1) / PageBytes) {
             ++pageCrossings;
         }
@@ -93,7 +111,7 @@ struct FakeNorFlash {
     }
 
     static bool erase(std::uint32_t sector) {
-        if(!powered || sector >= SectorsV) { return false; }
+        if(!powered || sector >= SectorsV || sectorLocked(sector)) { return false; }
         auto const begin = mem.begin() + sector * SectorBytes;
         if(ops == cutAt) {
             // a part erased, noise at its edge, the rest as it was
@@ -124,6 +142,10 @@ struct FakeNorFlash {
     }
 
 private:
+    static bool sectorLocked(std::uint32_t sector) {
+        return sector < 64 && ((lockedSectors >> sector) & 1U) != 0;
+    }
+
     static std::uint32_t random() {
         seed = seed * 1'664'525U + 1'013'904'223U;
         return seed >> 8U;

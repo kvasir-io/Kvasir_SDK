@@ -15,6 +15,8 @@
 //
 // Config knobs, each optional except `limit`: healthyAfter (0: only Guard::markHealthy()),
 // countWatchdogWithoutRecord (true: a watchdog timeout with no record and no planned reset is a hang),
+// countStarvation (true: a watchdog timeout with a health supervisor's starvation record, or with a reset inside a
+// check's onStarved, is a failed run of its own kind, "health check starved", the check's index as the detail),
 // resetOnPowerOn (true), resetOnExternal (false), rp2040StaleReason (false: a watchdog verdict also needs the
 // previous run to have been open - the RP2040 keeps REASON across a debugger's reset).
 //
@@ -24,6 +26,7 @@
 #include "kvasir/StartUp/Hooks.hpp"
 #include "kvasir/Util/BootGuardRules.hpp"
 #include "kvasir/Util/FaultHandler.hpp"
+#include "kvasir/Util/HealthRecords.hpp"
 #include "kvasir/Util/Panic.hpp"
 #include "kvasir/Util/Periodic.hpp"
 
@@ -42,6 +45,9 @@ struct Guard {
         Rules r{};
         if constexpr(requires { Config::countWatchdogWithoutRecord; }) {
             r.countWatchdogWithoutRecord = Config::countWatchdogWithoutRecord;
+        }
+        if constexpr(requires { Config::countStarvation; }) {
+            r.countStarvation = Config::countStarvation;
         }
         if constexpr(requires { Config::resetOnPowerOn; }) {
             r.resetOnPowerOn = Config::resetOnPowerOn;
@@ -65,10 +71,17 @@ struct Guard {
 
     // List it right after the ComBackend: its line needs the log, and it must run before any driver.
     static void runtimeInit() {
-        Evidence const e{.panic      = Panic::Detail::panicRecorded<>(),
-                         .panicCause = Panic::Detail::recordedCause<>(),
-                         .fault      = Fault::Detail::faultRecorded<>(),
-                         .reset      = PM::resetKind()};
+        Evidence const e{.panic        = Panic::Detail::panicRecorded<>(),
+                         .panicCause   = Panic::Detail::recordedCause<>(),
+                         .fault        = Fault::Detail::faultRecorded<>(),
+                         .reset        = PM::resetKind(),
+                         .starvedCheck = [] -> std::optional<std::uint32_t> {
+                             if constexpr(rules.countStarvation) {
+                                 return Health::starvedCheck();
+                             } else {
+                                 return std::nullopt;
+                             }
+                         }()};
         auto [verdict, s] = judge(state.load(), e, rules);
         s.flags           = static_cast<std::uint8_t>((s.flags | runOpen)
                                                       & ~(plannedResetPending | healthyThisRun));

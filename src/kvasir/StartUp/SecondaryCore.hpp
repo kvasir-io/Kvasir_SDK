@@ -42,6 +42,17 @@ struct LaunchTimeout {
     using Claims = brigand::list<ListedOn<Clock, 0>>;
 };
 
+// Listed in a SecondaryCore's list: no CoreResetGuard for this image. By default a chip that has one (RP2040,
+// RP2350: chip/CoreResetGuard.hpp) arms it whenever a SecondaryCore is launched - a reset of core 0 alone
+// (AIRCR.SYSRESETREQ: the image's, third-party code's, a debugger's) then stops core 1 before the boot ROM touches
+// the flash interface core 1 is reading through.
+//
+//   using Core1 = SecondaryCore<&core1Main, LaunchTimeout<Clock, 2000>, NoCoreResetGuard, ...>;
+struct NoCoreResetGuard {
+    static constexpr bool isStartupEntry   = true;
+    static constexpr bool noCoreResetGuard = true;
+};
+
 // The second core's Startup list.
 //
 //   [[noreturn]] void core1Main();
@@ -216,6 +227,11 @@ struct SecondaryCore {
     // that does not come up is fatal for a list-launched core: main() would run against a
     // dead partner. Logged before the assert so a build without asserts still says so.
     static void runtimeInit() {
+        if constexpr(!(requires { Peripherals::noCoreResetGuard; } || ...)
+                     && requires { Init::armCoreResetGuard(); })
+        {
+            Init::armCoreResetGuard();
+        }
         [[maybe_unused]] bool const launched = launch();
         if(!launched) {
             UC_LOG_C("secondary core did not come up (handshake, rendezvous or ready wait)");

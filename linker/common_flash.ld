@@ -33,6 +33,12 @@ SECTIONS {
     _LINKER_INTERN_data_start_flash_ = .;
 }
 
+/* The code's bounds, which a RAM image's MPU layout uses (chip Mpu.hpp); defined here too so that one source links
+   against either layout */
+_LINKER_vectors_end_ = ADDR(.text);
+_LINKER_text_start_ = ADDR(.text);
+_LINKER_text_end_ = ADDR(.text) + SIZEOF(.text);
+
 /* Flash/ROM memory symbols */
 _LINKER_INTERN_rom_start_   = ORIGIN(flash);
 _LINKER_INTERN_rom_size_    = LENGTH(flash);

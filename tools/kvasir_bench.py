@@ -7,6 +7,9 @@ the rest itself - probe, J-Link device, ELF, log directory, the printer's socket
 repo with a single build tree; a target that is not built lists the ones that are.
 
 RULES (the tool enforces what it can; the rest is on you)
+  0. kvasir_bench never opens a probe itself (no J-Link tool, GDB server or J-Link DLL): every
+     command goes through the printer that holds the probe. With none running for the target,
+     a command starts one, uses it and stops it again at its end.
   1. `status BUILD TARGET` before any hardware step: which probe, whose printer, running or halted,
      and whether the board runs the tree's build.
   2. One printer per board. If one runs - a `just log` window, or one from `printer start`
@@ -41,9 +44,9 @@ COMMANDS
                           J-Link) - none of that is in the log
   metrics  B T [--seconds S] [--name RE] [--raw] [--until 'NAME OP NUMBER']
                           uc_log::metric values live: min/mean/max/last and rate per metric
-  peek     B T SYMBOL... [--watch N --interval-ms MS] [--typed] [--direct]
+  peek     B T SYMBOL... [--watch N --interval-ms MS] [--typed]
                           statics read while the core runs (~2 ms a read through the printer,
-                          stamped on the log's clock; without a printer JLinkExe, a second a call)
+                          stamped on the log's clock)
   trace    B T [NAME] [--last N] [--delta]    Kvasir::Trace rings, oldest record first
   stack    B T                                the stack's high-water mark (Kvasir::StackUsage)
   ub       B T                                a sanitize build's report counter
@@ -52,6 +55,8 @@ COMMANDS
                           Startup list): writes <T>.profraw/.profdata in the tree, prints
                           llvm-cov's report (runtime libraries filtered out). Through the printer
   crash    B T                                the last halt the printer caught, symbolised
+                                              and the .noInit records: fault, panic, health
+                                              (starvation, recoveries), boot guard
   profile  B T [--seconds S] [--top N] [--inclusive] [--addresses N]
                           where the core spends its time: DWT_PCSR sampled through the printer
                           (the core keeps running), ranked by function (the debug info's and the
@@ -63,29 +68,39 @@ COMMANDS
  wait
   wait-for B T REGEX [--timeout S] [--from-now|--from-start] [--module ...]
                           the printer's log since the mark (the last flash/reset of this tool),
-                          history then live; the matching line, or the last lines seen
+                          history then live; the matching line, or the last lines seen.
+                          Exit 2 timeout, 3 core halted, 5 lines dropped for this client (it
+                          read too slowly: the line may have been among them)
   peek ... --until 'changed' | '== N' | '!= N' | '< N' | '> N' [--timeout S]
                           the printer watches the value (~1 ms a look) and answers the moment
  act (changes the board)
   flash    B T [--no-build] [--confirm]       build, then download through the printer; its log
-                                              session survives. No printer: the tree's JLinkExe.
+                                              session survives.
                                               A RAM_ONLY image needs a printer with --ram_image
                                               (it loads and starts it, no reset; printer start
                                               passes it): any other one is refused
+  poke     B T WHERE VALUE [--confirm]        writes one 32-bit word while the core runs and
+                                              reads it back: WHERE is an address (0x4005_0004, a
+                                              register) or a SYMBOL (needs this tree's build on
+                                              the board). Through the printer. Nothing
+                                              reads-modify-writes for you: a register
+                                              the firmware writes too is the chip's atomic alias
+                                              (RP2xxx: +0x2000 sets, +0x3000 clears bits)
   reset    B T [--confirm]                    through the printer; answered when the log is back
                                               (a RAM_ONLY image: loaded again and started)
   panic    B T [--cause NAME] [--confirm]     makes the running firmware call
                                               Kvasir::Panic::raise(cause) (default user): the core
                                               is halted for a moment, R0, PC and xPSR (IT/ICI
-                                              cleared) set, and resumed - through the printer (its
-                                              debug-register writes; the log goes on) or GDB. The
-                                              record's site is the halted code's lr, no call site.
-                                              Tests the firmware's panic
+                                              cleared) set, and resumed - through the printer's
+                                              halt / write_registers / go (the probe's own calls;
+                                              the log goes on). The record's site is the halted
+                                              code's lr, no call site. Tests the firmware's panic
                                               handler; it ends in whatever that does (a reboot).
-                                              The printer reports the halt ('core halted', a false
-                                              crash) and answers the reset's announcement late
-  snapshot B T [--var SYMBOL]... [--frames N] HALTS about a second: registers, backtrace, vars.
-                                              For a hang or a fault, never under host traffic
+                                              The printer reports the requested halt as a tool
+                                              message, not as a crash
+  snapshot B T [--var SYMBOL]... [--frames N] HALTS a few seconds: registers, backtrace, vars,
+                                              through the printer (gdb on a remote stub that reads
+                                              through it). For a hang or a fault
   printer start|stop|status [B T]             a headless printer that outlives the shell. The
                                               probe is the tree's (JLINK_IP / JLINK_PROBE in its
                                               cache); the environment overrides it, empty too:
@@ -110,6 +125,7 @@ tools/uc_log_client.py speaks it (use that module for anything this tool does no
 test_uc_log_client.py holds it to the golden files in uc_log/doc/control_protocol/.
 """
 import argparse
+import atexit
 import contextlib
 import json
 import os
@@ -122,6 +138,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import typing
 import zlib
@@ -137,9 +154,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent /
                 "uc_log" / "remote_fmt" / "tools"))
 from uc_log_client import (LEVELS, PROTOCOL, Connection, ControlError,  # noqa: E402
                            control_socket_path, history, log_line_text, message_line,
-                           metric_key, read_bytes, req_flash, req_messages, req_ping, req_read,
-                           req_reset, req_status, req_subscribe, req_wait, req_write, request,
-                           status_text)
+                           metric_key, read_bytes, req_flash, req_go, req_halt, req_messages,
+                           req_ping, req_read, req_registers, req_reset, req_status, req_subscribe,
+                           req_wait, req_write, req_write_registers, request, status_text,
+                           REGISTER_NAMES)
 from extract_sites import (abbreviated, demangle, demanglers,  # noqa: E402
                            find_demangler, operator_end)
 
@@ -198,8 +216,8 @@ class Tree:
         self.probe = self._setting("JLINK_PROBE")
         self.host = self._setting("JLINK_IP")   # a network J-Link
         self.chip_root = self._cached("CHIP_ROOT")
-        # kHz; empty means the probe's maximum, which the DLL clamps 100000 to (cmake/jlink.cmake)
-        self.swd_speed = self._cached("SWD_SPEED") or "100000"
+        # kHz; the probe's maximum is 100000, which the DLL clamps (cmake/jlink.cmake)
+        self.swd_speed = (self._arg_values("--speed") or ["100000"])[0]
         self.device = os.environ.get("JLINK_DEVICE") or self._device()
         self.log_dir = self.build / "rtt_log" / target
         # source paths are shown relative to the directory that holds the firmware's checkout,
@@ -213,92 +231,73 @@ class Tree:
         return path[len(root):] if root and path.startswith(root) else path
 
     def _setting(self, name: str) -> str:
-        """JLINK_PROBE / JLINK_IP: the environment, else the target's own log command - which carries
+        """JLINK_PROBE / JLINK_IP: the environment, else the target's printer options - which carry
         what the target was configured with, its own J-Link (target_configure_kvasir JLINK_IP /
-        JLINK_PROBE) or the cache's - else the cache."""
+        JLINK_PROBE) or the cache's."""
         if name in os.environ:
             return os.environ[name]
-        flag = {"JLINK_PROBE": "--probe", "JLINK_IP": "--host"}[name]
-        if self._log_command_words():
-            values = self._log_command_values(flag)
-            return values[0] if values else ""
-        return self._cached(name)
+        values = self._arg_values(
+            {"JLINK_PROBE": "--probe", "JLINK_IP": "--host"}[name])
+        return values[0] if values else ""
 
     def _cached(self, name: str) -> str:
         m = re.search(rf"^{name}:[A-Za-z]*=(.*)$", self.cache, re.M)
         return m.group(1).strip() if m else ""
 
     def _device(self) -> str:
-        # build.ninja first: chip.cmake's TARGET_MPU is only the family default
-        ninja = self.build / "build.ninja"
-        if ninja.is_file():
-            m = re.search(r"\s--?[Dd]evice[= ]+([A-Za-z0-9_]+)",
-                          ninja.read_text(errors="replace"))
-            if m:
-                return m.group(1)
-        # The flash script the SDK generated names the device the way J-Link wants it.
-        for script in sorted(self.build.glob("*_flash.jlink")):
-            m = re.search(r"^\s*device\s+(\S+)",
-                          script.read_text(errors="replace"), re.M | re.I)
-            if m:
-                return m.group(1)
-        chip_root = self._cached("CHIP_ROOT")
-        for cmake in Path(chip_root, "cmake").rglob("*.cmake") if chip_root else []:
-            m = re.search(
-                r"set\(TARGET_MPU\s+([A-Za-z0-9_]+)\)", cmake.read_text(errors="replace"))
-            if m:
-                return m.group(1)
-        die("cannot tell the J-Link device name; set JLINK_DEVICE")
+        values = self._arg_values("--device")
+        if not values:
+            die(f"{self.printer_args_file} names no --device; set JLINK_DEVICE")
+        return values[0]
 
-    def _log_command_words(self) -> list[str]:
-        """The tree's own `log_<target>` command (build.ninja), split into words."""
-        ninja = self.build / "build.ninja"
-        if not ninja.is_file():
-            return []
-        m = re.search(rf"^# Custom command for CMakeFiles/log_{re.escape(self.target)}\n"
-                      r"(?:.*\n)*?  COMMAND = (.*)$", ninja.read_text(errors="replace"), re.M)
-        return shlex.split(m.group(1)) if m else []
+    @property
+    def printer_args_file(self) -> Path:
+        return self.build / f"{self.target}.printer_args"
 
-    def _log_command_values(self, flag: str) -> list[str]:
-        """The values of `flag` in the tree's own `log_<target>` command (build.ninja)."""
-        words = self._log_command_words()
+    def printer_args(self) -> list[str]:
+        """What a printer needs to know about the target - device, speed, its files, the probe,
+        the chip package's reset commands and signatures, a RAM image, the log filter: the tree's
+        `<target>.printer_args` (uc_log's CMakeLists writes it next to the log_<target> command,
+        from the same list), one argument per line. The only source: a tree configured before
+        the file existed is told to configure again."""
+        if not hasattr(self, "_printer_args"):
+            if not self.printer_args_file.is_file():
+                die(f"no {self.printer_args_file.name}: run cmake {self.build} once")
+            self._printer_args = self.printer_args_file.read_text().split("\n")[
+                :-1]
+        return self._printer_args
+
+    def _arg_values(self, flag: str) -> list[str]:
+        """The values of `flag` in the target's printer options."""
+        words = self.printer_args()
         return [words[i + 1] for i, w in enumerate(words[:-1]) if w == flag]
 
     def ram_image(self) -> bool:
         """A RAM_ONLY image: a reset boots flash, never it, so the printer has to load and start
-        it by hand (uc_log_printer --ram_image). The tree's log command says so (uc_log's
-        RAM_IMAGE), and so does its J-Link script, which starts it with SetPC (jlink.cmake) - the
-        script also in a tree whose cmake ran before the log command had the flag."""
-        if "--ram_image" in self._log_command_words():
-            return True
-        script = self.build / f"{self.target}_flash.jlink"
-        return script.is_file() and re.search(r"^SetPC ", script.read_text(errors="replace"),
-                                              re.M) is not None
+        it by hand (uc_log_printer --ram_image, uc_log's RAM_IMAGE)."""
+        return "--ram_image" in self.printer_args()
 
-    def pre_reset_commands(self) -> list[str]:
-        """The --pre_reset_command lines of the tree's own `log_<target>` command: what the chip
-        package wants written before every reset and download (TARGET_JLINK_CONNECT_COMMANDS; the
-        RP chips park core 1 with them). The printer knows no chip, so a printer started without
-        them resets an RP2350 with the old image's core 1 still running."""
-        return self._log_command_values("--pre_reset_command")
-
-    def log_filter(self) -> str | None:
-        """The compile-time log filter file the target was built with (uc_log LogFilter.hpp), if
-        any: the printer shows which modules it compiled out."""
-        values = self._log_command_values("--log_filter")
-        return values[0] if values else None
-
-    def probe_serial(self) -> str:
-        """The serial number of the probe whose nickname (or serial) is self.probe."""
-        if not self.probe or self.probe.isdigit():
-            return self.probe
-        out = subprocess.run(["JLinkExe", "-NoGui", "1"], input="ShowEmuList USB\nexit\n",
-                             capture_output=True, text=True, timeout=30).stdout
-        for line in out.splitlines():
-            m = re.search(r"Serial number: (\d+).*Nickname: (.*?)\s*$", line)
-            if m and m.group(2) == self.probe:
-                return m.group(1)
-        die(f"no J-Link with the nickname '{self.probe}' is connected")
+    def printer_command(self, exe: Path) -> list[str]:
+        """The printer for this target, as the bench runs it: the tree's options with the probe
+        the environment may override, no UI, the log directory, and no build of its own (the
+        bench builds before it flashes)."""
+        words, i = [], 0
+        args = self.printer_args()
+        while i < len(args):
+            # the bench's own probe choice (self.probe / self.host)
+            if args[i] in ("--probe", "--host"):
+                i += 2
+                continue
+            words.append(args[i])
+            i += 1
+        if self.host:
+            words += ["--host", self.host]
+        elif self.probe:
+            words += ["--probe", self.probe]
+        if "JLINK_DEVICE" in os.environ:
+            words = [os.environ["JLINK_DEVICE"] if i > 0 and words[i - 1] == "--device" else w
+                     for i, w in enumerate(words)]
+        return [str(exe), *words, "--build_command", "true", "--log_dir", str(self.log_dir), "--disable_ui"]
 
 
 def printers() -> list[tuple[int, str, float]]:
@@ -343,10 +342,29 @@ def printer_status(_args) -> None:
 
 def printer_start(args) -> None:
     tree = Tree(args.build, args.target)
-    exe = tree.build / PRINTER
-    if not exe.is_file():
-        subprocess.run(["cmake", "--build", str(tree.build), "--target", "uc_log_printer"],
-                       capture_output=True)
+    pid = start_printer(tree)
+    control = control_socket(tree)
+    print(f"printer {pid} on {'J-Link ' + tree.host if tree.host else 'probe ' + repr(tree.probe or 'any')}, device {tree.device}, "
+          f"log {tree.log_dir}" + (f", control socket {control}" if control else
+                                   " (no control socket: rebuild uc_log_printer in this tree)"))
+
+
+def start_printer(tree: Tree) -> int:
+    """A printer for the tree's target, built first; its pid. Refuses where another printer holds
+    the probe."""
+    # UC_LOG_PRINTER_BIN: a printer built elsewhere (an A/B from source snapshots, a frozen printer for a long run),
+    # used as it is - not rebuilt
+    override = os.environ.get("UC_LOG_PRINTER_BIN")
+    exe = Path(override) if override else tree.build / PRINTER
+    # Always built, not only when missing: an older printer rejects options the tree's log command passes. Up to
+    # date this is a ~0.1 s no-op; `just log` does the same through log_<target>'s dependency.
+    built = subprocess.run(["true"] if override else
+                           ["cmake", "--build",
+                               str(tree.build), "--target", "uc_log_printer"],
+                           capture_output=True, text=True)
+    if built.returncode != 0:
+        die(f"the printer does not build: cmake --build {tree.build} --target uc_log_printer\n"
+            + (built.stdout + built.stderr)[-2000:])
     if not exe.is_file():
         die(f"{exe} does not build: cmake --build {tree.build} --target uc_log_printer")
     if control_socket(tree) is not None:
@@ -364,20 +382,7 @@ def printer_start(args) -> None:
                 "  stop it first (kvasir_bench.py printer status / stop): two printers on one "
                 "target fight over its RTT buffer")
     tree.log_dir.mkdir(parents=True, exist_ok=True)
-    cmd = [str(exe), "--device", tree.device, "--speed", tree.swd_speed,
-           "--map_file", f"{tree.target}.map", "--hex_file", f"{tree.target}_flash.hex",
-           "--string_constants_file", f"{tree.target}_string_constants.json",
-           "--build_command", "true", "--log_dir", str(tree.log_dir), "--disable_ui"]
-    for line in tree.pre_reset_commands():
-        cmd += ["--pre_reset_command", line]
-    if tree.ram_image():
-        cmd += ["--ram_image"]
-    if tree.log_filter():
-        cmd += ["--log_filter", tree.log_filter()]
-    if tree.host:
-        cmd += ["--host", tree.host]
-    elif tree.probe:
-        cmd += ["--probe", tree.probe]
+    cmd = tree.printer_command(exe)
     out = open(tree.log_dir / "printer.out", "w")
     # own session: the printer outlives the shell that started it
     proc = subprocess.Popen(cmd, cwd=tree.build, stdout=out, stderr=subprocess.STDOUT,
@@ -386,10 +391,28 @@ def printer_start(args) -> None:
     if proc.poll() is not None:
         die(f"the printer exited at once; {tree.log_dir / 'printer.out'}:\n"
             + (tree.log_dir / "printer.out").read_text()[-600:])
-    control = control_socket(tree)
-    print(f"printer {proc.pid} on {'J-Link ' + tree.host if tree.host else 'probe ' + repr(tree.probe or 'any')}, device {tree.device}, "
-          f"log {tree.log_dir}" + (f", control socket {control}" if control else
-                                   " (no control socket: rebuild uc_log_printer in this tree)"))
+    return proc.pid
+
+
+def stop_pid(pid: int) -> bool:
+    """SIGINT, then up to 10 s for it to go; whether it went."""
+    try:
+        os.kill(pid, signal.SIGINT)
+    except ProcessLookupError:
+        return True
+    end = time.monotonic() + 10
+    while time.monotonic() < end and Path(f"/proc/{pid}").exists():
+        time.sleep(0.05)
+    return not Path(f"/proc/{pid}").exists()
+
+
+_started_here: list[int] = []
+
+
+def _stop_started_here() -> None:
+    for pid in _started_here:
+        stop_pid(pid)
+        note(f"stopped printer {pid} again (started for this command)")
 
 
 def printer_stop(args) -> None:
@@ -406,14 +429,20 @@ def printer_stop(args) -> None:
                "with --confirm")
     for pid, _ in hit:
         os.kill(pid, signal.SIGINT)
-    # gone before we return: a dying printer still answers on its socket
+    # gone before we return: a dying printer still answers on its socket and holds the probe (its USB handle goes
+    # with the process) - a printer started after a stop that returned early fights the old one over the probe
     end = time.monotonic() + 10
+    alive = []
     for pid, _ in hit:
         while time.monotonic() < end and Path(f"/proc/{pid}").exists():
             time.sleep(0.05)
-        alive = Path(f"/proc/{pid}").exists()
-        print(f"stopped printer {pid}" +
-              (" (still exiting after 10 s)" if alive else ""))
+        if Path(f"/proc/{pid}").exists():
+            alive.append(pid)
+        else:
+            print(f"stopped printer {pid}")
+    if alive:
+        die(f"printer {', '.join(map(str, alive))} still exiting after 10 s: it holds the probe until it is gone - "
+            "wait for it before starting another")
 
 
 # ---- guards ----------------------------------------------------------------------------------
@@ -448,10 +477,7 @@ def check_build(tree: Tree, stale_ok: bool) -> None:
     """Symbols come from the tree's ELF: on a board that runs another build their addresses are
     wrong, and every value read there is plausible nonsense. The printer knows what the board
     runs (its firmware check at session start); refuse unless it is this tree's hex."""
-    control = control_socket(tree)
-    if control is None:
-        note("the board's firmware is not checked: no printer runs for this target")
-        return
+    control = need_printer(tree, "the firmware check")
     firmware = request(control, req_status())["firmware"]
     tree_build = hex_build_id(tree)
     board = f"{firmware['build']:08x}" if firmware.get(
@@ -546,11 +572,37 @@ def mark_seq(tree: Tree, control: Path) -> int:
 
 
 def need_printer(tree: Tree, what: str) -> Path:
-    """The printer's control socket; the log exists only there."""
+    """The printer's control socket. kvasir_bench never opens a probe itself: every access goes
+    through the printer that holds it. With none running for this target, one is started for this
+    command and stopped again at its end (a printer from `printer start` or `just log` stays)."""
     control = control_socket(tree)
-    if control is None:
-        refuse(f"no printer with a control socket runs for this target: {what} comes from the "
-               "printer's log history - start one (printer start, or just log)")
+    if control is not None:
+        return control
+    # a printer of this target that does not answer yet (starting, or restarting its connection): wait for it and use
+    # it - never a second printer beside it (two on one probe fight over its RTT buffer)
+    serving = [pid for pid, cmd, _ in printers() if str(tree.log_dir) in cmd]
+    if serving:
+        end = time.monotonic() + 15
+        while time.monotonic() < end and any(Path(f"/proc/{pid}").exists() for pid in serving):
+            if (control := control_socket(tree)) is not None:
+                return control
+            time.sleep(0.1)
+        if any(Path(f"/proc/{pid}").exists() for pid in serving):
+            refuse(f"printer {', '.join(map(str, serving))} serves {tree.target} but its control socket does not "
+                   f"answer after 15 s - not starting a second one beside it; see {tree.log_dir / 'printer.out'}, or "
+                   "stop it (kvasir_bench.py printer stop)")
+    pid = start_printer(tree)
+    if not _started_here:
+        atexit.register(_stop_started_here)
+    _started_here.append(pid)
+    end = time.monotonic() + 15
+    while (control := control_socket(tree)) is None:
+        if time.monotonic() > end or not Path(f"/proc/{pid}").exists():
+            die(f"the printer started for {what} has no control socket; "
+                f"{tree.log_dir / 'printer.out'}:\n" + (tree.log_dir / "printer.out").read_text()[-600:])
+        time.sleep(0.1)
+    note(
+        f"started printer {pid} for {what} (none ran for {tree.target}); it stops again at the end")
     return control
 
 
@@ -613,18 +665,9 @@ def flash(args) -> None:
                    if re.search(r"error|FAILED|warning", l)]
             die("the build failed:\n" +
                 "\n".join((bad or built.stdout.splitlines())[-15:]))
-    control = control_socket(tree)
+    control = need_printer(tree, "the flash")
     need_ram_image_printer(tree, control, "flash")
     set_mark(tree, control)
-    if control is None:
-        done = subprocess.run(["cmake", "--build", str(tree.build), "--target", f"flash_{tree.target}"],
-                              capture_output=True, text=True)
-        if done.returncode != 0:
-            die("flashing failed:\n" +
-                "\n".join((done.stdout + done.stderr).splitlines()[-8:]))
-        print(
-            f"flashed {tree.target} with JLinkExe (no printer runs: no log; build {hex_build_id(tree)})")
-        return
     t0 = time.time()
     try:
         request(control, req_flash(), timeout=150)
@@ -638,9 +681,7 @@ def flash(args) -> None:
 def reset(args) -> None:
     tree = Tree(args.build, args.target)
     confirm_needed(tree, "reset", args.confirm)
-    control = control_socket(tree)
-    if control is None:
-        die("no printer with a control socket runs for this target (printer start)")
+    control = need_printer(tree, "the reset")
     need_ram_image_printer(tree, control, "reset")
     set_mark(tree, control)
     try:
@@ -655,13 +696,7 @@ def reset(args) -> None:
 
 PANIC_RAISE = "Kvasir::Panic::raise(Kvasir::Panic::Cause)"
 
-# Armv7-M / Armv8-M debug registers (ARM DDI0553B.y D1.2.33 DCRDR, D1.2.34 DCRSR, D1.2.39 DHCSR;
-# Armv6-M DDI0419E C1.6 the same): memory mapped, so a printer's memory writes reach them. A DCRSR
-# write while the core is not halted is ignored (D1.2.34): wait for S_HALT first
-DHCSR, DCRSR, DCRDR = 0xE000EDF0, 0xE000EDF4, 0xE000EDF8
-DBGKEY, C_DEBUGEN, C_HALT, S_REGRDY, S_HALT = 0xA05F0000, 1 << 0, 1 << 1, 1 << 16, 1 << 17
-REGWNR = 1 << 16
-# DCRSR.REGSEL: R0, DebugReturnAddress (the PC the core resumes at), xPSR (D1.2.34)
+# register indices of the printer's registers / write_registers requests (uc_log_client REGISTER_NAMES)
 REG_R0, REG_LR, REG_PC, REG_XPSR = 0, 14, 15, 16
 # EPSR.ICI/IT, xPSR[26:25] and [15:10] (B3.5): a halt can land inside an IT block or an
 # interrupted LDM/STM, and "the Debugger must ensure that the EPSR.IT and EPSR.ICI bits are
@@ -687,24 +722,14 @@ def raise_causes() -> dict[str, int]:
             for i, n in enumerate(PANIC_CAUSES)}
 
 
-def panic_register_writes(address: int, cause: int, xpsr: int, pc: int) -> list[list[tuple[int, int]]]:
+def panic_register_writes(address: int, cause: int, xpsr: int, pc: int) -> list[tuple[int, int]]:
     """With the core halted and its xPSR and PC read: R0 = cause; LR = "called from where the
     core stood" (raise()'s return address is the place the record keeps - otherwise whatever LR
     happened to hold); xPSR without IT/ICI; PC = raise (a Thumb address without its bit 0:
-    xPSR.T stays set). One list per register transfer; after each DHCSR.S_REGRDY says it is done."""
-    return [[(DCRDR, cause), (DCRSR, REGWNR | REG_R0)],
-            [(DCRDR, ((pc + 2) | 1) & 0xFFFFFFFF), (DCRSR, REGWNR | REG_LR)],
-            [(DCRDR, xpsr & ~EPSR_IT_ICI), (DCRSR, REGWNR | REG_XPSR)],
-            [(DCRDR, address & ~1), (DCRSR, REGWNR | REG_PC)]]
-
-
-def panic_gdb_commands(address: int, cause: int) -> list[str]:
-    """The same in one GDB session (no printer: JLinkExe cannot read xPSR and write it back in
-    one session, and it lets the core run between two). `monitor go` before detach: detach
-    alone leaves the core halted."""
-    return ["monitor halt", f"set $r0 = {cause}", "set $lr = ($pc + 2) | 1",
-            f"set $xpsr = $xpsr & ~{EPSR_IT_ICI:#x}",
-            f"set $pc = {address & ~1:#x}", "monitor go", "detach"]
+    xPSR.T stays set). (register index, value) for the printer's write_registers, which writes
+    them through the probe's own calls (a write into DHCSR behind the J-Link DLL's back hangs it)."""
+    return [(REG_R0, cause), (REG_LR, ((pc + 2) | 1) & 0xFFFFFFFF),
+            (REG_XPSR, xpsr & ~EPSR_IT_ICI), (REG_PC, address & ~1)]
 
 
 def panic(args) -> None:
@@ -714,50 +739,17 @@ def panic(args) -> None:
     check_build(tree, args.stale_ok)
     cause = raise_causes()[args.cause]
     address = function_address(tree, PANIC_RAISE)
-    control = control_socket(tree)
+    control = need_printer(tree, "the panic")
     set_mark(tree, control)
-    if control is None:
-        with gdb_server(tree) as port:
-            debugger = arm_gdb()
-            if debugger is None:
-                die("no gdb with ARM support (arm-none-eabi-gdb, gdb-multiarch, gdb)")
-            cmds = [f"target remote :{port}"] + \
-                panic_gdb_commands(address, cause)
-            gdb = subprocess.run([debugger, "-batch", "-nx", str(tree.elf)] +
-                                 [a for c in cmds for a in ("-ex", c)],
-                                 capture_output=True, text=True, timeout=60)
-        if gdb.returncode != 0 or "Remote communication error" in gdb.stderr:
-            die("gdb failed:\n" +
-                (gdb.stdout[-800:] + gdb.stderr[-800:]).strip())
-        print(
-            f"raise({args.cause}) called through GDB (no printer runs: no log)")
-        return
-
-    with Connection(control, 5) as c:
-        def dhcsr() -> int:
-            return int.from_bytes(read_bytes(c.ask(req_read([(DHCSR, 4)])))[1][0], "little")
-
-        def wait(bit: int, what: str) -> None:
-            deadline = time.time() + 1
-            while not dhcsr() & bit:
-                if time.time() > deadline:
-                    c.ask(req_write([(DHCSR, DBGKEY | C_DEBUGEN)]))
-                    die(f"{what}; resumed")
-
-        c.ask(req_write([(DHCSR, DBGKEY | C_DEBUGEN | C_HALT)]))
-        wait(S_HALT, "the core did not halt (DHCSR.S_HALT)")
-        c.ask(req_write([(DCRSR, REG_XPSR)]))
-        wait(S_REGRDY, "the core did not hand out xPSR (DHCSR.S_REGRDY)")
-        xpsr = int.from_bytes(read_bytes(
-            c.ask(req_read([(DCRDR, 4)])))[1][0], "little")
-        c.ask(req_write([(DCRSR, REG_PC)]))
-        wait(S_REGRDY, "the core did not hand out the PC (DHCSR.S_REGRDY)")
-        pc = int.from_bytes(read_bytes(
-            c.ask(req_read([(DCRDR, 4)])))[1][0], "little")
-        for step in panic_register_writes(address, cause, xpsr, pc):
-            c.ask(req_write(step))
-            wait(S_REGRDY, "the core did not take the register write (DHCSR.S_REGRDY)")
-        c.ask(req_write([(DHCSR, DBGKEY | C_DEBUGEN)]))
+    with Connection(control, 10) as c:
+        if not c.ask(req_halt()).get("halted"):
+            die("the printer could not halt the core")
+        try:
+            values = c.ask(req_registers())["values"]
+            c.ask(req_write_registers(panic_register_writes(address, cause, values[REG_XPSR],
+                                                            values[REG_PC])))
+        finally:
+            c.ask(req_go())
     print(f"raise({args.cause}) called through the printer; the log goes on "
           "(wait-for 'ended in a panic' to see the next boot name it)")
 
@@ -791,6 +783,9 @@ def wait_for(args) -> None:
                                      not_modules=args.not_module, since_seq=since))
         except ControlError as e:
             old_printer(tree, e)
+        # the subscription stands: a caller that starts the wait before the action it waits for acts only after this
+        # line, so no line of that action can come before the wait sees the stream
+        print("wait-for: subscribed", file=sys.stderr, flush=True)
         end = time.monotonic() + args.timeout
         while True:
             left = end - time.monotonic()
@@ -809,6 +804,14 @@ def wait_for(args) -> None:
                         f"  (kvasir_bench.py crash {args.build} {args.target})")
                     sys.exit(3)
                 continue
+            if event.get("cmd") == "dropped":
+                # the printer dropped lines for this connection (its queue was full): the line
+                # waited for may have been among them - a failure, not a silent wait
+                print(f"DROPPED: {event['lines']} lines dropped for this client while waiting for "
+                      f"/{args.regex}/; the last {min(len(seen), args.last)} of {len(seen)} lines seen:")
+                for text in seen[-args.last:]:
+                    print(text[:args.width])
+                sys.exit(5)
             if event.get("cmd") == "backlog_end" and event.get("lost"):
                 print(
                     f"({event['lost']} lines since the mark are no longer in the printer's history)")
@@ -892,27 +895,6 @@ def lookup(table, pattern: str) -> tuple[int, int, str]:
         die(f"'{pattern}' matches {len(hits)} objects, it has to match one" +
             (f":\n  {shown}" if hits else ""))
     return hits[0]
-
-
-def jlink(tree: Tree, script: str) -> str:
-    cmd = ["JLinkExe", "-NoGui", "1", "-device", tree.device, "-if", "SWD", "-speed", tree.swd_speed,
-           "-autoconnect", "1"]
-    serial = tree.probe_serial()
-    if tree.host:
-        cmd += ["-ip", tree.host]
-    elif serial:
-        cmd += ["-USB", serial]
-    with tempfile.NamedTemporaryFile("w", suffix=".jlink", delete=False) as f:
-        f.write(script)
-    try:
-        out = subprocess.run(cmd + ["-CommandFile", f.name], capture_output=True, text=True,
-                             timeout=60).stdout
-    finally:
-        os.unlink(f.name)
-    if re.search(r"Could not connect|Cannot connect|Failed to (connect|halt)", out, re.I):
-        die("J-Link could not reach the target:\n" +
-            "\n".join(out.splitlines()[-6:]))
-    return out
 
 
 def short(name: str) -> str:
@@ -1103,48 +1085,37 @@ def peek(args) -> None:
     check_build(tree, args.stale_ok)
     table = symbols(tree)
     wanted = [lookup(table, p) for p in args.symbol]
-    control = None if args.direct else control_socket(tree)
+    control = need_printer(tree, "the peek")
     if args.until:
-        if control is None:
-            die("--until needs this target's printer (printer start): it does the watching")
         peek_until(tree, control, wanted, args)
         return
-    if control is not None:
-        peek_via_printer(tree, control, wanted, args.watch,
-                         args.interval_ms, wants_types(args, wanted))
-        return
-    reads = "".join(
-        f"mem8 0x{addr:08x} {min(size, 64)}\n" for addr, size, _ in wanted)
-    script = "connect\n" + \
-        (reads + f"sleep {args.interval_ms}\n") * max(args.watch, 1) + "exit\n"
-    out = jlink(tree, script)
-    dumps = re.findall(
-        r"^([0-9A-Fa-f]{8}) = ((?:[0-9A-Fa-f]{2} ?)+)", out, re.M)
-    values: dict[int, list[int]] = {}
-    rounds: list[dict[int, list[int]]] = []
-    for addr, data in dumps:
-        a = int(addr, 16)
-        base = next(
-            (w for w in wanted if w[0] <= a < w[0] + max(w[1], 1)), None)
-        if base is None:
-            continue
-        if base[0] == a and base[0] in values:
-            if len(values) == len(wanted):
-                rounds.append(values)
-                values = {}
-        values.setdefault(base[0], []).extend(int(b, 16) for b in data.split())
-    if values:
-        rounds.append(values)
-    for i, r in enumerate(rounds):
-        for addr, size, name in wanted:
-            raw = r.get(addr, [])[:size]
-            number = int.from_bytes(
-                bytes(raw), "little") if raw and size <= 8 else None
-            shown = f"{number} (0x{number:x})" if number is not None else " ".join(
-                f"{b:02x}" for b in raw)
-            print(f"[{i}] {name[:70]} = {shown}")
-    print("(the core kept running)" if "is not halted" in jlink(tree, "connect\nIsHalted\nexit\n") else
-          "(WARNING: the core is halted)")
+    peek_via_printer(tree, control, wanted, args.watch,
+                     args.interval_ms, wants_types(args, wanted))
+
+
+def poke(args) -> None:
+    tree = Tree(args.build, args.target)
+    confirm_needed(tree, "poke", args.confirm)
+    try:
+        address = int(args.where.replace("_", ""), 0)
+        name = f"0x{address:08x}"
+    except ValueError:
+        # a symbol's address is only right on this tree's build
+        check_build(tree, args.stale_ok)
+        address, size, name = lookup(symbols(tree), args.where)
+        if size < 4:
+            die(f"{name} is {size} bytes: poke writes a whole word, which would hit its neighbours")
+    if address % 4:
+        die(f"0x{address:08x} is not word aligned")
+    value = int(args.value.replace("_", ""), 0)
+    if not 0 <= value <= 0xFFFF_FFFF:
+        die(f"{args.value} does not fit 32 bits")
+    control = need_printer(tree, "the poke")
+    before = int.from_bytes(read_bytes(
+        request(control, req_read([(address, 4)])))[1][0], "little")
+    after = int.from_bytes(read_bytes(
+        request(control, req_write([(address, value)])))[1][0], "little")
+    print(f"{name}: 0x{before:08x} -> wrote 0x{value:08x}, reads 0x{after:08x}")
 
 
 # ---- crash, trace, stack, status -------------------------------------------------------------------
@@ -1182,7 +1153,7 @@ PANIC_MAGIC = 0x9A41C0DE
 PANIC_CAUSES = ["assertion", "abort", "stack smash", "division by zero", "allocation without a heap",
                 "unhandled interrupt", "undefined behaviour", "fault", "KVASIR_PANIC", "check failed",
                 "register wait timed out", "boot loop", "health check starved",
-                "image CRC mismatch"]
+                "image CRC mismatch", "clock restart failed"]
 
 
 # kvasir/Util/Persistent.hpp: id, version | size << 16, the value, zlib's crc32 over all before it
@@ -1294,6 +1265,143 @@ def full_records(tree: "Tree", control, table) -> None:
                   f"{where.get(site, '')}")
 
 
+# kvasir/Util/HealthRecords.hpp: Health::Starvation ("KHLT" v1) and Health::Recoveries ("KHRV" v1), in order
+HEALTH_STARVATION_FIELDS = ["check", "nameHash",
+                            "silentMs", "allowedMs", "uptimeMs", "silentMask"]
+HEALTH_RECOVERY_FIELDS = ["total", "lastCheck", "lastNameHash", "lastUptimeMs", "inProgress",
+                          "escalatedAttempts"]
+# kvasir/Util/BootGuardRules.hpp: BootGuard::State ("KBTG" v1), Failure and Flag in order
+BOOT_GUARD_FAILURES = ["none", "panic", "fault", "watchdog", "starvation"]
+BOOT_GUARD_FLAGS = ["runOpen", "plannedResetPending",
+                    "halted", "safeMode", "healthyThisRun"]
+
+
+def fnv1a(text: bytes) -> int:
+    """Kvasir::Health::fnv1a: what a record stores instead of the check's name."""
+    h = 0x811C9DC5
+    for c in text:
+        h = ((h ^ c) * 0x01000193) & 0xFFFFFFFF
+    return h
+
+
+def names_by_hash(resident, wanted: set[int]) -> dict[int, str]:
+    """The check names behind FNV-1a hashes, found among the strings of the image (`resident`, as
+    image_reader takes it): a check's name is a string_view the supervisor keeps in flash, without its
+    own symbol and maybe merged into a longer string - so whole strings first, then their parts."""
+    found: dict[int, str] = {}
+    runs = [m.group(0) for _name, _start, data in resident
+            for m in re.finditer(rb"[\x20-\x7e]+", data)]
+    for run in runs:
+        h = fnv1a(run)
+        if h in wanted and h not in found:
+            found[h] = run.decode()
+    for run in runs:
+        if len(found) == len(wanted):
+            break
+        for i in range(len(run)):
+            h = 0x811C9DC5
+            for j in range(i, min(len(run), i + 64)):
+                h = ((h ^ run[j]) * 0x01000193) & 0xFFFFFFFF
+                if h in wanted and h not in found:
+                    found[h] = run[i:j + 1].decode()
+    return found
+
+
+def health_lines(table, read, resident) -> list[str]:
+    """What the health supervisor's and the boot guard's .noInit records say (Kvasir::Health::lastStarvation,
+    lastRecovery, Kvasir::BootGuard::state), read without taking them: they survive the reset a starvation ends
+    in, until the next boot's report takes them. `read(address, size)` reads the board."""
+    def record(name, tag, fields):
+        hit = [s for s in table if s[2] == name]
+        if not hit:
+            return None, False
+        words = decode_persistent(read(hit[0][0], hit[0][1]), tag, 1)
+        if words is None or len(words) != len(fields):
+            return None, True
+        return dict(zip(fields, words)), True
+    starved, has_starved = record(
+        "Kvasir::Health::lastStarvation", "KHLT", HEALTH_STARVATION_FIELDS)
+    recovered, has_recovered = record(
+        "Kvasir::Health::lastRecovery", "KHRV", HEALTH_RECOVERY_FIELDS)
+    guard_sym = [s for s in table if s[2] == "Kvasir::BootGuard::state"]
+    guard = None
+    if guard_sym:
+        words = decode_persistent(
+            read(guard_sym[0][0], guard_sym[0][1]), "KBTG", 1)
+        if words is not None and len(words) == 3:
+            raw = b"".join(w.to_bytes(4, "little") for w in words)
+            guard = {"bootCount": words[0], "consecutive": int.from_bytes(raw[4:6], "little"),
+                     "total": int.from_bytes(raw[6:8], "little"), "lastFailure": raw[8],
+                     "lastDetail": raw[9], "flags": raw[10]}
+    # a record holds the check's index and the hash of its name; the index alone (a recovery cut short, the guard's
+    # detail) borrows the name from a record that pairs the same index with a hash
+    pairs = {}
+    if starved:
+        pairs[starved["check"]] = starved["nameHash"]
+    if recovered and recovered["total"]:
+        pairs.setdefault(recovered["lastCheck"], recovered["lastNameHash"])
+    names = names_by_hash(resident, set(pairs.values())) if pairs else {}
+
+    def check(index, name_hash=None):
+        name_hash = pairs.get(index) if name_hash is None else name_hash
+        if name_hash is None:
+            return f"check #{index}"
+        name = names.get(name_hash)
+        return (f"check '{name}' (#{index})" if name is not None
+                else f"check #{index} (name hash {name_hash:#010x}: no such name in this image)")
+    lines = []
+    if starved:
+        lines.append(f"  the health starvation record: {check(starved['check'], starved['nameHash'])} starved, "
+                     f"silent {starved['silentMs']} ms of the {starved['allowedMs']} ms allowed, "
+                     f"{starved['uptimeMs']} ms after boot; checks past half their window "
+                     f"{starved['silentMask']:#x}")
+    elif has_starved:
+        lines.append("  the health starvation record (lastStarvation) is empty: no check starved, or the boot "
+                     "report took it")
+    if recovered:
+        r = recovered
+        text = f"  the health recovery record: {r['total']} recover{'y' if r['total'] == 1 else 'ies'} this run"
+        if r["total"]:
+            text += (f", the last {check(r['lastCheck'], r['lastNameHash'])} at {r['lastUptimeMs']} ms after "
+                     f"boot")
+        lines.append(text)
+        if r["inProgress"]:
+            index, attempt = (r["inProgress"] & 0xFFFF) - \
+                1, r["inProgress"] >> 16
+            lines.append(f"    {check(index)}'s onStarved was running, attempt {attempt}: a reset inside it "
+                         "(the watchdog bit during the recovery) - the boot guard counts it as a starvation")
+        if r["escalatedAttempts"]:
+            lines.append(
+                f"    escalated to the policy after {r['escalatedAttempts']} recovery attempt(s)")
+    elif has_recovered:
+        lines.append("  the health recovery record (lastRecovery) is empty: no onStarved ran, or the boot report "
+                     "took it")
+    if guard:
+        g = guard
+        failure = (BOOT_GUARD_FAILURES[g["lastFailure"]] if g["lastFailure"] < len(BOOT_GUARD_FAILURES)
+                   else f"failure {g['lastFailure']}")
+        if failure == "panic":
+            detail = PANIC_CAUSES[g["lastDetail"]] if g["lastDetail"] < len(PANIC_CAUSES) else \
+                f"cause {g['lastDetail']}"
+            failure += f" ({detail})"
+        elif failure == "starvation":
+            failure += f" ({check(g['lastDetail'])})"
+        flags = [n for b, n in enumerate(
+            BOOT_GUARD_FLAGS) if g["flags"] >> b & 1]
+        lines.append(f"  the boot guard: boot {g['bootCount']}, {g['consecutive']} failed run(s) in a row, "
+                     f"{g['total']} in all, the last failure {failure}; {' '.join(flags) or 'no flags'}")
+    return lines
+
+
+def print_health_records(tree: "Tree", control, table) -> None:
+    sys.path.insert(
+        0, str(Path(__file__).resolve().parent.parent / "cmake" / "tools"))
+    import elf_image
+    for line in health_lines(table, lambda where, size: read_target(control, where, size),
+                             elf_image.Elf(tree.elf.read_bytes()).resident()):
+        print(line)
+
+
 def crash(args) -> None:
     tree = Tree(args.build, args.target)
     check_build(tree, args.stale_ok)
@@ -1303,7 +1411,9 @@ def crash(args) -> None:
         if m["level"] == "error" and m["text"].startswith("core halted:"):
             entry = {"recv_time_utc": m["time"], "message": m["text"]}
     if entry is None:
+        # a starvation ends in a watchdog reset, not a halt: its records are in RAM until the boot report
         print("no 'core halted' message: the printer did not see the core stop")
+        print_health_records(tree, control, symbols(tree))
         return
     text = entry["message"]
     regs = dict(re.findall(r"(\w+)=(0x[0-9a-f]+|\d+)", text))
@@ -1381,6 +1491,7 @@ def crash(args) -> None:
                       f"{where.get(site, '')}")
     if control is not None:
         full_records(tree, control, symbols(tree))
+        print_health_records(tree, control, symbols(tree))
     # this run's fault line only (since the last flash/reset): an older boot's COREFAULT in the
     # printer's history is not this halt's
     fault_lines = subprocess.run([sys.executable, __file__, "log", str(tree.build), tree.target,
@@ -1401,18 +1512,8 @@ def ub(args) -> None:
     if not hit:
         die(f"{tree.target} has no sanitizer report counter: it is not a sanitize build")
     address = hit[0][0]
-    control = control_socket(tree)
-    if control is not None:
-        raw = read_target(control, address, 8)
-    else:
-        out = jlink(tree, f"connect\nmem32 0x{address:08x} 2\nexit\n")
-        m = re.search(
-            rf"^{address:08X} = ([0-9A-Fa-f]{{8}}) ([0-9A-Fa-f]{{8}})", out, re.M)
-        if not m:
-            die("could not read the counter:\n" +
-                "\n".join(out.splitlines()[-6:]))
-        raw = int(m.group(1), 16).to_bytes(4, "little") + \
-            int(m.group(2), 16).to_bytes(4, "little")
+    control = need_printer(tree, "the UB counter")
+    raw = read_target(control, address, 8)
     count, last = int.from_bytes(
         raw[0:4], "little"), int.from_bytes(raw[4:8], "little")
     if count == 0:
@@ -1537,9 +1638,7 @@ def trace_layout(descriptor: bytes | None, storage: bytes):
 def trace(args) -> None:
     tree = Tree(args.build, args.target)
     check_build(tree, args.stale_ok)
-    control = control_socket(tree)
-    if control is None:
-        die("no printer with a control socket runs for this target (printer start)")
+    control = need_printer(tree, "this command")
     rings = trace_rings(symbols(tree))
     if not rings:
         die("no Kvasir::Trace::Ring in this firmware (kvasir/Util/Trace.hpp)")
@@ -1598,9 +1697,7 @@ def metrics(args) -> None:
     control socket's metrics stream, one {"cmd":"metric","name":..,"scope":..,"unit":..,
     "time":<uc seconds>,"value":..} a sample - numbers on the target's clock, no text to parse."""
     tree = Tree(args.build, args.target)
-    control = control_socket(tree)
-    if control is None:
-        die("no printer with a control socket runs for this target (printer start)")
+    control = need_printer(tree, "this command")
     wanted = re.compile(args.name) if args.name else None
     until = None
     if args.until:
@@ -1622,6 +1719,10 @@ def metrics(args) -> None:
                 sample = stream.next()
             except (TimeoutError, socket.timeout):
                 break
+            if sample.get("cmd") == "dropped":
+                print(f"({sample['lines']} samples dropped for this client: it read too slowly, "
+                      "the rates below are short)", file=sys.stderr)
+                continue
             if sample.get("cmd") != "metric":
                 continue
             key = metric_key(sample)
@@ -1659,9 +1760,7 @@ def metrics(args) -> None:
 def stack(args) -> None:
     tree = Tree(args.build, args.target)
     check_build(tree, args.stale_ok)
-    control = control_socket(tree)
-    if control is None:
-        die("no printer with a control socket runs for this target (printer start)")
+    control = need_printer(tree, "this command")
     found = {n: int(a, 16) for a, n in
              re.findall(r"^([0-9a-f]{8}) (?:[0-9a-f]{8} )?. (_LINKER_stack_(?:start|end)_)$", nm(tree), re.M)}
     if len(found) != 2:
@@ -1685,10 +1784,23 @@ def stack(args) -> None:
           f"({100 * used / size:.1f} %), {4 * free} bytes never touched")
 
 
-def probes_on_usb() -> list[tuple[str, str, str]]:
-    out = subprocess.run(["JLinkExe", "-NoGui", "1"], input="ShowEmuList USB\nexit\n",
-                         capture_output=True, text=True, timeout=30).stdout
-    return re.findall(r"Serial number: (\d+), ProductName: (.*?), Nickname: (.*?)\s*$", out, re.M)
+def probes_on_usb(root: Path = Path("/sys/bus/usb/devices")) -> list[tuple[str, str, str]]:
+    """(serial, product, nickname) of every SEGGER J-Link on USB, from sysfs: no J-Link tool, so
+    nothing touches a probe a printer holds. A probe with a nickname names itself
+    `J-Link_<nickname>` in its USB product string."""
+    found = []
+    for vendor in sorted(root.glob("*/idVendor")):
+        try:
+            if vendor.read_text().strip() != "1366":   # SEGGER
+                continue
+            serial = (vendor.parent / "serial").read_text().strip().lstrip("0")
+            product = (vendor.parent / "product").read_text().strip()
+        except OSError:
+            continue
+        nick = product.removeprefix(
+            "J-Link_") if product.startswith("J-Link_") else ""
+        found.append((serial, product.replace("_", " "), nick))
+    return found
 
 
 def status(args) -> None:
@@ -1780,40 +1892,125 @@ gdb.execute("detach")
 '''
 
 
+# GDB's own description of an M-profile core (gdb/features/arm/arm-m-profile.xml): r0..r12, sp, lr, pc, xpsr
+GDB_TARGET_XML = ('<?xml version="1.0"?><!DOCTYPE target SYSTEM "gdb-target.dtd"><target>'
+                  '<architecture>arm</architecture><feature name="org.gnu.gdb.arm.m-profile">'
+                  + "".join(f'<reg name="r{i}" bitsize="32"/>' for i in range(13))
+                  + '<reg name="sp" bitsize="32" type="data_ptr"/><reg name="lr" bitsize="32"/>'
+                    '<reg name="pc" bitsize="32" type="code_ptr"/><reg name="xpsr" bitsize="32"/>'
+                    '</feature></target>')
+
+
+def gdb_packet(payload: str) -> bytes:
+    return f"${payload}#{sum(payload.encode()) & 0xFF:02x}".encode()
+
+
+def serve_gdb(conn: socket.socket, registers: list[int],
+              read: typing.Callable[[int, int], bytes | None]) -> None:
+    """One gdb session of the remote protocol, answered from `registers` (r0..r12, sp, lr, pc,
+    xpsr) and `read`: what gdb needs for registers, a backtrace and memory, nothing else."""
+    pending = b""
+    while True:
+        while b"#" not in pending or len(pending) < pending.index(b"#") + 3:
+            chunk = conn.recv(65536)
+            if not chunk:
+                return
+            pending += chunk
+            pending = pending.lstrip(b"+-\x03")
+        start = pending.index(b"$")
+        end = pending.index(b"#", start)
+        packet = pending[start + 1:end].decode(errors="replace")
+        pending = pending[end + 3:].lstrip(b"+-")
+        conn.sendall(b"+")
+        reply = ""
+        if packet.startswith("qSupported"):
+            reply = "PacketSize=4000;qXfer:features:read+"
+        elif packet.startswith("qXfer:features:read:target.xml:"):
+            off, length = (int(x, 16)
+                           for x in packet.rsplit(":", 1)[1].split(","))
+            part = GDB_TARGET_XML[off:off + length]
+            reply = ("l" if off + length >=
+                     len(GDB_TARGET_XML) else "m") + part
+        elif packet == "?":
+            reply = "S05"
+        elif packet.startswith(("Hg", "Hc")):
+            reply = "OK"
+        elif packet == "qAttached":
+            reply = "1"
+        elif packet == "qfThreadInfo":
+            reply = "m1"
+        elif packet == "qsThreadInfo":
+            reply = "l"
+        elif packet == "qC":
+            reply = "QC1"
+        elif packet == "g":
+            reply = "".join(v.to_bytes(4, "little").hex() for v in registers)
+        elif packet.startswith("p"):
+            n = int(packet[1:], 16)
+            reply = registers[n].to_bytes(
+                4, "little").hex() if n < len(registers) else "E01"
+        elif packet.startswith("m"):
+            addr, length = (int(x, 16) for x in packet[1:].split(","))
+            data = read(addr, length)
+            reply = data.hex() if data is not None else "E01"
+        elif packet in ("D", "k") or packet.startswith("D;"):
+            conn.sendall(gdb_packet("OK"))
+            return
+        conn.sendall(gdb_packet(reply))
+
+
 @contextlib.contextmanager
-def gdb_server(tree: Tree):
-    """A J-Link GDB server on a free local port for one gdb session; it does not halt the core
-    and ends with that session (-singlerun). Yields the port."""
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    server = ["JLinkGDBServerCLExe", "-device", tree.device, "-if", "SWD", "-speed", tree.swd_speed,
-              "-port", str(port), "-swoport", str(port +
-                                                  1), "-telnetport", str(port + 2),
-              "-nohalt", "-noir", "-silent", "-singlerun", "-nogui"]
-    serial = tree.probe_serial()
-    if serial:
-        server += ["-select", f"USB={serial}"]
-    log_path = Path(tempfile.gettempdir()) / f"kvasir_gdbserver_{port}.log"
-    with open(log_path, "w") as out:
-        srv = subprocess.Popen(
-            server, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+def printer_gdb_stub(control: Path, registers: list[int]):
+    """A gdb remote on a free local port that reads memory through the printer: no second
+    debugger on the probe. Yields the port; one session."""
+    def read(addr: int, length: int) -> bytes | None:
+        data = b""
+        try:
+            while length:
+                n = min(length, 1024)
+                answer = request(control, req_read([(addr, n)]), timeout=10)
+                data += read_bytes(answer)[1][0]
+                addr, length = addr + n, length - n
+        except ControlError:
+            return None
+        return data
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+
+    def run():
+        try:
+            conn, _ = listener.accept()
+            with conn:
+                serve_gdb(conn, registers, read)
+        except OSError:
+            pass
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
     try:
-        for _ in range(80):
-            text = log_path.read_text(errors="replace")
-            if "Waiting for GDB connection" in text:
-                break
-            if srv.poll() is not None or re.search(r"ERROR|Could not connect", text):
-                die("the GDB server did not come up:\n" +
-                    "\n".join(text.splitlines()[-8:]))
-            time.sleep(0.1)
         yield port
     finally:
-        try:
-            srv.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            srv.kill()
-        log_path.unlink(missing_ok=True)
+        listener.close()
+        thread.join(timeout=5)
+
+
+def run_gdb_script(tree: Tree, port: int, args, wanted) -> None:
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+        f.write(GDB_SCRIPT %
+                {"port": port, "frames": args.frames, "vars": wanted, "root": tree.path_root})
+    debugger = arm_gdb()
+    if debugger is None:
+        die("no gdb with Python and ARM support (arm-none-eabi-gdb, gdb-multiarch, gdb)")
+    gdb = subprocess.run([debugger, "-batch", "-nx", str(tree.elf), "-x", f.name],
+                         capture_output=True, text=True, timeout=60)
+    os.unlink(f.name)
+    keep = [l for l in gdb.stdout.splitlines()
+            if re.match(r"(pc|sp|lr|xpsr|mode) |#\d|.* = ", l)]
+    print("\n".join(keep)
+          if keep else gdb.stdout[-1500:] + gdb.stderr[-800:])
 
 
 def snapshot(args) -> None:
@@ -1821,23 +2018,20 @@ def snapshot(args) -> None:
     check_build(tree, args.stale_ok)
     table = symbols(tree)
     wanted = [lookup(table, p) for p in args.var]
-    with gdb_server(tree) as port:
-        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-            f.write(GDB_SCRIPT %
-                    {"port": port, "frames": args.frames, "vars": wanted, "root": tree.path_root})
-        t0 = time.time()
-        debugger = arm_gdb()
-        if debugger is None:
-            die("no gdb with Python and ARM support (arm-none-eabi-gdb, gdb-multiarch, gdb)")
-        gdb = subprocess.run([debugger, "-batch", "-nx", str(tree.elf), "-x", f.name],
-                             capture_output=True, text=True, timeout=60)
-        os.unlink(f.name)
-        keep = [l for l in gdb.stdout.splitlines()
-                if re.match(r"(pc|sp|lr|xpsr|mode) |#\d|.* = ", l)]
-        print("\n".join(keep)
-              if keep else gdb.stdout[-1500:] + gdb.stderr[-800:])
-        print(
-            f"(the core stood still for about {time.time() - t0:.1f} s and runs again)")
+    # everything through the printer: halt and go through its probe calls, registers and
+    # memory through its socket - no second J-Link client (it can take the probe off USB)
+    control = need_printer(tree, "the snapshot")
+    t0 = time.time()
+    if not request(control, req_halt(), timeout=10).get("halted"):
+        die("the printer could not halt the core")
+    try:
+        registers = request(control, req_registers(), timeout=10)["values"]
+        with printer_gdb_stub(control, registers[:17]) as port:
+            run_gdb_script(tree, port, args, wanted)
+    finally:
+        request(control, req_go(), timeout=10)
+    print(f"(through the printer: the core stood still for about {time.time() - t0:.1f} s "
+          "and runs again)")
 
 
 # ---- profile ---------------------------------------------------------------------------------
@@ -2383,11 +2577,20 @@ def main() -> None:
                    help="seconds, for --until")
     p.add_argument("--typed", action="store_true",
                    help="decode with the ELF's debug info (enums, structs, atomics)")
-    p.add_argument("--direct", action="store_true",
-                   help="attach with JLinkExe even if this target's printer has a peek server")
     p.add_argument("--stale-ok", action="store_true",
                    help="read symbols even if the board runs another build")
     p.set_defaults(fn=peek)
+
+    p = sub.add_parser("poke")
+    p.add_argument("build")
+    p.add_argument("target")
+    p.add_argument(
+        "where", help="an address (0x..., _ allowed) or a SYMBOL regex")
+    p.add_argument("value", help="the 32-bit word, 0x... or decimal")
+    p.add_argument("--confirm", action="store_true")
+    p.add_argument("--stale-ok", action="store_true",
+                   help="write to a symbol even if the board runs another build")
+    p.set_defaults(fn=poke)
 
     p = sub.add_parser("profile")
     p.add_argument("build")

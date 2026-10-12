@@ -49,6 +49,15 @@ struct ScriptedAccess {
 };
 
 constexpr Polls Small{100, 7};
+
+// a microsecond counter that advances `step` a read (0: stands still)
+std::uint32_t clockNow{};
+std::uint32_t clockStep{};
+
+std::uint32_t fakeClock() {
+    clockNow += clockStep;
+    return clockNow;
+}
 }   // namespace
 
 int main() {
@@ -115,6 +124,31 @@ int main() {
         a.words[2] = 0xFFFFU;
         CHECK(announceVia(a, true, Small, 10'000'000) == Outcome::acknowledged);
         CHECK_EQ(a.words[2], (0xFFFFU << 16) | 1U);   // clamped to 6553.5 s, sequence never 0
+    }
+
+    Kvasir::Test::test("with a running microsecond counter the waits are timed, not counted");
+    {
+        clockNow  = 0xFFFF'FF00U;   // across the counter's wrap
+        clockStep = 10;
+        ScriptedAccess a{.ackAfter = 30};
+        // 50 polls of counted grace, but 200 us of time at 10 us a poll: ~20 polls
+        CHECK(announceVia(a, true, Polls{100'000, 50}, 0, &fakeClock, Waits{1'000'000, 200})
+              == Outcome::acknowledged);
+        CHECK(a.gracePolls >= 19 && a.gracePolls <= 21);
+        ScriptedAccess none{};
+        // no answer: 1000 us at 10 us a read, long before the 100'000 counted polls
+        CHECK(announceVia(none, true, Polls{100'000, 50}, 0, &fakeClock, Waits{1'000, 200})
+              == Outcome::timedOut);
+        CHECK(none.ackPolls >= 99 && none.ackPolls <= 101);
+    }
+
+    Kvasir::Test::test("a counter that stands still: counted polls after StillPolls");
+    {
+        clockStep = 0;
+        ScriptedAccess a{};
+        Polls const    counted{detail::Deadline::StillPolls + 50, 5};
+        CHECK(announceVia(a, true, counted, 0, &fakeClock, Waits{1, 1}) == Outcome::timedOut);
+        CHECK_EQ(a.ackPolls, counted.ack);
     }
 
     Kvasir::Test::test("on the real (volatile) block");

@@ -96,6 +96,7 @@ namespace Policy {
         static void mismatch([[maybe_unused]] std::uint32_t got,
                              [[maybe_unused]] std::uint32_t want) {
 #ifdef USE_UC_LOG
+            ::Kvasir::Panic::beginFatal();
             UC_LOG_C("image check: CRC 0x{:08x}, the image was built with 0x{:08x}: image corrupt",
                      got,
                      want);

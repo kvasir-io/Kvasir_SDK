@@ -1,7 +1,8 @@
 // Kvasir::BootGuard::judge (Util/BootGuardRules.hpp): one case per row of the verdict table, and the
 // combinations - a panic and a watchdog reset count once, a planned reset with a panic counts, power-on resets the
 // count and keeps the total, a halt stays halted until power-on, the counters saturate, a bootLoop panic is not
-// counted again, the RP2040 stale-REASON rule. All at compile time, plus the Persistent state round trip.
+// counted again, the RP2040 stale-REASON rule, a health starvation (its own kind, only with a watchdog reset). All
+// at compile time, plus the Persistent state round trip.
 #include "kvasir/Util/BootGuardRules.hpp"
 #include "test_harness.hpp"
 
@@ -217,6 +218,74 @@ static_assert(BG::judge(saturated,
                         rules)
                 .second.total
               == 0xFFFF);
+
+// a health check starved (a Health record names check 2) and the watchdog bit: a failure of its own kind, the
+// check as the detail - also where a watchdog reset without a record does not count
+constexpr BG::Evidence starved(ResetKind r,
+                               bool      panic = false) {
+    auto e = ev(r, panic, false, panic ? std::optional<std::uint32_t>{assertCause} : std::nullopt);
+    e.starvedCheck = 2;
+    return e;
+}
+
+static_assert(BG::judge(running(1),
+                        starved(ResetKind::watchdogTimeout),
+                        rules)
+                .first
+              == Verdict::failure);
+static_assert(BG::judge(running(1),
+                        starved(ResetKind::watchdogTimeout),
+                        rules)
+                .second.lastFailure
+              == static_cast<std::uint8_t>(BG::Failure::starvation));
+static_assert(BG::judge(running(1),
+                        starved(ResetKind::watchdogTimeout),
+                        rules)
+                .second.lastDetail
+              == 2);
+static_assert(BG::judge(running(1),
+                        starved(ResetKind::watchdogTimeout),
+                        rules)
+                .second.consecutive
+              == 2);
+static_assert(BG::judge(running(1),
+                        starved(ResetKind::watchdogTimeout),
+                        BG::Rules{.countWatchdogWithoutRecord = false})
+                .second.lastFailure
+              == static_cast<std::uint8_t>(BG::Failure::starvation));
+// countStarvation = false: back to "watchdog, no record"
+static_assert(BG::judge(running(1),
+                        starved(ResetKind::watchdogTimeout),
+                        BG::Rules{.countStarvation = false})
+                .second.lastFailure
+              == static_cast<std::uint8_t>(BG::Failure::watchdog));
+// a record next to another reset (LogOnly kept the run going; a debugger reset ended it): not a failure
+static_assert(BG::judge(running(1),
+                        starved(ResetKind::debugger),
+                        rules)
+                .first
+              == Verdict::neutral);
+// RaisePanic: the panic record wins, counted once
+static_assert(BG::judge(running(1),
+                        starved(ResetKind::watchdogTimeout,
+                                true),
+                        rules)
+                .second.lastFailure
+              == static_cast<std::uint8_t>(BG::Failure::panic));
+static_assert(BG::judge(running(1),
+                        starved(ResetKind::watchdogTimeout,
+                                true),
+                        rules)
+                .second.consecutive
+              == 2);
+// a planned reset pending does not hide a starvation that came first
+static_assert(BG::judge(running(1,
+                                BG::runOpen | BG::plannedResetPending),
+                        starved(ResetKind::watchdogTimeout),
+                        rules)
+                .first
+              == Verdict::failure);
+static_assert(BG::name(BG::Failure::starvation) == "health check starved");
 
 static_assert(BG::Report{Verdict::failure,
                          running(3),
