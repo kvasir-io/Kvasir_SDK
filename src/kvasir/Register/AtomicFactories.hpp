@@ -38,7 +38,7 @@ namespace Kvasir { namespace Register {
     }   // namespace Detail
 
     template<typename... Ts>
-    constexpr auto atomic(Ts...) {
+    [[gnu::always_inline]] constexpr auto atomic(Ts...) {
         return brigand::flatten<brigand::list<typename Detail::MakeAtomic<Ts>::type...>>{};
     }
 }}   // namespace Kvasir::Register

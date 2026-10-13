@@ -342,6 +342,30 @@ class PanicCommand(unittest.TestCase):
         self.assertEqual(kb.EPSR_IT_ICI, 0x0600FC00)
 
 
+class ResetLine(unittest.TestCase):
+    """`reset --line` asks the printer for a reset through the probe's reset pin ("line": true)."""
+
+    def test_request(self):
+        self.assertEqual(kb.req_reset(), {"cmd": "reset"})
+        self.assertEqual(kb.req_reset(line=True), {
+                         "cmd": "reset", "line": True})
+
+    def test_reset_sends_line(self):
+        sent = []
+        args = types.SimpleNamespace(
+            build="b", target="t", confirm=False, line=True)
+        with unittest.mock.patch.object(kb, "Tree"), \
+                unittest.mock.patch.object(kb, "confirm_needed"), \
+                unittest.mock.patch.object(kb, "need_printer", return_value="sock"), \
+                unittest.mock.patch.object(kb, "need_ram_image_printer"), \
+                unittest.mock.patch.object(kb, "set_mark"), \
+                unittest.mock.patch.object(kb, "firmware_line", return_value=""), \
+                unittest.mock.patch.object(kb, "request", side_effect=lambda c, r, **_: sent.append(r) or {}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            kb.reset(args)
+        self.assertEqual(sent, [{"cmd": "reset", "line": True}])
+
+
 class TreeSettings(unittest.TestCase):
     """The target's printer options come from the tree's <target>.printer_args, one argument a line."""
 

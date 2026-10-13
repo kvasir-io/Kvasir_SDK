@@ -57,10 +57,20 @@
 // `recoveryBudget` (2 ms): over it, a warning and a count (Supervisor::recoveryOverruns()). A hang inside it is the
 // watchdog's, and the next boot names the check and the rung.
 //
+// A supervisor serviced from an interrupt (so a hung main loop is a starved check like any other) sets
+// `deferRecoveries = true` in its Config: service() then only REQUESTS a recovery (starts the rung's window, counts
+// and logs it), and the main loop runs it with Supervisor::runRecoveries() - thread mode, one onStarved per call,
+// same core as service(), same contract. The window starts at the request; a request not run before it ends goes
+// on like a silent check (next rung, then the policy). Recovery::cannot escalates at the next service() unless the
+// check beat meanwhile. A beat, resume() or a fresh LogOnly window drops a request; a policy that stops feeding
+// drops them all.
+//
 // The watchdog bounds the main loop, onStarved included: period x 2 + recoveryBudget must stay below its timeout
-// (a static_assert). From a check's last beat to the reset under StopFeeding it is at most
+// (a static_assert; not with deferRecoveries, where the interrupt feeds it and the loop's own check bounds
+// onStarved). From a check's last beat to the reset under StopFeeding it is at most
 // maxInterval + recoveryAttempts x recoveryWindow + (recoveryAttempts + 1) x period + the watchdog's timeout:
 // Supervisor::worstToEscalationMs<C>(). Without any onStarved in the image nothing of this is compiled in.
+#include "kvasir/Atomic/CriticalSection.hpp"
 #include "kvasir/StartUp/Hooks.hpp"
 #include "kvasir/Util/AnnouncedReset.hpp"
 #ifdef __arm__
@@ -75,6 +85,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -300,6 +311,26 @@ namespace Detail {
         Recoveries record{};
     };
 
+    // deferRecoveries: the hand-off between service() and runRecoveries(), under criticalSection<RecoveryTag>;
+    // nothing (never odr-used) without it
+    template<std::size_t N, bool On>
+    struct DeferState {};
+
+    template<std::size_t N>
+    struct DeferState<N, true> {
+        // mask: checks with a rung for runRecoveries() to run
+        std::uint32_t requested{};
+        // mask: their onStarved returned Recovery::cannot, for the next service() to escalate
+        std::uint32_t refused{};
+        // the requested rung's Attempt::n
+        std::array<std::uint8_t, N> rung{};
+        // silence and limit at the request (the window it started reset them): what a refusal escalates with
+        std::array<std::uint32_t, N> silentMs{};
+        std::array<std::uint32_t, N> limitMs{};
+    };
+
+    struct RecoveryTag {};
+
     template<typename List>
     struct Configs;
 
@@ -410,9 +441,18 @@ struct Supervisor {
               std::chrono::milliseconds{2});
         }
     }();
+    /// Recoveries run by the main loop (runRecoveries()), not by service() (header comment).
+    static constexpr bool deferRecoveries = [] {
+        if constexpr(requires { Config::deferRecoveries; }) {
+            return static_cast<bool>(Config::deferRecoveries);
+        } else {
+            return false;
+        }
+    }();
+
     // what the watchdog sees between two feeds while a check recovers: two periods and one onStarved call
     static constexpr bool budgetBelowTimeout = [] {
-        if constexpr(!Cfg::anyRecovery) {
+        if constexpr(!Cfg::anyRecovery || deferRecoveries) {
             return true;
         } else if constexpr(requires { Watchdog::Timeout; }) {
             return Watchdog::Timeout > 2 * period + recoveryBudget;
@@ -465,6 +505,7 @@ struct Supervisor {
                 if constexpr(Cfg::anyRecovery) {
                     if((rec_.recovering & bit) != 0) { recovered(i, now); }
                     rec_.attempt[i] = 0;   // progress: the ladder starts over
+                    if constexpr(deferRecoveries) { dropRequests(bit); }
                 }
             } else if((suspended_ & bit) == 0) {
                 silentMs_[i] = silentMs_[i] + k * periodMs;
@@ -472,6 +513,10 @@ struct Supervisor {
                 if(silentMs_[i] * 2 > limitMs_[i]) { silentMask |= bit; }
                 if constexpr(!Cfg::anyRecovery) {
                     if(silentMs_[i] > limitMs_[i] && !starved) { starved = i; }
+                } else if(!starved && takeRefused(bit)) {
+                    // deferRecoveries: its onStarved returned cannot - escalate, with the silence of the request
+                    starved = i;
+                    refusedSilence(i);
                 } else if(silentMs_[i] > limitMs_[i]) {
                     bool rescued = false;
                     if(rec_.attempt[i] < Cfg::attempts[i] && !latched_) {
@@ -531,6 +576,7 @@ struct Supervisor {
             if((rec_.recovering & bitOf<C>()) != 0) { limitMs_[i] = Cfg::allowedMs[i]; }
             rec_.recovering = rec_.recovering & ~bitOf<C>();
             rec_.attempt[i] = 0;
+            if constexpr(deferRecoveries) { dropRequests(bitOf<C>()); }
         }
     }
 
@@ -538,6 +584,57 @@ struct Supervisor {
     [[nodiscard]] static std::uint32_t worstMs(std::size_t i) { return worstMs_[i]; }
 
     [[nodiscard]] static std::string_view name(std::size_t i) { return Cfg::names[i]; }
+
+    /// deferRecoveries: runs one recovery service() requested, in thread mode, from the main loop - every turn, the
+    /// same core as service(). Returns true if it ran one (always false in an image without an onStarved).
+    static bool runRecoveries()
+        requires deferRecoveries
+    {
+        if constexpr(!Cfg::anyRecovery) {
+            return false;
+        } else {
+            struct Taken {
+                std::size_t  i;
+                std::uint8_t n;
+            };
+
+            // the check and its rung together: a newer rung service() requests after this is the next call's
+            auto const taken = criticalSection<Detail::RecoveryTag>([]() -> std::optional<Taken> {
+                if(defer_.requested == 0) { return std::nullopt; }
+                auto const i     = static_cast<std::size_t>(std::countr_zero(defer_.requested));
+                defer_.requested = defer_.requested & ~(1U << i);
+                auto const n     = defer_.rung[i];
+                // before the call: a reset inside it is named at the next boot
+                rec_.record.inProgress = recoveryInProgress(static_cast<std::uint32_t>(i), n + 1U);
+                storeRecordNow();
+                return Taken{i, n};
+            });
+            if(!taken) { return false; }
+            Recovery const r = callTimed(taken->i, taken->n);
+            criticalSection<Detail::RecoveryTag>([i = taken->i, r] {
+                rec_.record.inProgress = 0;
+                storeRecordNow();
+                // only while still recovering: a beat during the call (service() preempting it) ended the recovery,
+                // and a stale refusal would escalate a check that is back
+                if(r == Recovery::cannot && (rec_.recovering & (1U << i)) != 0) {
+                    defer_.refused = defer_.refused | (1U << i);
+                }
+                return 0;
+            });
+            return true;
+        }
+    }
+
+    /// deferRecoveries: mask of the checks with a recovery requested and not yet run.
+    [[nodiscard]] static std::uint32_t pendingRecoveries()
+        requires deferRecoveries
+    {
+        if constexpr(!Cfg::anyRecovery) {
+            return 0;
+        } else {
+            return criticalSection<Detail::RecoveryTag>([] { return defer_.requested; });
+        }
+    }
 
     /// The previous run's starvation, once.
     static std::optional<Starvation> takeLastStarvation() { return lastStarvation.take(); }
@@ -627,7 +724,11 @@ private:
                        typename Clock::time_point now) {
         auto const& policy = injectedPolicy<Dummy...>;
         latched_           = !std::remove_cvref_t<decltype(policy)>::keepFeeding;
-        auto const uptime  = static_cast<std::uint32_t>(
+        // no recovery runs while the reset (or the panic) comes
+        if constexpr(Cfg::anyRecovery && deferRecoveries) {
+            if(latched_) { dropRequests(~0U); }
+        }
+        auto const uptime = static_cast<std::uint32_t>(
           std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
         lastStarvation.store(Starvation{.check      = static_cast<std::uint32_t>(i),
                                         .nameHash   = fnv1a(Cfg::names[i]),
@@ -646,6 +747,7 @@ private:
                 limitMs_[i]     = Cfg::allowedMs[i];
                 rec_.recovering = rec_.recovering & ~(1U << i);
                 rec_.attempt[i] = 0;
+                if constexpr(deferRecoveries) { dropRequests(1U << i); }
             }
         }
     }
@@ -656,27 +758,58 @@ private:
     }
 
     // one store for every change (a single CRC loop in the image); the RAM copy is the truth
-    [[gnu::noinline]] static void storeRecord() { lastRecovery.store(rec_.record); }
+    [[gnu::noinline]] static void storeRecordNow() { lastRecovery.store(rec_.record); }
 
-    // check i is past its window with a rung left: call its onStarved; true if it is recovering now
-    static bool recover(std::size_t i) {
-        std::uint32_t const bit = 1U << i;
-        auto const          n   = rec_.attempt[i];
-        auto const          of  = Cfg::attempts[i];
-        rec_.attempt[i]         = static_cast<std::uint8_t>(n + 1);
-        // before the call: a reset inside it is named at the next boot
-        rec_.record.inProgress = recoveryInProgress(static_cast<std::uint32_t>(i), n + 1U);
-        storeRecord();
-#ifdef USE_UC_LOG
-        UC_LOG_W("health: check '{}' silent {} ms (allowed {} ms): recovery {} of {}",
-                 Cfg::names[i],
-                 silentMs_[i],
-                 limitMs_[i],
-                 n + 1U,
-                 of);
-#endif
+    // deferRecoveries: runRecoveries() stores it too, from thread mode
+    static void storeRecord() {
+        if constexpr(deferRecoveries) {
+            criticalSection<Detail::RecoveryTag>([] {
+                storeRecordNow();
+                return 0;
+            });
+        } else {
+            storeRecordNow();
+        }
+    }
+
+    // deferRecoveries: forget the requests and refusals of these checks (a beat, resume, a fresh LogOnly window, a
+    // policy that stops feeding)
+    static void dropRequests(std::uint32_t const bits) {
+        criticalSection<Detail::RecoveryTag>([bits] {
+            defer_.requested = defer_.requested & ~bits;
+            defer_.refused   = defer_.refused & ~bits;
+            return 0;
+        });
+    }
+
+    // deferRecoveries: the check's onStarved returned Recovery::cannot (takes it, and a request of a newer rung);
+    // false without deferRecoveries
+    static bool takeRefused([[maybe_unused]] std::uint32_t const bit) {
+        if constexpr(!deferRecoveries) {
+            return false;
+        } else {
+            return criticalSection<Detail::RecoveryTag>([bit] {
+                bool const was = (defer_.refused & bit) != 0;
+                defer_.refused = defer_.refused & ~bit;
+                if(was) { defer_.requested = defer_.requested & ~bit; }
+                return was;
+            });
+        }
+    }
+
+    // deferRecoveries: a refused check's silence and limit as they were at its request, plus the silence since
+    static void refusedSilence([[maybe_unused]] std::size_t const i) {
+        if constexpr(deferRecoveries) {
+            silentMs_[i] = defer_.silentMs[i] + silentMs_[i];
+            limitMs_[i]  = defer_.limitMs[i];
+        }
+    }
+
+    // onStarved of check i at rung n, timed against recoveryBudget
+    static Recovery callTimed(std::size_t const  i,
+                              std::uint8_t const n) {
         auto const     t0 = Clock::now();
-        Recovery const r  = Cfg::onStarved[i](Attempt{.n = n, .of = of});
+        Recovery const r  = Cfg::onStarved[i](Attempt{.n = n, .of = Cfg::attempts[i]});
         auto const     dt = Clock::now() - t0;
         if(dt > recoveryBudget) {
             rec_.overruns = rec_.overruns + 1;
@@ -690,14 +823,56 @@ private:
                 std::chrono::duration_cast<std::chrono::microseconds>(recoveryBudget).count()));
 #endif
         }
-        rec_.record.inProgress = 0;
-        storeRecord();
         if(r == Recovery::cannot) {
-            rec_.attempt[i] = of;   // the ladder is spent: escalate in this turn
 #ifdef USE_UC_LOG
             UC_LOG_W("health: onStarved of '{}' cannot recover", Cfg::names[i]);
 #endif
-            return false;
+        }
+        return r;
+    }
+
+    // check i is past its window with a rung left: call its onStarved; true if it is recovering now
+    static bool recover(std::size_t i) {
+        std::uint32_t const bit = 1U << i;
+        auto const          n   = rec_.attempt[i];
+        auto const          of  = Cfg::attempts[i];
+        rec_.attempt[i]         = static_cast<std::uint8_t>(n + 1);
+        if constexpr(deferRecoveries) {
+#ifdef USE_UC_LOG
+            UC_LOG_W("health: check '{}' silent {} ms (allowed {} ms): recovery {} of {} requested",
+                     Cfg::names[i],
+                     silentMs_[i],
+                     limitMs_[i],
+                     n + 1U,
+                     of);
+#endif
+            // the main loop runs it (runRecoveries()); the window starts now
+            criticalSection<Detail::RecoveryTag>([i, n, bit] {
+                defer_.rung[i]     = n;
+                defer_.silentMs[i] = silentMs_[i];
+                defer_.limitMs[i]  = limitMs_[i];
+                defer_.requested   = defer_.requested | bit;
+                return 0;
+            });
+        } else {
+#ifdef USE_UC_LOG
+            UC_LOG_W("health: check '{}' silent {} ms (allowed {} ms): recovery {} of {}",
+                     Cfg::names[i],
+                     silentMs_[i],
+                     limitMs_[i],
+                     n + 1U,
+                     of);
+#endif
+            // before the call: a reset inside it is named at the next boot
+            rec_.record.inProgress = recoveryInProgress(static_cast<std::uint32_t>(i), n + 1U);
+            storeRecord();
+            Recovery const r       = callTimed(i, n);
+            rec_.record.inProgress = 0;
+            storeRecord();
+            if(r == Recovery::cannot) {
+                rec_.attempt[i] = of;   // the ladder is spent: escalate in this turn
+                return false;
+            }
         }
         rec_.recovering = rec_.recovering | bit;
         silentMs_[i]    = 0;
@@ -791,6 +966,7 @@ private:
     static inline std::uint32_t                everBeat_{};
     static inline bool                         latched_{};
     static inline bool                         reported_{};
-    static inline Detail::RecoveryState<N, Cfg::anyRecovery> rec_{};
+    static inline Detail::RecoveryState<N, Cfg::anyRecovery>                 rec_{};
+    static inline Detail::DeferState<N, Cfg::anyRecovery && deferRecoveries> defer_{};
 };
 }   // namespace Kvasir::Health

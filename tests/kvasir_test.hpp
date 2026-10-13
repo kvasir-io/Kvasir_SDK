@@ -145,23 +145,35 @@ namespace Kvasir { namespace Test {
         template<typename T,
                  unsigned A>
         T read() {
-            unsigned returnedValue = 0;
-            if(auto m = models.find(A); m != models.end()) {
-                returnedValue = m->second.read();
-            } else if(auto it = readValues.find(A); it != readValues.end() && !it->second.empty()) {
-                // the next injected value if available, otherwise 0
-                returnedValue = it->second.front();
-                it->second.pop_front();
-            }
-            actions.push_back(Read{A, returnedValue});
-            return static_cast<T>(returnedValue);
+            return readAt<T>(A);
         }
 
         template<typename T,
                  unsigned A>
         void write(T v) {
-            actions.push_back(Write{A, static_cast<unsigned>(v)});
-            if(auto m = models.find(A); m != models.end()) {
+            writeAt<T>(A, v);
+        }
+
+        // an address known at run time (Register::Array)
+        template<typename T>
+        T readAt(unsigned a) {
+            unsigned returnedValue = 0;
+            if(auto m = models.find(a); m != models.end()) {
+                returnedValue = m->second.read();
+            } else if(auto it = readValues.find(a); it != readValues.end() && !it->second.empty()) {
+                // the next injected value if available, otherwise 0
+                returnedValue = it->second.front();
+                it->second.pop_front();
+            }
+            actions.push_back(Read{a, returnedValue});
+            return static_cast<T>(returnedValue);
+        }
+
+        template<typename T>
+        void writeAt(unsigned a,
+                     T        v) {
+            actions.push_back(Write{a, static_cast<unsigned>(v)});
+            if(auto m = models.find(a); m != models.end()) {
                 m->second.write(static_cast<unsigned>(v));
             }
         }
@@ -190,6 +202,17 @@ namespace Kvasir { namespace Test {
              unsigned Address>
     void write(TRegType v) {
         recorder.write<TRegType, Address>(v);
+    }
+
+    template<typename TRegType>
+    TRegType readAt(unsigned address) {
+        return recorder.readAt<TRegType>(address);
+    }
+
+    template<typename TRegType>
+    void writeAt(unsigned address,
+                 TRegType v) {
+        recorder.writeAt<TRegType>(address, v);
     }
 
     inline void printAction(Recorder::Action const& action) {

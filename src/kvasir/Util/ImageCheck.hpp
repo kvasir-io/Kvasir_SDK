@@ -46,6 +46,10 @@
 #include <string_view>
 #include <type_traits>
 
+#if defined(__ARM_ARCH_8M_MAIN__)
+    #include "core/Debug.hpp"   // DHCSR through the core package's registers
+#endif
+
 #ifdef USE_UC_LOG
     #include "uc_log/uc_log.hpp"
 #endif
@@ -83,11 +87,11 @@ struct CoreDebug {
 #endif
 
     [[nodiscard]] static bool attached() {
-        if constexpr(readable) {
-            return (*reinterpret_cast<std::uint32_t const volatile*>(0xE000'EDF0U) & 1U) != 0;
-        } else {
-            return false;
-        }
+#if defined(__ARM_ARCH_8M_MAIN__)
+        return Kvasir::Core::Debug::isDebuggerConnected();   // DHCSR.C_DEBUGEN
+#else
+        return false;   // not `if constexpr`: Core::Debug exists only where readable
+#endif
     }
 };
 

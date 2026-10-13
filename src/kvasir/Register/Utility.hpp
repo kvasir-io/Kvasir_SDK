@@ -17,6 +17,14 @@ namespace Kvasir { namespace Test {
     template<typename TRegType,
              unsigned Address>
     void write(TRegType);
+
+    // an address known only at run time (Register::Array)
+    template<typename TRegType>
+    TRegType readAt(unsigned address);
+
+    template<typename TRegType>
+    void writeAt(unsigned address,
+                 TRegType);
 }}   // namespace Kvasir::Test
 #endif
 
@@ -154,9 +162,19 @@ namespace Kvasir { namespace Register {
             static constexpr bool     readHasSideEffect      = TMode::readHasSideEffect;
             static constexpr unsigned writeOnlyNoIdentityMask = TMode::writeOnlyNoIdentityMask;
             static constexpr bool     writeOnlyRegister       = TMode::writeOnlyRegister;
-            using Mode                                        = TMode;
+            // Register::WriteBackActs; a register without it writes every write-ignored-if-zero bit as 0
+            static constexpr unsigned writeBackActsMask = [] {
+                if constexpr(requires { TMode::writeBackActsMask; }) {
+                    return TMode::writeBackActsMask & WIIZ;
+                } else {
+                    return WIIZ;
+                }
+            }();
+            using Mode = TMode;
 
-            static TRegType read() {
+            // always inlined: RAM functions reach registers through these (readWhole / writeWhole), and gcc at -Og
+            // or with sanitizers would leave a plain inline call in flash
+            [[gnu::always_inline]] static TRegType read() {
 #ifdef KVASIR_REGISTER_MOCK
                 return ::Kvasir::Test::read<TRegType, A>();
 #else
@@ -165,7 +183,7 @@ namespace Kvasir { namespace Register {
 #endif
             }
 
-            static void write(TRegType i) {
+            [[gnu::always_inline]] static void write(TRegType i) {
 #ifdef KVASIR_REGISTER_MOCK
                 ::Kvasir::Test::write<TRegType, A>(i);
 #else

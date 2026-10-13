@@ -217,9 +217,9 @@ namespace Kvasir { namespace Register {
 
     // Action factories which turn a FieldLocation into an Action
     template<typename T>
-    constexpr inline MPL::EnableIfT<Detail::IsFieldLocation<T>::value,
-                                    Action<T,
-                                           ReadAction>>
+    [[gnu::always_inline]] constexpr inline MPL::EnableIfT<Detail::IsFieldLocation<T>::value,
+                                                           Action<T,
+                                                                  ReadAction>>
     read(T) {
         static_assert(Detail::IsReadable<T>::value,
                       "Access violation: the FieldLocation provided is not marked as readable");
@@ -229,17 +229,17 @@ namespace Kvasir { namespace Register {
     template<typename T,
              typename U,
              typename... Ts>
-    constexpr decltype(MPL::list(read(T{}),
-                                 read(U{}),
-                                 read(Ts{})...)) read(T,
-                                                      U,
-                                                      Ts...) {
+    [[gnu::always_inline]] constexpr decltype(MPL::list(read(T{}),
+                                                        read(U{}),
+                                                        read(Ts{})...)) read(T,
+                                                                             U,
+                                                                             Ts...) {
         return {};
     }
 
     template<typename T>
-    constexpr MPL::EnableIfT<Detail::IsFieldLocation<T>::value,
-                             Detail::SetT<T>>
+    [[gnu::always_inline]] constexpr MPL::EnableIfT<Detail::IsFieldLocation<T>::value,
+                                                    Detail::SetT<T>>
     set(T) {
         return {};
     }
@@ -247,24 +247,24 @@ namespace Kvasir { namespace Register {
     template<typename T,
              typename U,
              typename... Ts>
-    constexpr decltype(MPL::list(set(T{}),
-                                 set(U{}),
-                                 set(Ts{})...)) set(T,
-                                                    U,
-                                                    Ts...) {
+    [[gnu::always_inline]] constexpr decltype(MPL::list(set(T{}),
+                                                        set(U{}),
+                                                        set(Ts{})...)) set(T,
+                                                                           U,
+                                                                           Ts...) {
         return {};
     }
 
     template<typename T>
-    constexpr MPL::EnableIfT<Detail::IsFieldLocation<T>::value,
-                             Detail::ClearT<T>>
+    [[gnu::always_inline]] constexpr MPL::EnableIfT<Detail::IsFieldLocation<T>::value,
+                                                    Detail::ClearT<T>>
     clear(T) {
         return {};
     }
 
     template<typename T>
-    constexpr MPL::EnableIfT<Detail::IsFieldLocation<T>::value,
-                             Detail::ToggleT<T>>
+    [[gnu::always_inline]] constexpr MPL::EnableIfT<Detail::IsFieldLocation<T>::value,
+                                                    Detail::ToggleT<T>>
     toggle(T) {
         return {};
     }
@@ -275,28 +275,28 @@ namespace Kvasir { namespace Register {
              typename... Ts>
         requires(Detail::IsFieldLocation<T>::value && Detail::IsFieldLocation<U>::value
                  && (Detail::IsFieldLocation<Ts>::value && ...))
-    constexpr decltype(MPL::list(toggle(T{}),
-                                 toggle(U{}),
-                                 toggle(Ts{})...)) toggle(T,
-                                                          U,
-                                                          Ts...) {
+    [[gnu::always_inline]] constexpr decltype(MPL::list(toggle(T{}),
+                                                        toggle(U{}),
+                                                        toggle(Ts{})...)) toggle(T,
+                                                                                 U,
+                                                                                 Ts...) {
         return {};
     }
 
     template<typename T,
              typename U,
              typename... Ts>
-    constexpr decltype(MPL::list(clear(T{}),
-                                 clear(U{}),
-                                 clear(Ts{})...)) clear(T,
-                                                        U,
-                                                        Ts...) {
+    [[gnu::always_inline]] constexpr decltype(MPL::list(clear(T{}),
+                                                        clear(U{}),
+                                                        clear(Ts{})...)) clear(T,
+                                                                               U,
+                                                                               Ts...) {
         return {};
     }
 
     template<typename T>
-    constexpr MPL::EnableIfT<Detail::IsFieldLocation<T>::value,
-                             Detail::Reset<T>>
+    [[gnu::always_inline]] constexpr MPL::EnableIfT<Detail::IsFieldLocation<T>::value,
+                                                    Detail::Reset<T>>
     reset(T) {
         static_assert(Detail::IsSetToClear<T>::value,
                       "Access violation: Register::reset only works on set to clear bits");
@@ -306,20 +306,20 @@ namespace Kvasir { namespace Register {
     template<typename T,
              typename U,
              typename... Ts>
-    constexpr decltype(MPL::list(reset(T{}),
-                                 reset(U{}),
-                                 reset(Ts{})...)) reset(T,
-                                                        U,
-                                                        Ts...) {
+    [[gnu::always_inline]] constexpr decltype(MPL::list(reset(T{}),
+                                                        reset(U{}),
+                                                        reset(Ts{})...)) reset(T,
+                                                                               U,
+                                                                               Ts...) {
         return {};
     }
 
     // Write of runtime value
     // T must be bit location or function will be removed from overload set
     template<typename T>
-    constexpr inline MPL::EnableIfT<Detail::IsFieldLocation<T>::value,
-                                    Action<T,
-                                           WriteAction>>
+    [[gnu::always_inline]] constexpr inline MPL::EnableIfT<Detail::IsFieldLocation<T>::value,
+                                                           Action<T,
+                                                                  WriteAction>>
     write(T,
           Detail::GetFieldTypeT<T> in) {
         static_assert(Detail::IsWritable<T>::value,
@@ -334,9 +334,10 @@ namespace Kvasir { namespace Register {
     // U mst be compile time value or function will be removed from overload set
     template<typename T,
              typename U>
-    constexpr inline MPL::EnableIfT<(Detail::IsFieldLocation<T>::value && MPL::IsValue<U>::value),
-                                    Detail::WriteT<T,
-                                                   Detail::ValueToUnsigned<U>::value>>
+    [[gnu::always_inline]] constexpr inline MPL::EnableIfT<
+      (Detail::IsFieldLocation<T>::value && MPL::IsValue<U>::value),
+      Detail::WriteT<T,
+                     Detail::ValueToUnsigned<U>::value>>
     write(T,
           U) {
         static_assert(
@@ -350,10 +351,10 @@ namespace Kvasir { namespace Register {
     // T must be a field value or function will be removed from overload set
     template<typename T,
              typename T::DataType V>
-    constexpr inline decltype(write(T{},
-                                    MPL::Value<typename T::DataType,
-                                               V>{})) write(FieldValue<T,
-                                                                       V>) {
+    [[gnu::always_inline]] constexpr inline decltype(write(T{},
+                                                           MPL::Value<typename T::DataType,
+                                                                      V>{})) write(FieldValue<T,
+                                                                                              V>) {
         return {};
     }
 
@@ -361,9 +362,9 @@ namespace Kvasir { namespace Register {
     template<typename T,
              typename U,
              typename... Ts>
-    constexpr brigand::list<decltype(write(std::declval<T>())),
-                            decltype(write(std::declval<U>())),
-                            decltype(write(std::declval<Ts>()))...>
+    [[gnu::always_inline]] constexpr brigand::list<decltype(write(std::declval<T>())),
+                                                   decltype(write(std::declval<U>())),
+                                                   decltype(write(std::declval<Ts>()))...>
     write(T,
           U,
           Ts...) {

@@ -59,6 +59,15 @@ namespace Kvasir { namespace Register {
         using Register                          = TRegister;
     };
 
+    // Which bits of a write-ignored-if-zero register bit a read-modify-write must write as 0: the one-to-* fields,
+    // whose value read back and written again would act (clear a pending flag, fire a trigger). The rest of that
+    // mask - reserved and read-only bits - is written back as read, so the field write is one OR or BIC of the
+    // field's own bits, no wider mask (svd_converter emits it; without it every such bit is written 0).
+    template<unsigned WriteBackActsMask, typename TBase = NormalMode>
+    struct WriteBackActs : TBase {
+        static constexpr unsigned writeBackActsMask = WriteBackActsMask;
+    };
+
     template<unsigned A,
              unsigned WriteIgnoredIfZeroMask = 0,
              unsigned WriteIgnoredIfOneMask  = 0,
@@ -113,7 +122,7 @@ namespace Kvasir { namespace Register {
         static constexpr bool isAction = true;
 
         template<typename... Ts>
-        constexpr Action(
+        [[gnu::always_inline]] constexpr Action(
           Ts... args)   //NOLINT(hicpp-explicit-constructor, hicpp-explicit-conversions)
           : TAction{args...} {}
 
@@ -220,8 +229,8 @@ namespace Kvasir { namespace Register {
         std::array<unsigned, sizeof...(Is)> value_;
 
         template<std::size_t Index>
-        brigand::at_c<brigand::list<TRs...>,
-                      Index>
+        [[gnu::always_inline]] brigand::at_c<brigand::list<TRs...>,
+                                             Index>
         get() const {
             using namespace MPL;
             using Address = brigand::uint32_t<brigand::at_c<brigand::list<TAs...>, Index>::value>;
@@ -238,8 +247,9 @@ namespace Kvasir { namespace Register {
         }
 
         template<typename T>
-        auto operator[](T) const -> decltype(get<Detail::GetFieldLocationIndex<FieldTuple,
-                                                                               T>::value>()) {
+        [[gnu::always_inline]] auto operator[](T) const
+          -> decltype(get<Detail::GetFieldLocationIndex<FieldTuple,
+                                                        T>::value>()) {
             return get<Detail::GetFieldLocationIndex<FieldTuple, T>::value>();
         }
 
@@ -259,7 +269,7 @@ namespace Kvasir { namespace Register {
                                                         brigand::at_c<brigand::list<TRs...>, 0>,
                                                         DoNotUse>::type;
 
-        operator ConvertableTo() {   //NOLINT(hicpp-explicit-conversions)
+        [[gnu::always_inline]] operator ConvertableTo() {   //NOLINT(hicpp-explicit-conversions)
             static constexpr unsigned mask  = getFirst(Masks...);
             static constexpr unsigned shift = Detail::positionOfFirstSetBit(mask);
             return ConvertableTo((value_[0] & mask) >> shift);
@@ -271,24 +281,25 @@ namespace Kvasir { namespace Register {
 
     template<std::size_t I,
              typename TFieldTuple>
-    auto get(TFieldTuple o) -> decltype(o.template get<I>()) {
+    [[gnu::always_inline]] inline auto get(TFieldTuple o) -> decltype(o.template get<I>()) {
         return o.template get<I>();
     }
 
     template<typename T,
              typename TFieldTuple>
-    auto get(T,
-             TFieldTuple o) -> decltype(o.template get<Detail::GetFieldLocationIndex<TFieldTuple,
-                                                                                     T>::value>()) {
+    [[gnu::always_inline]] inline auto get(T,
+                                           TFieldTuple o)
+      -> decltype(o.template get<Detail::GetFieldLocationIndex<TFieldTuple,
+                                                               T>::value>()) {
         return o.template get<Detail::GetFieldLocationIndex<TFieldTuple, T>::value>();
     }
 
     template<typename TFieldTuple,
              typename TLocation,
              typename TLocation::DataType Value>
-    bool operator==(TFieldTuple const& f,
-                    FieldValue<TLocation,
-                               Value> const) {
+    [[gnu::always_inline]] inline bool operator==(TFieldTuple const& f,
+                                                  FieldValue<TLocation,
+                                                             Value> const) {
         return get(TLocation{}, f) == Value;
     }
 }}   // namespace Kvasir::Register

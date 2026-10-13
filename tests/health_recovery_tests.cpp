@@ -2,7 +2,8 @@
 // watchdog fed through the recovery window, a beat ending the recovery and resetting the ladder, every rung used
 // before the policy, Recovery::cannot escalating at once, the four signatures, the budget, the "KHRV" record (the
 // rung in progress during the call), one onStarved per turn, a check without one escalating while another recovers,
-// suspend/resume, and the worst case from the last beat to the escalation. A supervisor's state is static: one
+// suspend/resume, and the worst case from the last beat to the escalation; deferRecoveries (request, run, cancel,
+// refusal, service() inside onStarved, latched policy, no onStarved). A supervisor's state is static: one
 // instantiation per scenario (a tag on the checks, the Startup and the watchdog).
 #include "kvasir/Util/Health.hpp"
 
@@ -10,6 +11,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <string_view>
 #include <vector>
 
@@ -460,6 +462,249 @@ void recordAcrossBoots() {
     S::service();
     CHECK(H::lastRecovery.load() && H::lastRecovery.load()->total == 0);
 }
+
+// ---- deferRecoveries: service() from an interrupt, onStarved from the main loop ------------------------------
+struct Deferred10 {
+    static constexpr auto period          = 10ms;
+    static constexpr bool deferRecoveries = true;
+};
+
+template<int Tag, typename... Cs>
+using DSup = H::Supervisor<Startup<Tag, Cs...>, Watchdog<Tag>, FakeClock, Deferred10>;
+
+// the watchdog sees no onStarved: a budget past its timeout is allowed (500 ms here)
+struct DeferredSlowBudget {
+    static constexpr auto period          = 10ms;
+    static constexpr bool deferRecoveries = true;
+    static constexpr auto recoveryBudget  = 600ms;
+};
+
+static_assert(DSup<20,
+                   Ladder<20>>::deferRecoveries
+              && !Sup<20,
+                      Ladder<20>>::deferRecoveries);
+static_assert(H::Supervisor<Startup<29,
+                                    Ladder<29>>,
+                            Watchdog<29>,
+                            FakeClock,
+                            DeferredSlowBudget>::budgetBelowTimeout);
+// the window and the rungs do not change: the worst case holds as it is
+static_assert(DSup<20,
+                   Ladder<20>>::worstToEscalationMs<Ladder<20>>()
+              == 640);
+
+// a ladder check whose onStarved runs a hook (a service() preempting it)
+template<int Tag>
+struct Hooked {
+    static constexpr std::string_view   name             = "hooked";
+    static constexpr auto               maxInterval      = 50ms;
+    static constexpr auto               graceAfterBoot   = 0ms;
+    static constexpr auto               recoveryAttempts = 2;
+    static constexpr auto               recoveryWindow   = 30ms;
+    static inline std::function<void()> during{};
+    static inline H::Recovery           answer = H::Recovery::started;
+
+    static H::Recovery onStarved(H::Attempt a) {
+        calls.push_back({Tag, a.n, a.of, inProgressNow()});
+        if(during) { during(); }
+        return answer;
+    }
+};
+
+// silent 10 ms turns until a recovery is requested; the turns taken, -1 if none in `max`
+template<typename S>
+int silentUntilRequested(int max) {
+    for(int i = 1; i <= max; ++i) {
+        advance(10ms);
+        S::service();
+        if(S::pendingRecoveries() != 0) { return i; }
+    }
+    return -1;
+}
+
+void deferredRequestRunRecover() {
+    using Kvasir::Test::test;
+    test("deferred: service() requests at the first period past the window, runRecoveries() calls");
+    using L = Ladder<20>;
+    using S = DSup<20, L>;
+    S::service();
+    H::checkIn<L>();
+    advance(10ms);
+    S::service();
+    std::size_t const policy = Seen::all.size();
+    CHECK(silentUntilRequested<S>(10) == 6);   // 60 ms silent, as without deferRecoveries
+    CHECK(callsOf<20>() == 0 && S::attemptOf(0) == 1 && inProgressNow() == 0);
+    CHECK(S::runRecoveries());
+    CHECK(callsOf<20>() == 1 && calls.back().n == 0 && calls.back().of == 2);
+    CHECK(calls.back().inProgress == H::recoveryInProgress(0, 1));
+    CHECK(inProgressNow() == 0 && S::pendingRecoveries() == 0);
+    CHECK(!S::runRecoveries() && callsOf<20>() == 1);
+
+    test("deferred: fed through the window, a beat recovers");
+    int const fed = Watchdog<20>::feeds;
+    advance(10ms);
+    S::service();
+    CHECK(Watchdog<20>::feeds == fed + 1);
+    H::checkIn<L>();
+    advance(10ms);
+    S::service();
+    CHECK(S::recoveredCount(0) == 1 && S::attemptOf(0) == 0 && Seen::all.size() == policy);
+    CHECK(H::lastRecovery.load() && H::lastRecovery.load()->total == 1);
+}
+
+void deferredNeverRun() {
+    using Kvasir::Test::test;
+    test("deferred: a loop that never runs the requests escalates after the last rung's window");
+    using L = Ladder<21>;
+    using S = DSup<21, L>;
+    S::service();
+    H::checkIn<L>();
+    advance(10ms);
+    S::service();
+    std::size_t const before = Seen::all.size();
+    int const         turns  = silentUntilPolicy<S>(30);
+    CHECK(turns > 0 && turns * 10 + 10 <= static_cast<int>(S::worstToEscalationMs<L>()));
+    CHECK(Seen::all.size() == before + 1 && Seen::all.back().check == 0);
+    CHECK(callsOf<21>() == 0 && S::attemptOf(0) == 2);
+    auto const r = H::lastRecovery.load();
+    CHECK(r && r->escalatedAttempts == 2 && r->inProgress == 0);
+}
+
+void deferredCannot() {
+    using Kvasir::Test::test;
+    test("deferred: Recovery::cannot escalates at the next service()");
+    using L   = Ladder<22>;
+    using S   = DSup<22, L>;
+    L::answer = H::Recovery::cannot;
+    S::service();
+    H::checkIn<L>();
+    advance(10ms);
+    S::service();
+    CHECK(silentUntilRequested<S>(10) == 6);
+    std::size_t const before = Seen::all.size();
+    CHECK(S::runRecoveries() && callsOf<22>() == 1);
+    CHECK(Seen::all.size() == before);
+    advance(10ms);
+    S::service();
+    CHECK(Seen::all.size() == before + 1 && Seen::all.back().check == 0);
+    // named with the silence that led to the request (60 ms of 50) and the 10 ms since, as without deferRecoveries
+    CHECK(Seen::all.back().silentMs == 70 && Seen::all.back().allowedMs == 50);
+    CHECK(callsOf<22>() == 1);
+}
+
+void deferredBeatCancels() {
+    using Kvasir::Test::test;
+    test("deferred: a beat before the loop got to the request cancels it");
+    using L = Ladder<23>;
+    using S = DSup<23, L>;
+    S::service();
+    H::checkIn<L>();
+    advance(10ms);
+    S::service();
+    CHECK(silentUntilRequested<S>(10) == 6);
+    H::checkIn<L>();
+    advance(10ms);
+    S::service();
+    CHECK(S::pendingRecoveries() == 0 && !S::runRecoveries() && callsOf<23>() == 0);
+    CHECK(S::attemptOf(0) == 0 && S::recoveredCount(0) == 1);
+}
+
+void deferredServiceInsideOnStarved() {
+    using Kvasir::Test::test;
+    test("deferred: service() preempting onStarved (the check beats): the record ends consistent");
+    using L = Hooked<24>;
+    using S = DSup<24, L>;
+    S::service();
+    H::checkIn<L>();
+    advance(10ms);
+    S::service();
+    CHECK(silentUntilRequested<S>(10) == 6);
+    L::during = [] {
+        H::checkIn<L>();   // the subsystem came back
+        advance(10ms);
+        S::service();   // the interrupt: recovered(), its own record store
+    };
+    CHECK(S::runRecoveries());
+    L::during = {};
+    CHECK(calls.back().inProgress == H::recoveryInProgress(0, 1));
+    auto const r = H::lastRecovery.load();
+    CHECK(r && r->total == 1 && r->inProgress == 0);
+    CHECK(S::recoveredCount(0) == 1 && S::attemptOf(0) == 0 && S::pendingRecoveries() == 0);
+
+    test("deferred: a second rung requested while the first never ran: the newest rung runs once");
+    for(int i = 0; i < 6; ++i) {
+        advance(10ms);
+        S::service();
+    }
+    CHECK(S::attemptOf(0) == 1);
+    for(int i = 0; i < 4; ++i) {   // past the 30 ms window: rung 2 replaces rung 1
+        advance(10ms);
+        S::service();
+    }
+    CHECK(S::attemptOf(0) == 2 && S::pendingRecoveries() == 1);
+    int const before = callsOf<24>();
+    CHECK(S::runRecoveries() && !S::runRecoveries());
+    CHECK(callsOf<24>() == before + 1 && calls.back().n == 1);
+}
+
+void deferredCannotAfterBeat() {
+    using Kvasir::Test::test;
+    test("deferred: Recovery::cannot from a check that beat during the call does not escalate it");
+    using L   = Hooked<25>;
+    using S   = DSup<25, L>;
+    L::answer = H::Recovery::cannot;
+    S::service();
+    H::checkIn<L>();
+    advance(10ms);
+    S::service();
+    CHECK(silentUntilRequested<S>(10) == 6);
+    L::during = [] {
+        H::checkIn<L>();   // the subsystem came back, then onStarved says it has no lever
+        advance(10ms);
+        S::service();
+    };
+    std::size_t const before = Seen::all.size();
+    CHECK(S::runRecoveries());
+    L::during = {};
+    CHECK(S::recoveredCount(0) == 1 && S::attemptOf(0) == 0);
+    for(int i = 0; i < 4; ++i) {   // silent turns inside its 50 ms window: no stale refusal left
+        advance(10ms);
+        S::service();
+    }
+    CHECK(Seen::all.size() == before && callsOf<25>() == 1 && S::pendingRecoveries() == 0);
+}
+
+void deferredLatchDropsRequests() {
+    using Kvasir::Test::test;
+    test("deferred: a policy that stops feeding drops the requests the loop has not run");
+    using S = DSup<26, Ladder<26>, Plain<26>>;
+    S::service();
+    H::checkIn<Ladder<26>>();
+    advance(10ms);
+    S::service();
+    std::size_t const policy = Seen::all.size();
+    // as bareEscalatesWhileOtherRecovers: the ladder's request at turn 6, "bare" starves at turn 8
+    for(int i = 1; i <= 8; ++i) {
+        if(i <= 2) { H::checkIn<Plain<26>>(); }
+        advance(10ms);
+        S::service();
+        if(i == 7) { CHECK(S::pendingRecoveries() == 1U && Seen::all.size() == policy); }
+    }
+    CHECK(Seen::all.size() == policy + 1 && Seen::all.back().name == "bare");
+    CHECK(S::pendingRecoveries() == 0 && !S::runRecoveries() && callsOf<26>() == 0);
+    H::lastStarvation.clear();
+}
+
+void deferredWithoutOnStarved() {
+    using Kvasir::Test::test;
+    test(
+      "deferred: an image without onStarved keeps runRecoveries() in its main loop, which does "
+      "nothing");
+    using S = DSup<27, Plain<27>>;
+    static_assert(S::deferRecoveries && !S::Cfg::anyRecovery);
+    S::service();
+    CHECK(!S::runRecoveries() && S::pendingRecoveries() == 0);
+}
 }   // namespace
 
 template<>
@@ -477,5 +722,13 @@ int main() {
     bareEscalatesWhileOtherRecovers();
     suspendDuringRecovery();
     recordAcrossBoots();
+    deferredRequestRunRecover();
+    deferredNeverRun();
+    deferredCannot();
+    deferredBeatCancels();
+    deferredServiceInsideOnStarved();
+    deferredCannotAfterBeat();
+    deferredLatchDropsRequests();
+    deferredWithoutOnStarved();
     return Kvasir::Test::report();
 }

@@ -561,11 +561,11 @@ namespace Kvasir { namespace Register {
 
         template<typename T,
                  typename = decltype(T::value_)>
-        unsigned argToUnsigned(T arg) {
+        [[gnu::always_inline]] inline unsigned argToUnsigned(T arg) {
             return arg.value_;
         }
 
-        inline unsigned argToUnsigned(...) { return 0; }
+        [[gnu::always_inline]] inline unsigned argToUnsigned(...) { return 0; }
 
         // finder takes a list of lists of unsigned, each list represents a
         // pack of arguments to be ignored. All non ignored arguments will
@@ -576,15 +576,15 @@ namespace Kvasir { namespace Register {
 
         template<>
         struct Finder<brigand::list<>> {
-            unsigned operator()(...) { return 0; }
+            [[gnu::always_inline]] unsigned operator()(...) { return 0; }
         };
 
         template<typename... A>
         struct Finder<brigand::list<brigand::list<A...>>> {
             template<typename... T>
-            unsigned operator()(A...,
-                                unsigned a,
-                                T...) {
+            [[gnu::always_inline]] unsigned operator()(A...,
+                                                       unsigned a,
+                                                       T...) {
                 return a;
             }
         };
@@ -592,11 +592,11 @@ namespace Kvasir { namespace Register {
         template<typename... A, typename... B>
         struct Finder<brigand::list<brigand::list<A...>, brigand::list<B...>>> {
             template<typename... T>
-            unsigned operator()(A...,
-                                unsigned a,
-                                B...,
-                                unsigned b,
-                                T...) {
+            [[gnu::always_inline]] unsigned operator()(A...,
+                                                       unsigned a,
+                                                       B...,
+                                                       unsigned b,
+                                                       T...) {
                 return a | b;
             }
         };
@@ -604,11 +604,11 @@ namespace Kvasir { namespace Register {
         template<typename... A, typename... B, typename... Rest>
         struct Finder<brigand::list<brigand::list<A...>, brigand::list<B...>, Rest...>> {
             template<typename... T>
-            unsigned operator()(A...,
-                                unsigned a,
-                                B...,
-                                unsigned b,
-                                T... t) {
+            [[gnu::always_inline]] unsigned operator()(A...,
+                                                       unsigned a,
+                                                       B...,
+                                                       unsigned b,
+                                                       T... t) {
                 auto r = Finder<brigand::list<Rest...>>{};
                 return a | b | r(t...);
             }
@@ -627,6 +627,7 @@ namespace Kvasir { namespace Register {
             using ReturnType = FieldTuple<brigand::list<TRetAddresses...>, TRetLocations>;
 
             template<unsigned A>
+            [[gnu::always_inline]]
             typename std::enable_if<brigand::contains<brigand::set<TRetAddresses...>,
                                                       brigand::uint32_t<A>>::value>::type
             filterReturns(ReturnType& ret,
@@ -639,19 +640,18 @@ namespace Kvasir { namespace Register {
             }
 
             template<unsigned A>
-            void filterReturns(...) {}
+            [[gnu::always_inline]] void filterReturns(...) {}
 
             template<typename... T>
             [[gnu::always_inline]]
             ReturnType operator()(T... args) {
-                ReturnType       ret{{}};   // default constructed return
-                std::array const a{0U,
-                                   (filterReturns<Detail::GetAddress<TActions>::value>(
-                                      ret,
-                                      ExecuteSeam<TActions, ::Kvasir::Tag::User>{}(
-                                        Finder<TInputIndexes>{}(args...))),
-                                    0U)...};
-                ignore(a);
+                ReturnType ret{{}};   // default constructed return
+                // a comma fold runs the actions in order; no array of their results (gcc -Og on the M0+ clears
+                // one with a memset call, out of line in flash - a RAM function's register read)
+                (filterReturns<Detail::GetAddress<TActions>::value>(
+                   ret,
+                   ExecuteSeam<TActions, ::Kvasir::Tag::User>{}(Finder<TInputIndexes>{}(args...))),
+                 ...);
 
                 return ret;
             }
@@ -666,11 +666,9 @@ namespace Kvasir { namespace Register {
             template<typename... T>
             [[gnu::always_inline]]
             void operator()(T... args) {
-                std::array const a{
-                  0U,
-                  (ExecuteSeam<TActions, ::Kvasir::Tag::User>{}(Finder<TInputIndexes>{}(args...)),
-                   0U)...};
-                ignore(a);
+                (static_cast<void>(
+                   ExecuteSeam<TActions, ::Kvasir::Tag::User>{}(Finder<TInputIndexes>{}(args...))),
+                 ...);
             }
         };
 
@@ -678,8 +676,7 @@ namespace Kvasir { namespace Register {
         template<typename... TActions>
         [[gnu::always_inline]]
         inline void noReadNoRuntimeWriteApply(brigand::list<TActions...>*) {
-            std::array const a{0U, ExecuteSeam<TActions, ::Kvasir::Tag::User>{}(0U)...};
-            ignore(a);
+            (static_cast<void>(ExecuteSeam<TActions, ::Kvasir::Tag::User>{}(0U)), ...);
         }
 
         template<typename... Ts>

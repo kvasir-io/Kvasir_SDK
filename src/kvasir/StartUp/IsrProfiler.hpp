@@ -7,6 +7,10 @@
 #include <cstdint>
 #include <limits>
 
+#if __has_include("core/Debug.hpp")
+    #include "core/Debug.hpp"   // the DWT cycle counter
+#endif
+
 namespace Kvasir { namespace Startup {
 
     // Snapshot of statistics for one ISR at a point in time
@@ -97,21 +101,18 @@ namespace Kvasir { namespace Startup {
         }
     };
 
-    // Default time source: ARM DWT cycle counter (Cortex-M3/M4/M7/M33)
+    // Default time source: the DWT cycle counter (Cortex-M4/M33: the core package's core/Debug.hpp). A core without
+    // one (Cortex-M0+) has the name only - a profiler there names its own time source.
+#if __has_include("core/Debug.hpp")
     struct DwtTimeSource {
-        static std::uint32_t now() noexcept {
-            return *reinterpret_cast<std::uint32_t const volatile*>(0xE0001004U);   // DWT_CYCCNT
-        }
+        static std::uint32_t now() noexcept { return Kvasir::Core::Debug::cycleCount(); }
 
-        // Must be called once before any ISR fires (before Nvic::enable_all)
-        static void enable() noexcept {
-            // Enable trace subsystem: CoreDebug->DEMCR TRCENA bit
-            *reinterpret_cast<std::uint32_t volatile*>(0xE000EDFC) |= (1U << 24);
-            // Reset and enable cycle counter: DWT_CTRL CYCCNTENA bit
-            *reinterpret_cast<std::uint32_t volatile*>(0xE0001004) = 0;   // reset CYCCNT
-            *reinterpret_cast<std::uint32_t volatile*>(0xE0001000) |= 1U;
-        }
+        // Must be called once before any ISR fires (before Nvic::enable_all): TRCENA, CYCCNT = 0, CYCCNTENA
+        static void enable() noexcept { Kvasir::Core::Debug::enableCycleCounter(); }
     };
+#else
+    struct DwtTimeSource;
+#endif
 
     // Unique wrapper type per (OriginalFn, InterruptIndex, TimeSource).
     // Exposes `value` and `IType` identical to Nvic::Isr<F, Index<I>>

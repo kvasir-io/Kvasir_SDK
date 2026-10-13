@@ -685,10 +685,10 @@ def reset(args) -> None:
     need_ram_image_printer(tree, control, "reset")
     set_mark(tree, control)
     try:
-        request(control, req_reset(), timeout=40)
+        request(control, req_reset(line=args.line), timeout=40)
     except ControlError as e:
         die(f"reset through the printer: {e}")
-    print("reset; the log goes on")
+    print("reset through the reset line; the log goes on" if args.line else "reset; the log goes on")
     print(firmware_line(tree, control))
 
 
@@ -2470,6 +2470,9 @@ def main() -> None:
         p.add_argument("target")
         if name == "flash":
             p.add_argument("--no-build", action="store_true")
+        if name == "reset":
+            p.add_argument("--line", action="store_true",
+                           help="through the probe's reset pin (nRESET on RUN): a chip-level reset")
         if name in ("flash", "reset"):
             p.add_argument("--confirm", action="store_true",
                            help="the repo's .kvasir_bench.json says this does something physical")

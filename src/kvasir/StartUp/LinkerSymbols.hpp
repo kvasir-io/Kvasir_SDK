@@ -49,9 +49,19 @@ extern void _LINKER_ramExec_start_();
 extern void _LINKER_ramExec_end_();
 }
 
+namespace Kvasir::Startup {
+/// A linker symbol's address as a run-time value. The symbols are declared as functions, which the compiler assumes
+/// distinct, so an empty section's start == end could fold to false; the empty asm hides the origin.
+template<auto& Symbol>
+[[gnu::always_inline]] inline std::uint32_t linkerAddress() {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): a linker symbol's address
+    auto address = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(&Symbol));
+    asm("" : "+r"(address));
+    return address;
+}
+
 // Which stack a component that needs "the top of this core's stack" (the fault handler's
 // safe stack, for one) should use. Tags, so they can be template arguments.
-namespace Kvasir::Startup {
 // `top` and `bottom` are the linker symbols themselves, for an asm "i" operand: their addresses
 // are link-time constants, so code can compare them without a load.
 struct PrimaryStackTop {

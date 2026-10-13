@@ -24,6 +24,14 @@
 // Every fatal path starts with beginFatal(), before its log line: with uc_log's
 // LossPolicy::Counted, the log lines from there on wait for room while a host reads (bounded, the
 // one wait a panic does), so the panic's own line is not dropped by a full ring. Nothing otherwise.
+//
+// That wait comes before the handler's safe state. An application whose outputs must not stay on
+// that long injects what beginFatal() does first - register writes only, any context, safe to run
+// twice (the handler runs its safe state again):
+//
+//     struct OutputsOff { static void operator()() { Startup::run<Kvasir::Hook::SafeState>(); } };
+//     template<>
+//     inline constexpr auto Kvasir::Panic::injectedFatalStart<> = OutputsOff{};
 
 #include "kvasir/StartUp/LinkerSymbols.hpp"
 #include "kvasir/Util/CrashRecord.hpp"
@@ -315,11 +323,21 @@ namespace Detail {
                           std::uint32_t pc,
                           std::uint32_t detail = 0);
 
+// What beginFatal() does first (header comment): nothing unless injected. It runs wherever a fatal path starts
+// (fault handler, interrupts masked, smashed stack): register writes only, no log, no wait, no lock.
+struct NoFatalStart {
+    static void operator()() {}
+};
+
+template<typename...>
+inline constexpr auto injectedFatalStart = NoFatalStart{};
+
 // The first statement of every fatal path, before its log line (header comment). A template so the
-// log backend is looked up where it is used: the application's ComBackend may come later.
+// log backend and the injected start are looked up where used: the application's may come later.
 template<typename... Dummy>
     requires(sizeof...(Dummy) == 0)
 inline void beginFatal() {
+    injectedFatalStart<Dummy...>();
 #ifdef KVASIR_PANIC_DETAIL_UC_LOG
     uc_log::panicMode<std::conditional_t<sizeof...(Dummy) == 0, uc_log::Tag::User, void>>();
 #endif

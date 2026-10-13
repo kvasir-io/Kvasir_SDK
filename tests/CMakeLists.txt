@@ -81,6 +81,8 @@ kvasir_add_test(kvasir_test_register_rmw rmw_tests.cpp)
 kvasir_add_test(kvasir_test_register_sequence_point sequence_point_tests.cpp)
 kvasir_add_test(kvasir_test_register_multi_register multi_register_tests.cpp)
 kvasir_add_test(kvasir_test_register_special_access special_access_tests.cpp)
+kvasir_add_test(kvasir_test_register_whole whole_register_tests.cpp)
+kvasir_add_test(kvasir_test_register_write_back_acts write_back_acts_tests.cpp)
 # the RP alias backend on the mock (chip_rp_common/RegisterAlias.hpp, reached as rp_common_alias/); only where the
 # chip_rp_common checkout sits next to the SDK, not in the SDK's own CI
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../../chip_rp_common/RegisterAlias.hpp)

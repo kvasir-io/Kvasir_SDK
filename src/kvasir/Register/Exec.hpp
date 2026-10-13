@@ -33,7 +33,7 @@ namespace Kvasir { namespace Register {
                  | (GetAddress<TLocation>::writeIgnoredIfOneMask & ~ClearMask))
                   != GetAddress<TLocation>::allBitsSetMask;
 
-            unsigned operator()(unsigned in = 0) {
+            [[gnu::always_inline]] unsigned operator()(unsigned in = 0) {
                 using Address = GetAddress<TLocation>;
                 static constexpr auto clearOrZeroIsNoChangeMask
                   = ClearMask | Address::writeIgnoredIfZeroMask;
@@ -42,8 +42,13 @@ namespace Kvasir { namespace Register {
                      & ~ClearMask);   // remove the bits we are working on
                 static constexpr auto bitsWithFixedValues
                   = oneIsNoChangeMask | clearOrZeroIsNoChangeMask;
-                static constexpr auto     allBitsSetMask = Address::allBitsSetMask;
-                decltype(Address::read()) i              = 0;
+                static constexpr auto allBitsSetMask = Address::allBitsSetMask;
+                // What the read value loses before the OR: the written bits that end as 0 (a bit the OR sets needs no
+                // clearing) and the one-to-* bits outside them, whose 1 read back would act again. Reserved and
+                // read-only bits stay as read: a set() is ldr/orr/str, a clear() a bic of the field alone.
+                static constexpr auto readClearMask
+                  = (ClearMask & ~SetMask) | (Address::writeBackActsMask & ~ClearMask);
+                decltype(Address::read()) i = 0;
                 // no sense reading if we are going to clear the whole thing any way, nor a register with
                 // nothing to read
                 if constexpr(bitsWithFixedValues != allBitsSetMask && !Address::writeOnlyRegister) {
@@ -55,7 +60,7 @@ namespace Kvasir { namespace Register {
                       "has key bits the write does not supply - write the whole "
                       "register, key included (Register::RmwHazard)");
                     i = Address::read();
-                    i &= ~(clearOrZeroIsNoChangeMask);
+                    if constexpr(readClearMask != 0) { i &= ~readClearMask; }
                 }
                 i |= SetMask | oneIsNoChangeMask | in;
 
@@ -66,7 +71,7 @@ namespace Kvasir { namespace Register {
 
         template<typename TLocation, unsigned ClearMask, unsigned XorMask>
         struct GenericReadMaskXorWrite {
-            unsigned operator()(unsigned in = 0) {
+            [[gnu::always_inline]] unsigned operator()(unsigned in = 0) {
                 using Address = GetAddress<TLocation>;
                 // The target bits (ClearMask) must be written back with their current
                 // value xor-ed with the mask: on one-to-toggle hardware the resulting
@@ -74,8 +79,9 @@ namespace Kvasir { namespace Register {
                 // field to XorMask. A xor of 0 therefore clears the field (this is what
                 // Register::clear on oneToToggle bits relies on). The read is always
                 // required because the written value depends on the current bit value.
-                static constexpr auto zeroIsNoChangeMask
-                  = Address::writeIgnoredIfZeroMask & ~ClearMask;
+                static constexpr auto
+                  zeroIsNoChangeMask   // the one-to-* bits only, as in the OR above
+                  = Address::writeBackActsMask & ~ClearMask;
                 static constexpr auto oneIsNoChangeMask
                   = Address::writeIgnoredIfOneMask & ~ClearMask;
                 static_assert(
@@ -136,7 +142,9 @@ namespace Kvasir { namespace Register {
         template<typename TAddress, unsigned Mask, typename Access, typename FieldType>
         struct RegisterExec<
           Register::Action<FieldLocation<TAddress, Mask, Access, FieldType>, ReadAction>> {
-            unsigned operator()(unsigned = 0) { return GetAddress<TAddress>::read(); }
+            [[gnu::always_inline]] unsigned operator()(unsigned = 0) {
+                return GetAddress<TAddress>::read();
+            }
         };
 
         template<typename TAddress,
@@ -164,9 +172,13 @@ namespace Kvasir { namespace Register {
         struct IrqMasked {
             unsigned primask;
 
-            IrqMasked() { asm volatile("mrs %0, primask\n cpsid i" : "=r"(primask) : : "memory"); }
+            [[gnu::always_inline]] IrqMasked() {
+                asm volatile("mrs %0, primask\n cpsid i" : "=r"(primask) : : "memory");
+            }
 
-            ~IrqMasked() { asm volatile("msr primask, %0" : : "r"(primask) : "memory"); }
+            [[gnu::always_inline]] ~IrqMasked() {
+                asm volatile("msr primask, %0" : : "r"(primask) : "memory");
+            }
 
             IrqMasked(IrqMasked const&)            = delete;
             IrqMasked& operator=(IrqMasked const&) = delete;
@@ -188,7 +200,7 @@ namespace Kvasir { namespace Register {
                                                Mask,
                                                Data>;
 
-            unsigned operator()(unsigned = 0) {
+            [[gnu::always_inline]] unsigned operator()(unsigned = 0) {
                 if constexpr(Rmw::needsRead) {
                     [[maybe_unused]] IrqMasked const guard{};
                     return Rmw{}();

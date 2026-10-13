@@ -1,6 +1,7 @@
 // Kvasir::Panic::beginFatal() with uc_log: it switches the user tag's log backend to its panic mode
 // (uc_log::panicMode, LossPolicy::Counted), once per call, and does nothing for a backend without one. Built with
-// USE_UC_LOG and uc_log's headers (nested here); the backend is a stand-in that counts.
+// USE_UC_LOG and uc_log's headers (nested here); the backend is a stand-in that counts. An injected
+// injectedFatalStart runs first, before the backend's panic mode.
 #ifndef USE_UC_LOG
     #define USE_UC_LOG 1
 #endif
@@ -11,7 +12,19 @@
 namespace {
 int panicModes = 0;
 int drains     = 0;
+int starts     = 0;
+int modesAtStart{-1};   // panicModes when the start ran: it comes first
+
+struct CountStart {
+    static void operator()() {
+        ++starts;
+        modesAtStart = panicModes;
+    }
+};
 }   // namespace
+
+template<>
+inline constexpr auto Kvasir::Panic::injectedFatalStart<> = CountStart{};
 
 // after Panic.hpp, as an application's HWConfig comes after the SDK headers it includes: the dummy pack in
 // beginFatal() looks the backend up where it is used
@@ -32,6 +45,9 @@ int main() {
     CHECK(panicModes == 1);
     Kvasir::Panic::beginFatal();
     CHECK(panicModes == 2);
+
+    Kvasir::Test::test("beginFatal() runs the injected start first, every time");
+    CHECK(starts == 2 && modesAtStart == 1);
 
     Kvasir::Test::test("uc_log::drain() reaches the backend");
     uc_log::drain();

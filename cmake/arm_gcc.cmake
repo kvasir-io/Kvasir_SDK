@@ -146,6 +146,10 @@ set(cxx_flags ${common_flags} ${compiler_common_cxx_flags} ${nostd_cxx_flags} -W
 
 set(c_flags ${common_flags} ${compiler_common_c_flags} ${nostd_c_flags})
 
+# as arm_clang.cmake: without it every .S was assembled for the driver's default target (no -mcpu/-mfloat-abi), so
+# __ARM_PCS_VFP and the core's feature macros were missing in hard-float trees
+set(asm_flags ${common_flags} ${compiler_common_asm_flags})
+
 set(LINKER_PREFIX "-Wl,")
 
 # --whole-archive bracketed around one archive, for util.cmake's shared runtime archives

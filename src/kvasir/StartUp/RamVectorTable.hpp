@@ -6,6 +6,16 @@
 #include <cstddef>
 #include <cstdint>
 
+// VTOR through the core package's SCB (every firmware has it; a host test of the list rules does not, and uses only
+// the table's size)
+#if __has_include("core_peripherals/SCB.hpp")
+    #include "core_peripherals/SCB.hpp"
+    #include "kvasir/Register/Register.hpp"
+    #define KVASIR_RAM_VECTOR_TABLE_SCB 1
+#else
+    #define KVASIR_RAM_VECTOR_TABLE_SCB 0
+#endif
+
 // The boot core's vector table in RAM.
 //
 // On a flash build every exception entry fetches its vector from flash, which fails while
@@ -42,24 +52,28 @@ namespace Kvasir { namespace Startup {
 
         using Provides = brigand::list<Resource<RamVectorTableTag, 0>>;
 
-        static constexpr std::uint32_t VtorAddress = 0xE000'ED08U;
-
         alignas(Entries * sizeof(std::uint32_t)) inline static std::array<std::uint32_t,
                                                                           Entries> table{};
 
+#if KVASIR_RAM_VECTOR_TABLE_SCB
+        using Vtor = Kvasir::Peripheral::SCB::Registers<>::VTOR;
+
         static void preEnableRuntimeInit() {
-            auto* const vtor = reinterpret_cast<std::uint32_t volatile*>(VtorAddress);
-            auto const* src  = reinterpret_cast<std::uint32_t const volatile*>(*vtor);
+            // the table VTOR points at now (flash, or a RAM image's own): memory, read as such
+            auto const* src = reinterpret_cast<std::uint32_t const volatile*>(
+              Kvasir::Register::readWhole(Vtor::FULLREGISTER));
             for(std::size_t i = 0; i < Entries; ++i) { table[i] = src[i]; }
             asm volatile("dsb" ::: "memory");
-            *vtor = reinterpret_cast<std::uint32_t>(table.data());
+            Kvasir::Register::writeWhole(Vtor::FULLREGISTER,
+                                         reinterpret_cast<std::uint32_t>(table.data()));
             asm volatile("dsb\n isb" ::: "memory");
         }
 
         /// Whether VTOR points at the RAM copy.
         [[nodiscard]] static bool active() {
-            return *reinterpret_cast<std::uint32_t const volatile*>(VtorAddress)
+            return Kvasir::Register::readWhole(Vtor::FULLREGISTER)
                 == reinterpret_cast<std::uint32_t>(table.data());
         }
+#endif
     };
 }}   // namespace Kvasir::Startup

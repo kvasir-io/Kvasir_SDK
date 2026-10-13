@@ -31,6 +31,10 @@
 #include <string_view>
 #include <type_traits>
 
+#if defined(__ARM_ARCH_8M_MAIN__) || defined(__ARM_ARCH_7M__) || defined(__ARM_ARCH_7EM__)
+    #include "core/Debug.hpp"   // the DWT cycle counter
+#endif
+
 #ifdef USE_UC_LOG
     #include "uc_log/uc_log.hpp"
 #endif
@@ -44,22 +48,17 @@ concept TimeSource = requires {
 };
 
 #if defined(__ARM_ARCH_8M_MAIN__) || defined(__ARM_ARCH_7M__) || defined(__ARM_ARCH_7EM__)
-/// DWT_CYCCNT. Its runtimeInit sets DEMCR.TRCENA (bit 24) and DWT_CTRL.CYCCNTENA (bit 0); Armv8-M ARM DDI0553B.y
-/// D1.2.59 (DWT_CTRL) / D1.2.38 (DEMCR), Armv7-M ARM DDI0403E C1.8.7.
+/// DWT_CYCCNT, through the core package (core/Debug.hpp: enableCycleCounter, cycleCount). Its runtimeInit sets
+/// DEMCR.TRCENA and DWT_CTRL.CYCCNTENA; Armv8-M ARM DDI0553B.y D1.2.37 (DEMCR), D1.2.58 (DWT_CTRL), D1.2.59
+/// (DWT_CYCCNT), Armv7-M ARM DDI0403E C1.6.5, C1.8.7, C1.8.8.
 template<std::uint64_t CoreHz>
 struct DwtCyclesAt {
     static constexpr std::uint64_t    ticksPerSecond = CoreHz;
     static constexpr std::string_view name           = "DWT_CYCCNT";
 
-    [[gnu::always_inline]] static std::uint32_t now() {
-        return *reinterpret_cast<std::uint32_t const volatile*>(0xE000'1004U);
-    }
+    [[gnu::always_inline]] static std::uint32_t now() { return Kvasir::Core::Debug::cycleCount(); }
 
-    static void runtimeInit() {
-        *reinterpret_cast<std::uint32_t volatile*>(0xE000'EDFCU) |= 1U << 24U;   // DEMCR.TRCENA
-        *reinterpret_cast<std::uint32_t volatile*>(0xE000'1004U) = 0;            // DWT_CYCCNT
-        *reinterpret_cast<std::uint32_t volatile*>(0xE000'1000U) |= 1U;   // DWT_CTRL.CYCCNTENA
-    }
+    static void runtimeInit() { Kvasir::Core::Debug::enableCycleCounter(); }
 };
 #endif
 

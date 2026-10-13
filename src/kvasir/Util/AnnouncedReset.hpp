@@ -53,9 +53,17 @@
 
 #include <cstdint>
 
+#if defined(__ARM_ARCH_8M_MAIN__)
+    #include "core/Debug.hpp"   // DHCSR through the core package's registers
+#endif
+
 /// A free-running microsecond counter, if the chip package has one (a weak definition there; chip_rp_common: the
 /// TIMER's raw low word). Not defined: null, and announce() counts polls.
+// Also declared in uc_log detail/LossLedger.hpp; the guard avoids gcc's -Wredundant-decls.
+#ifndef KVASIR_ANNOUNCED_RESET_TIME_US_DECLARED
+    #define KVASIR_ANNOUNCED_RESET_TIME_US_DECLARED
 extern "C" [[gnu::weak]] std::uint32_t kvasir_announced_reset_time_us();
+#endif
 
 namespace Kvasir::AnnouncedReset {
 
@@ -123,14 +131,11 @@ namespace detail {
         IrqMask& operator=(IrqMask const&) = delete;
     };
 
-    // DHCSR, Armv8-M ARM DDI0553B.y D1.2.39 (0xE000EDF0, C_DEBUGEN bit 0).
-    inline constexpr std::uintptr_t DhcsrAddress = 0xE000'EDF0;
-
-    // false only when the core can tell for certain that no debugger has halting debug enabled
+    // false only when the core can tell for certain that no debugger has halting debug enabled (DHCSR.C_DEBUGEN,
+    // Armv8-M ARM DDI0553B.y D1.2.39)
     inline bool haltingDebugMayBeEnabled() {
 #if defined(__ARM_ARCH_8M_MAIN__)
-        auto const dhcsr = *reinterpret_cast<std::uint32_t const volatile*>(DhcsrAddress);
-        return (dhcsr & 1U) != 0;
+        return Kvasir::Core::Debug::isDebuggerConnected();
 #else
         return true;   // Armv6-M (Cortex-M0+: software cannot read it), RISC-V, the host
 #endif
