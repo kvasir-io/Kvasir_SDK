@@ -84,6 +84,65 @@ template<int N>
 }
 #endif
 
+#if CASE == 8 || CASE == 9
+    #include "kvasir/Register/Register.hpp"
+
+    #include <array>
+    #include <cstdint>
+
+// two registers of a made-up peripheral, as svd_converter writes them
+struct RegA {
+    using Addr = Kvasir::Register::Address<0x40010000, 0xFFFF0000, 0x00000000, std::uint32_t>;
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(15, 8),
+                                                     Kvasir::Register::ReadWriteAccess,
+                                                     std::uint32_t>
+      hi{};
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(7, 0),
+                                                     Kvasir::Register::ReadWriteAccess,
+                                                     std::uint32_t>
+      lo{};
+};
+
+struct RegB {
+    using Addr = Kvasir::Register::Address<0x40010004, 0xFFFFFFFE, 0x00000000, std::uint32_t>;
+    static constexpr Kvasir::Register::FieldLocation<Addr,
+                                                     Kvasir::Register::maskFromRange(0, 0),
+                                                     Kvasir::Register::ReadWriteAccess,
+                                                     bool>
+      en{};
+};
+#endif
+
+#if CASE == 8
+// the field API in a RAM function (FrequencyCounter::measureRaw reads FC0 this way): nothing it reaches may stay a
+// call - with inlining off, only always_inline holds, as -Oz with UBSan once left FieldTuple's std::array
+// operator[] out of line in flash
+[[KVASIR_RAM_FUNC_ATTRIBUTES]] void registerAccess(int v) {
+    KVASIR_RAM_FUNC_MARK();
+    using namespace Kvasir::Register;
+    auto const both        = apply(read(RegA::hi, RegA::lo));   // one register, two fields: get<I>
+    sink                   = int(get<0>(both) + get<1>(both));
+    std::uint32_t const lo = apply(read(RegA::lo));   // one field: the conversion
+    sink                   = int(lo);
+    auto const two         = apply(read(RegA::lo, RegB::en));   // two registers: the index of each
+    sink                   = int(get<0>(two)) + (get<1>(two) ? 1 : 0);
+    apply(write(RegA::lo, std::uint32_t(v)), set(RegB::en));
+    apply(clear(RegB::en));
+}
+#endif
+
+#if CASE == 9
+// the control: std::array's operator[] in a RAM function - the build mode of CASE 8 has to leave it a call to flash,
+// or CASE 8 proves nothing
+[[KVASIR_RAM_FUNC_ATTRIBUTES]] void stdArrayIndex(int v) {
+    KVASIR_RAM_FUNC_MARK();
+    std::array<unsigned, 1> a{unsigned(v)};
+    sink = int(a[0]);
+}
+#endif
+
 #if CASE == 4
     #include "unmarked.hpp"   // a file of its own: the source check reads text, not #if
 #endif
@@ -103,5 +162,11 @@ extern "C" [[gnu::section(".text.main")]] void entry() {
 #endif
 #if CASE == 6 || CASE == 7
     callsScratch(sink);
+#endif
+#if CASE == 8
+    registerAccess(sink);
+#endif
+#if CASE == 9
+    stdArrayIndex(sink);
 #endif
 }

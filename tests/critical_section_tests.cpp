@@ -126,11 +126,12 @@ void predicateWaits() {
 
     struct DataTag {};
 
-    int  value = 0;
-    bool ready = false;   // guarded by DataTag, like value
+    int               value = 0;
+    bool              ready = false;   // guarded by DataTag, like value
+    std::atomic<bool> waited{false};   // the consumer has found it not ready at least once
 
     std::thread producer{[&] {
-        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+        while(!waited) { std::this_thread::yield(); }
         criticalSection<DataTag>([&] {
             value = 42;
             ready = true;
@@ -141,7 +142,10 @@ void predicateWaits() {
           ready = false;
           return value;
       },
-      [&] { return ready; });
+      [&] {
+          if(!ready) { waited = true; }
+          return ready;
+      });
     producer.join();
     CHECK(got == 42);
     CHECK(!ready);

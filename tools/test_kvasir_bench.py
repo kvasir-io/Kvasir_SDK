@@ -51,7 +51,8 @@ class WaitForDropped(unittest.TestCase):
 
             thread = threading.Thread(target=printer, daemon=True)
             thread.start()
-            args = types.SimpleNamespace(build="b", target="t", regex="never", timeout=5.0,
+            # the timeout is no pass condition: far past ctest's, which is the hang guard
+            args = types.SimpleNamespace(build="b", target="t", regex="never", timeout=1e6,
                                          from_now=True, from_start=False, module=None,
                                          not_module=None, width=200, last=5)
             out = io.StringIO()
@@ -91,7 +92,7 @@ class PrinterGdbStub(unittest.TestCase):
                 body = data[data.index(b"$") + 1:data.rindex(b"#")].decode()
                 self.assertEqual(data[:1], b"+", "every packet acknowledged")
                 replies.append(body)
-        thread.join(timeout=5)
+        thread.join()
         theirs.close()
         return replies
 

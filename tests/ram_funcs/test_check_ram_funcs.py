@@ -25,6 +25,28 @@ TOOLCHAINS = {
     'gcc': (['arm-none-eabi-g++', '-nostartfiles'], ['arm-none-eabi-g++']),
     'clang': (['clang++', '--target=armv8m.main-none-eabi', '-fuse-ld=lld'], ['clang++', 'ld.lld']),
 }
+# inlining left to always_inline alone: what a RAM function may rely on. gcc keeps -fno-inline through LTO; clang's
+# LTO link runs its own inliner, so clang compiles without LTO here
+NO_INLINE = {
+    'gcc': ['-fno-inline'],
+    'clang': ['-fno-inline', '-fno-lto'],
+}
+
+
+def std_headers(toolchain):
+    """The C++ library headers for a case that includes them: arm-none-eabi-g++ brings libstdc++; clang gets the
+    SDK's libc++ and llvm-libc (lib/, submodules) as cmake/arm_clang.cmake gives them, with the two settings
+    arm_compiler_common.cmake defines instead of a __config_site."""
+    if toolchain == 'gcc':
+        return []
+    resource = subprocess.run(['clang++', '-print-resource-dir'], capture_output=True, text=True,
+                              check=True).stdout.strip()
+    lib = SDK / 'lib'
+    return ['-nostdinc'] + [f'-isystem{d}' for d in (lib / 'libcxx' / 'include', lib / 'libcxx' / 'src',
+                                                     lib / 'libc' / 'include', lib / 'libc',
+                                                     Path(resource) / 'include')] + \
+        ['-D_LIBCPP_HARDENING_MODE_DEFAULT=_LIBCPP_HARDENING_MODE_FAST',
+         '-D_LIBCPP_ASSERTION_SEMANTIC_DEFAULT=_LIBCPP_ASSERTION_SEMANTIC_HARDENING_DEPENDENT']
 
 
 class CheckRamFuncs(unittest.TestCase):
@@ -36,14 +58,14 @@ class CheckRamFuncs(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def build(self, toolchain, case, *defines):
+    def build(self, toolchain, case, *defines, extra=()):
         flags, exes = TOOLCHAINS[toolchain]
         for exe in exes:
             if shutil.which(exe) is None:
                 self.skipTest(f'{exe} not found')
         elf = Path(self.tmp.name) / \
-            f'{toolchain}_{case}_{"_".join(defines) or "plain"}.elf'
-        cmd = flags + COMMON + [f'-DCASE={case}'] + [f'-D{d}' for d in defines] + \
+            f'{toolchain}_{case}_{"_".join(defines) or "plain"}_{len(extra)}.elf'
+        cmd = flags + COMMON + list(extra) + [f'-DCASE={case}'] + [f'-D{d}' for d in defines] + \
             [str(HERE / 'ram_funcs.cpp'), '-o', str(elf)]
         result = subprocess.run(cmd, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0,
@@ -55,12 +77,14 @@ class CheckRamFuncs(unittest.TestCase):
             CHECK), str(elf)], capture_output=True, text=True)
         return result.returncode, result.stderr
 
-    def expect_pass(self, toolchain, case=0, *defines):
-        rc, err = self.check(self.build(toolchain, case, *defines))
+    def expect_pass(self, toolchain, case=0, *defines, extra=()):
+        rc, err = self.check(self.build(
+            toolchain, case, *defines, extra=extra))
         self.assertEqual(rc, 0, err)
 
-    def expect_fail(self, toolchain, case, *messages, defines=()):
-        rc, err = self.check(self.build(toolchain, case, *defines))
+    def expect_fail(self, toolchain, case, *messages, defines=(), extra=()):
+        rc, err = self.check(self.build(
+            toolchain, case, *defines, extra=extra))
         self.assertEqual(
             rc, 1, f'the check passed an image it should refuse:\n{err}')
         for m in messages:
@@ -118,6 +142,30 @@ class CheckRamFuncs(unittest.TestCase):
 
     def test_scratch_bank_callee_clang(self):
         self.expect_pass('clang', 7)
+
+    # the register field API in a RAM function: with inlining off nothing of it stays a call (FieldTuple once held a
+    # std::array whose operator[] -Oz + UBSan left in flash; check_ram_funcs refused a firmware image)
+    def no_inline(self, toolchain):
+        # the skip build() would give, before std_headers asks the missing clang++ for its resource dir
+        for exe in TOOLCHAINS[toolchain][1]:
+            if shutil.which(exe) is None:
+                self.skipTest(f'{exe} not found')
+        return NO_INLINE[toolchain] + std_headers(toolchain)
+
+    def test_register_access_in_ram_function_gcc(self):
+        self.expect_pass('gcc', 8, extra=self.no_inline('gcc'))
+
+    def test_register_access_in_ram_function_clang(self):
+        self.expect_pass('clang', 8, extra=self.no_inline('clang'))
+
+    # the control: the same mode leaves std::array's operator[] a flash call, so CASE 8 would see the old bug
+    def test_no_inline_mode_shows_std_array_call_gcc(self):
+        self.expect_fail('gcc', 9, 'stdArrayIndex(int)', 'reaches flash', 'operator[]',
+                         extra=self.no_inline('gcc'))
+
+    def test_no_inline_mode_shows_std_array_call_clang(self):
+        self.expect_fail('clang', 9, 'stdArrayIndex(int)', 'reaches flash', 'operator[]',
+                         extra=self.no_inline('clang'))
 
     # the check reads the source list with llvm-dwarfdump and only notes its absence
     def expect_unmarked_fail(self, toolchain):

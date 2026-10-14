@@ -38,7 +38,8 @@ jobs:
             - name: Set up C++ environment
               run: |
                 pacman -Syu --noconfirm
-                pacman -S --noconfirm git cmake base-devel ${{ matrix.compiler.cc == 'clang' && 'clang llvm lld' || '' }} ${{ matrix.compiler.stdlib == 'libc++' && 'libc++ lld' || '' }}
+                # arm-none-eabi-gcc/newlib: the ARM toolchain tests (ram_funcs, runtime_lib_flags) skip without them
+                pacman -S --noconfirm git cmake base-devel arm-none-eabi-gcc arm-none-eabi-newlib ${{ matrix.compiler.cc == 'clang' && 'clang llvm lld' || '' }} ${{ matrix.compiler.stdlib == 'libc++' && 'libc++ lld' || '' }}
 
             - name: Checkout repository
               uses: actions/checkout@v6

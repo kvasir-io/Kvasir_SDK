@@ -3,7 +3,6 @@
 #include "test_harness.hpp"
 
 #include <atomic>
-#include <chrono>
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
@@ -348,9 +347,11 @@ auto second(std::uint64_t k) {
 }
 }   // namespace interrupt
 
+// Publishes until the handler has run minCalls times: a count, not a time window, so a slow
+// or loaded machine only takes longer (ctest's timeout is the hang guard).
 template<typename Publish>
-static void hammer(Publish                   publish,
-                   std::chrono::milliseconds duration) {
+static void hammer(Publish       publish,
+                   std::uint64_t minCalls) {
     using namespace interrupt;
     calls = 0;
     empty = 0;
@@ -368,8 +369,7 @@ static void hammer(Publish                   publish,
         while(!stop.load(std::memory_order_relaxed)) { pthread_kill(target, SIGUSR1); }
     }};
 
-    auto const end = std::chrono::steady_clock::now() + duration;
-    for(std::uint64_t k = 1; std::chrono::steady_clock::now() < end; ++k) {
+    for(std::uint64_t k = 1; calls.load(std::memory_order_relaxed) < minCalls;) {
         for(int i = 0; i != 256; ++i, ++k) {
             if((k & 1U) != 0) {
                 publish(first(k));
@@ -388,59 +388,59 @@ static void interruptNeverSeesATornFunction() {
     Kvasir::Test::test("interruptNeverSeesATornFunction");
     using namespace interrupt;
 
-    hammer([](auto f) { slot.publish(f); }, std::chrono::milliseconds{1500});
+    hammer([](auto f) { slot.publish(f); }, 1000);
     std::printf("  publish(): %llu calls, %llu between functions, %llu torn\n",
                 static_cast<unsigned long long>(calls.load()),
                 static_cast<unsigned long long>(empty.load()),
                 static_cast<unsigned long long>(torn.load()));
-    CHECK(calls.load() > 1000U);   // the handler really did run in the middle of it
+    CHECK(calls.load() >= 1000U);   // the handler really did run in the middle of it
     CHECK_EQ(torn.load(), 0U);
 
     // operator= of a callable goes through publish() too
-    hammer([](auto f) { slot = f; }, std::chrono::milliseconds{500});
-    CHECK(calls.load() > 300U);
+    hammer([](auto f) { slot = f; }, 300);
+    CHECK(calls.load() >= 300U);
     CHECK_EQ(torn.load(), 0U);
 }
 
-// TSan holds an asynchronous signal back until the thread's next intercepted call, so the
-// handler never runs between two plain stores: nothing can tear there, and the check that it
-// does is left out. The publish() test still runs; it is the plain build that proves it.
-#if defined(__SANITIZE_THREAD__)
-    #define STATIC_FUNCTION_TEST_SIGNALS_DEFERRED 1
-#elif defined(__has_feature)
-    #if __has_feature(thread_sanitizer)
-        #define STATIC_FUNCTION_TEST_SIGNALS_DEFERRED 1
-    #endif
-#endif
-
-// The same stress against a plain memberwise assignment, what operator= did before: it must
-// tear, or the test above proves nothing.
+// What operator= did before, a plain memberwise assignment, with the interrupt landing between
+// its two halves (raise() runs the handler before it returns): it must tear, or the test above
+// proves nothing. The kinds alternate, so every call after the first sees the new captures with
+// the other kind's invoker; the first finds the slot still empty.
 static void plainAssignmentDoesTear() {
     Kvasir::Test::test("plainAssignmentDoesTear");
     using namespace interrupt;
+    calls = 0;
+    empty = 0;
+    torn  = 0;
 
-    hammer(
-      [](auto f) {
-          Slot const tmp{f};
-          // the old operator=: the captures, then the invoker, each a plain store (the
-          // invoker one whole word, as before). Volatile only so the compiler keeps this order
-          // and does not merge it into the publish() one by accident.
-          static_assert(sizeof(Slot) % sizeof(std::uint64_t) == 0);
-          auto* const       dst   = reinterpret_cast<std::uint64_t volatile*>(&slot);
-          auto const* const src   = reinterpret_cast<std::uint64_t const*>(&tmp);
-          std::size_t const words = sizeof(Slot) / sizeof(std::uint64_t);
-          for(std::size_t i = 0; i + 1 != words; ++i) { dst[i] = src[i]; }   // captures
-          dst[words - 1] = src[words - 1];                                   // invoker
-      },
-      std::chrono::milliseconds{1500});
+    struct sigaction sa{};
+    sa.sa_handler = &onSignal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    sigaction(SIGUSR1, &sa, nullptr);
+
+    slot.reset();
+    constexpr std::uint64_t publishes = 256;
+    for(std::uint64_t k = 1; k <= publishes; ++k) {
+        Slot const tmp = (k & 1U) != 0 ? Slot{first(k)} : Slot{second(k)};
+        // the old operator=: the captures, then the invoker, each a plain store (the invoker one
+        // whole word, as before). Volatile only so the compiler keeps this order.
+        static_assert(sizeof(Slot) % sizeof(std::uint64_t) == 0);
+        auto* const       dst   = reinterpret_cast<std::uint64_t volatile*>(&slot);
+        auto const* const src   = reinterpret_cast<std::uint64_t const*>(&tmp);
+        std::size_t const words = sizeof(Slot) / sizeof(std::uint64_t);
+        for(std::size_t i = 0; i + 1 != words; ++i) { dst[i] = src[i]; }   // captures
+        raise(SIGUSR1);                                                    // the interrupt
+        dst[words - 1] = src[words - 1];                                   // invoker
+    }
+    signal(SIGUSR1, SIG_DFL);
+    slot.reset();
+
     std::printf("  plain copy: %llu calls, %llu torn\n",
                 static_cast<unsigned long long>(calls.load()),
                 static_cast<unsigned long long>(torn.load()));
-#ifdef STATIC_FUNCTION_TEST_SIGNALS_DEFERRED
-    CHECK(true);
-#else
-    CHECK(torn.load() > 0U);
-#endif
+    CHECK_EQ(empty.load(), 1U);
+    CHECK_EQ(torn.load(), publishes - 1);
 }
 
 int main() {

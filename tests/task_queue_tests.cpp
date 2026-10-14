@@ -115,13 +115,30 @@ void mutableAndAligned() {
     CHECK(f.get() == 6.0);
 }
 
+// A clock one tick further on every now(): the deadline is a number of looks at the clock, not
+// a time, so the outcome does not depend on how fast or loaded the machine is.
+struct TickClock {
+    using duration   = std::chrono::microseconds;
+    using rep        = duration::rep;
+    using period     = duration::period;
+    using time_point = std::chrono::time_point<TickClock, duration>;
+
+    static inline std::atomic<rep> ticks{0};
+
+    static time_point now() { return time_point{duration{ticks.fetch_add(1) + 1}}; }
+};
+
 void boundedWait() {
     Kvasir::Test::test("waitUntil times out without a worker and succeeds with one");
     auto f = Tasks::post([] { return 42; });
-    CHECK(!f.waitUntil(std::chrono::steady_clock::now() + std::chrono::milliseconds{20}));
+    // no worker: nothing can make it ready, so it gives up after 20 looks at the clock
+    auto const start = TickClock::now();
+    CHECK(!f.waitUntil(start + std::chrono::microseconds{20}));
+    CHECK(TickClock::now() - start > std::chrono::microseconds{20});
     {
         Worker worker{};
-        CHECK(f.waitUntil(std::chrono::steady_clock::now() + std::chrono::seconds{5}));
+        // a deadline that never comes: true as soon as the worker has run it
+        CHECK(f.waitUntil(TickClock::time_point::max()));
     }
     CHECK(f.get() == 42);
 }

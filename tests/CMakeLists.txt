@@ -265,6 +265,10 @@ add_test(NAME kvasir_test_header_self_containment COMMAND ${CMAKE_COMMAND} --bui
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME kvasir_test_check_ram_funcs COMMAND ${Python3_EXECUTABLE}
                                                   ${CMAKE_CURRENT_LIST_DIR}/ram_funcs/test_check_ram_funcs.py)
+# lib/libcxx/libcxx.cmake's flags: libc++ built through the real toolchain files with every ARM toolchain found here,
+# silent on each (clang-only options once reached gcc and noted on every file); a missing toolchain is a skip
+add_test(NAME kvasir_test_runtime_lib_flags
+         COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_LIST_DIR}/runtime_lib_flags/test_runtime_lib_flags.py)
 # cmake/tools/check_reset_entry.py (the post-link reset entry check): its instruction rules on hand-assembled code
 add_test(NAME kvasir_test_check_reset_entry COMMAND ${Python3_EXECUTABLE} -B
                                                     ${CMAKE_CURRENT_LIST_DIR}/reset_entry/test_check_reset_entry.py)

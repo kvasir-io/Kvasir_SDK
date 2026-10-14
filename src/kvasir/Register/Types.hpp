@@ -226,7 +226,10 @@ namespace Kvasir { namespace Register {
              typename... TRs>
     struct FieldTuple<brigand::list<brigand::uint32_t<Is>...>,
                       brigand::list<FieldLocation<TAs, Masks, TAccesss, TRs>...>> {
-        std::array<unsigned, sizeof...(Is)> value_;
+        // a built-in array, not std::array: std::array's operator[] is not always_inline, and with less inlining
+        // (clang -Oz with UBSan) it stays out of line in flash, called from a RAM function's register read
+        // (check_ram_funcs). Every index below is a compile-time constant. Test: tests/ram_funcs, CASE 8.
+        unsigned value_[sizeof...(Is)];   // NOLINT(*-avoid-c-arrays)
 
         template<std::size_t Index>
         [[gnu::always_inline]] brigand::at_c<brigand::list<TRs...>,

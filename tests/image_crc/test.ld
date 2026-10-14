@@ -17,7 +17,9 @@ SECTIONS
         KEEP(*(.kvasir_image_crc))
     } > flash
     .data : { *(.data*) } > ram AT > flash
-    .ramimage : { KEEP(*(.ramimage)) } > ram
+    /* AT > ram: without it GNU ld continues .data's load offset and loads this from flash too, so the gcc image
+       has no RAM segment to refuse (lld gives it its own segment at its RAM address) */
+    .ramimage : { KEEP(*(.ramimage)) } > ram AT > ram
     .bss (NOLOAD) : { *(.bss*) *(COMMON) } > ram
     /DISCARD/ : { *(.ARM.exidx*) }
 }

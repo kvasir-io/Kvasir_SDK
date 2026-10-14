@@ -7,7 +7,6 @@
 #include "test_harness.hpp"
 
 #include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <random>
@@ -242,8 +241,8 @@ int main() {
         A::BipBuffer<std::uint8_t, 97, A::SyncThread> b{};
         constexpr std::uint32_t                       Frames = 200'000;
         bool                                          good   = true;
-        // a broken buffer stalls a side: both give up after this instead of hanging the test run
-        auto const        until = std::chrono::steady_clock::now() + std::chrono::seconds{20};
+        // no deadline: a broken buffer that stalls a side hangs until ctest's timeout; a broken
+        // frame stops the reader, and `stop` then lets the producer go
         std::atomic<bool> stop{false};
         std::thread       producer{[&] {
             std::mt19937 rng{7};
@@ -262,13 +261,7 @@ int main() {
         std::uint32_t     got = 0;
         while(got != Frames) {
             auto r = b.readReserve();
-            if(r.empty()) {
-                if(std::chrono::steady_clock::now() > until) {
-                    good = false;
-                    break;
-                }
-                continue;
-            }
+            if(r.empty()) { continue; }
             // a frame never straddles the wrap: it was reserved contiguously
             auto const len = static_cast<std::size_t>(r[0]);
             if(r.size() < len + 1) {
