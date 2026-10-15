@@ -17,8 +17,9 @@ The .bin is the image from its lowest to its highest load address, gaps 0x00 (ll
 has llvm-objcopy's record layout - 16-byte data records per section from the section's start, an extended segment
 (type 02) or linear (type 04) address record when the upper address bits change, the start address record when
 e_entry != 0, then EOF. The .uf2 is a 256-byte page grid, uncovered bytes 0x00 (picotool and the RP2 bootrom want
-every block page aligned). _flash.elf is `objcopy --only-section` with the selected names and no empty PT_LOAD left
-(picotool rejects those). --list prints the selected sections and exits.
+every block page aligned). _flash.elf is `objcopy --only-section` with the selected names, no empty PT_LOAD left
+(picotool rejects those) and no PT_LOAD with a hole between two sections larger than the second one's alignment
+(picotool seal rejects those). --list prints the selected sections and exits.
 """
 
 import argparse
@@ -49,10 +50,10 @@ class Elf:
             '<IIIIIIIIII', data, shoff + i * shentsize) for i in range(shnum)]
         names_off = raw[shstrndx][4] if shnum else 0
         self.sections = []
-        for (name, type_, flags, addr, offset, size, *_rest) in raw:
+        for (name, type_, flags, addr, offset, size, _link, _info, align, _entsize) in raw:
             end = data.index(b'\0', names_off + name)
             self.sections.append({'name': data[names_off + name:end].decode(), 'type': type_, 'flags': flags,
-                                  'addr': addr, 'offset': offset, 'size': size})
+                                  'addr': addr, 'offset': offset, 'size': size, 'align': align})
 
     def _loaded(self):
         """(section, load address, bytes) of every section the image carries, by load address."""
@@ -178,6 +179,58 @@ def strip_empty_segments(path):
     Path(path).write_bytes(data)
 
 
+def split_segments_at_holes(path):
+    """Split a PT_LOAD where picotool seal cannot plug the hole between two of its sections: one larger than the next
+    section's alignment ("Cannot plug gap greater than alignment"). GNU ld puts a RAM-only image's .vectors, .text
+    and .data into one segment, with the NOLOAD .noInitLowRam (between .vectors and .text) and .ramExec (between .text
+    and .data, 256 bytes) as holes in it (common_ram_only.ld); lld writes a segment per section already. A hole up to
+    the alignment stays in its segment, as picotool would plug it. Every byte stays at its address and a split-off
+    hole stays unloaded; the last part keeps the segment's zero-filled tail (p_memsz past p_filesz)."""
+    data = bytearray(Path(path).read_bytes())
+    (phoff, shoff) = struct.unpack_from('<II', data, 28)
+    (phentsize, phnum, shentsize, shnum) = struct.unpack_from('<HHHH', data, 42)
+    sections = []
+    used = [shoff] if shnum else []
+    for i in range(shnum):
+        (_n, type_, flags, _a, offset, size, _l, _i, align) = struct.unpack_from(
+            '<IIIIIIIII', data, shoff + i * shentsize)
+        if type_ not in (0, SHT_NOBITS) and size:
+            used.append(offset)
+            if flags & SHF_ALLOC:
+                sections.append((offset, size, align))
+    sections.sort()
+    segments = []
+    for i in range(phnum):
+        segment = struct.unpack_from('<IIIIIIII', data, phoff + i * phentsize)
+        (p_type, p_offset, vaddr, paddr, filesz, memsz, p_flags, p_align) = segment
+        inside = [s for s in sections if p_offset <= s[0]
+                  and s[0] + s[1] <= p_offset + filesz]
+        if p_type != PT_LOAD or not inside:
+            segments.append(segment)
+            continue
+        parts = [[inside[0][0], inside[0][0] + inside[0][1]]]
+        for (offset, size, align) in inside[1:]:
+            if offset - parts[-1][1] > align:
+                parts.append([offset, offset + size])
+            else:
+                parts[-1][1] = offset + size
+        for (n, (start, end)) in enumerate(parts):
+            delta = start - p_offset
+            segments.append((PT_LOAD, start, vaddr + delta, paddr + delta, end - start,
+                             memsz - delta if n == len(parts) - 1 else end - start, p_flags, p_align))
+    if len(segments) == phnum:
+        return
+    table = b''.join(struct.pack('<IIIIIIII', *s) for s in segments)
+    # the longer table in place: a linked image keeps its first bytes on a page boundary, kilobytes past the headers
+    room = min(t for t in used + [len(data)] if t > phoff) - phoff
+    if len(table) > room:
+        raise ValueError(f'{path}: {len(segments)} program headers do not fit into the {room} bytes before the next '
+                         'contents')
+    data[phoff:phoff + len(table)] = table
+    struct.pack_into('<H', data, 44, len(segments))
+    Path(path).write_bytes(data)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -218,6 +271,7 @@ def main():
         subprocess.run([args.objcopy, *only, str(args.elf),
                        prefix + '_flash.elf'], check=True)
         strip_empty_segments(prefix + '_flash.elf')
+        split_segments_at_holes(prefix + '_flash.elf')
     return 0
 
 

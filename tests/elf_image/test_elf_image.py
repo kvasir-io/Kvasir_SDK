@@ -4,7 +4,9 @@
 past 64 KiB at address 0 (hex type 02 records) and a RAM image (ram.ld), and holds every artefact to llvm-objcopy
 with the matching --only-section list as the oracle: the section no list names (.trap_data) is in _flash.hex/.bin/
 .uf2 at its load address, .eeprom only in the _eeprom* files, the NOLOAD buffer and the non-ALLOC section nowhere,
-_flash.elf without an empty PT_LOAD. A missing toolchain is a skip.
+_flash.elf without an empty PT_LOAD or one with a hole larger than the next section's alignment, split only there (the
+RAM image's NOLOAD buffer sits between two loaded sections, as common_ram_only.ld's .noInitLowRam and .ramExec, and an
+8-byte alignment hole picotool plugs itself between .vectors and .text). A missing toolchain is a skip.
 
     python3 tests/elf_image/test_elf_image.py -v
 """
@@ -54,6 +56,22 @@ def uf2_bytes(data):
         for i, byte in enumerate(block[32:32 + 256]):
             out[address + i] = byte
     return out
+
+
+def contents(elf):
+    """The sections with bytes in the file that are loaded, in file order."""
+    return sorted((s for s in elf.sections if s['flags'] & elf_image.SHF_ALLOC and s['type'] != elf_image.SHT_NOBITS
+                   and s['size']), key=lambda s: s['offset'])
+
+
+def segment_of(elf, name):
+    """The index of the PT_LOAD that holds section `name`'s file bytes, None when there is none."""
+    for sec in elf.sections:
+        if sec['name'] == name:
+            for (i, (p_type, p_offset, _v, _p, filesz, *_r)) in enumerate(elf.segments):
+                if p_type == elf_image.PT_LOAD and p_offset <= sec['offset'] < p_offset + filesz:
+                    return i
+    return None
 
 
 class ElfImage(unittest.TestCase):
@@ -125,13 +143,30 @@ class ElfImage(unittest.TestCase):
             self.assertEqual(uf2[start + offset], byte, hex(start + offset))
         self.assertTrue(all(v == 0 for a, v in uf2.items()
                         if not start <= a < start + len(got['_flash.bin'])))
-        # _flash.elf: the selected sections, no PT_LOAD without one
+        # _flash.elf: the selected sections, no PT_LOAD without one, none with a hole larger than the next section's
+        # alignment (picotool seal: "Cannot plug gap greater than alignment"), and split only there: two sections
+        # that shared a PT_LOAD across a smaller hole still do
         shrunk = elf_image.Elf(got['_flash.elf'])
         self.assertEqual(sorted(n for (n, _a, _d) in shrunk.loaded()), sorted(
             n for (n, _a, _d) in flash))
         for (p_type, _o, _v, _p, filesz, memsz, *_r) in shrunk.segments:
             if p_type == elf_image.PT_LOAD:
                 self.assertTrue(filesz or memsz)
+        for (first, following) in zip(contents(shrunk), contents(shrunk)[1:]):
+            if segment_of(shrunk, first['name']) == segment_of(shrunk, following['name']):
+                self.assertLessEqual(following['offset'] - first['offset'] - first['size'], following['align'],
+                                     f'hole between {first["name"]} and {following["name"]}')
+        original = elf_image.Elf(elf.read_bytes())
+        kept = [s for s in contents(original) if segment_of(
+            shrunk, s['name']) is not None]
+        for (first, following) in zip(kept, kept[1:]):
+            if segment_of(original, first['name']) == segment_of(original, following['name']) \
+                    and following['offset'] - first['offset'] - first['size'] <= following['align']:
+                self.assertEqual(segment_of(shrunk, first['name']), segment_of(shrunk, following['name']),
+                                 f'{first["name"]} and {following["name"]} split at a hole picotool plugs')
+        # the bytes stay where they were: every section of _flash.elf loads at its address in the input
+        self.assertEqual(sorted((n, a) for (n, a, _d) in shrunk.loaded()), sorted(
+            (n, a) for (n, a, _d) in flash))
         return got
 
     def test_flash_image(self):

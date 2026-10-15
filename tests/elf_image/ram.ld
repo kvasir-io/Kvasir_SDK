@@ -7,10 +7,13 @@ ENTRY(entry)
 SECTIONS
 {
     .vectors : { KEEP(*(.vectors)) } > ram
-    .text : { . = ALIGN(16); KEEP(*(.text.entry)) *(.text*) *(.rodata*) . = ALIGN(4); } > ram
+    /* 8 bytes of .vectors, then 16-aligned: an 8-byte hole picotool plugs itself, which must stay inside its PT_LOAD */
+    .text : ALIGN(16) { KEEP(*(.text.entry)) *(.text*) *(.rodata*) . = ALIGN(4); } > ram
+    /* between two loaded sections, as common_ram_only.ld's .noInitLowRam and .ramExec: GNU ld leaves it as a hole
+       inside one PT_LOAD, larger than the next section's alignment */
+    .noload_buffer (NOLOAD) : AT(ADDR(.noload_buffer)) { KEEP(*(.noload_buffer)) } > ram
     .data : { *(.data*) . = ALIGN(4); } > ram
     .trap_data : { KEEP(*(.trap_data)) } > ram
-    .noload_buffer (NOLOAD) : { *(.noload_buffer) } > ram
     .bss (NOLOAD) : { *(.bss*) } > ram
     /DISCARD/ : { *(.eeprom) *(.ARM.exidx*) *(.ARM.attributes) *(.kvasir_meta) }
 }
