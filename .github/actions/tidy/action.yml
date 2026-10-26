@@ -1,0 +1,124 @@
+name: clang-tidy
+description: >
+    Kvasir_SDK's tools/tidy.py with its .clang-tidy over build trees this job has already configured and built: one
+    compile command per source, findings of the named repository fail the step (the first 10 as annotations, all of
+    them in the step summary), the libraries' are counted as foreign. A step, not a workflow: it needs the job's tree.
+    Needs python and clang (clang-tidy) in the job; no node (act's archlinux containers have none) except for the
+    cache, which act skips.
+
+inputs:
+    trees:
+        description: 'the clang build trees, relative to the workspace, separated by spaces or newlines'
+        required: true
+    repo:
+        description: 'the checkout whose findings count (relative to the workspace)'
+        required: false
+        default: '.'
+    nested:
+        description: "'true': the repository's nested checkouts (submodules) count as the repository"
+        required: false
+        default: 'false'
+    mode:
+        description: "'full', or 'changed': only units whose main file or include set changed against the base of the
+            pull request or push (an unknown base means full)"
+        required: false
+        default: 'full'
+    sdk:
+        description: 'a Kvasir_SDK checkout whose tools/tidy.py and .clang-tidy are used (the image''s /opt/kvasir, or
+            . in the SDK itself); empty: a sparse clone of Kvasir_SDK master'
+        required: false
+        default: ''
+    variant:
+        description: 'firmware variant whose compile commands are taken'
+        required: false
+        default: 'debug'
+    shard:
+        description: 'I/N: the I-th of N slices of the units (a matrix of jobs)'
+        required: false
+        default: ''
+
+runs:
+    using: composite
+    steps:
+        - name: tidy - tools
+          shell: bash
+          run: |
+            for t in python3 clang-tidy git; do
+                command -v "$t" >/dev/null && continue
+                echo "::error title=tidy::$t is missing: install python and clang in this job"
+                exit 2
+            done
+            # the checkout belongs to the runner's user, the container runs as root: git would refuse to list it
+            # ("dubious ownership") and the NOLINT lint could not see the files
+            git config --global --add safe.directory '*'
+
+        - name: tidy - the runner
+          shell: bash
+          env:
+              SDK: ${{ inputs.sdk }}
+          run: |
+            if [ -n "$SDK" ]; then
+                echo "KVASIR_TIDY_SDK=$(cd "$SDK" && pwd)" >> "$GITHUB_ENV"
+                exit 0
+            fi
+            d="${RUNNER_TEMP:-/tmp}/kvasir_tidy_sdk"
+            rm -rf "$d"
+            git clone --quiet --depth 1 --filter=blob:none --sparse https://github.com/kvasir-io/Kvasir_SDK.git "$d"
+            git -C "$d" sparse-checkout set --no-cone /.clang-tidy /tools/tidy.py /tools/tidy_keep.toml \
+                /tools/tidy_checks.txt /tools/tidy_firmware_checks.txt
+            echo "KVASIR_TIDY_SDK=$d" >> "$GITHUB_ENV"
+
+        - name: tidy - cache paths
+          id: paths
+          shell: bash
+          env:
+              TREES: ${{ inputs.trees }}
+          run: |
+            {
+                echo 'list<<KVASIR_TIDY_EOF'
+                for t in $TREES; do echo "$t/.tidy/cache"; done
+                echo 'KVASIR_TIDY_EOF'
+                cfg=$(cd "$KVASIR_TIDY_SDK" && cat .clang-tidy tools/tidy.py tools/tidy_checks.txt | sha256sum | cut -c1-16)
+                echo "key=kvasir-tidy-$cfg-${{ inputs.variant }}-${{ inputs.shard }}"
+            } >> "$GITHUB_OUTPUT"
+
+        - name: tidy - cache
+          if: env.ACT == ''
+          uses: actions/cache@v4
+          with:
+              path: ${{ steps.paths.outputs.list }}
+              key: ${{ steps.paths.outputs.key }}-${{ github.sha }}
+              restore-keys: ${{ steps.paths.outputs.key }}-
+
+        - name: tidy - base of the change
+          if: inputs.mode == 'changed'
+          shell: bash
+          env:
+              BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+              REPO: ${{ inputs.repo }}
+          run: |
+            base="$BASE"
+            if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || \
+                    ! git -C "$REPO" fetch --quiet --depth=1 origin "$base"; then
+                echo "::notice title=tidy::no base commit for --changed: every unit is tidied"
+                base=""
+            fi
+            echo "KVASIR_TIDY_BASE=$base" >> "$GITHUB_ENV"
+
+        - name: tidy
+          shell: bash
+          env:
+              TREES: ${{ inputs.trees }}
+              REPO: ${{ inputs.repo }}
+              NESTED: ${{ inputs.nested }}
+              MODE: ${{ inputs.mode }}
+              VARIANT: ${{ inputs.variant }}
+              SHARD: ${{ inputs.shard }}
+          run: |
+            args=()
+            for t in $TREES; do args+=(--tree "$t"); done
+            args+=(--repo "$REPO" --variant "$VARIANT" --format github --no-lock)
+            [ "$NESTED" != true ] || args+=(--nested)
+            [ "$MODE" != changed ] || [ -z "${KVASIR_TIDY_BASE:-}" ] || args+=(--changed "$KVASIR_TIDY_BASE")
+            [ -z "$SHARD" ] || args+=(--shard "$SHARD")
+            python3 -B "$KVASIR_TIDY_SDK/tools/tidy.py" "${args[@]}"

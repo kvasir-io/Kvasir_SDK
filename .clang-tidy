@@ -1,0 +1,299 @@
+# clang-tidy configuration of the Kvasir repositories (clang-tidy 23).
+#
+# This file is Kvasir_SDK/.clang-tidy. tools/tidy.py passes it to every run with
+# --config-file, so a lone CI checkout, a sibling checkout and the CMake USE_TIDY switch all judge with this one file;
+# a .clang-tidy below it is never read by the runner. clangd finds it by directory lookup (the workspace root holds a
+# symlink to it).
+#
+# Rules for changing it:
+#   - Families are switched on with a glob; single checks are switched off below their family with a one-line
+#     reason. Only primary checks: an alias reports the same finding a second time under another name, and a NOLINT
+#     naming one does not hide the other, so every alias inside an enabled family is switched off.
+#   - tools/tidy_checks.txt is the reviewed expansion of this file (`tidy.py --update-checks`). A check that a newer
+#     clang-tidy adds under one of the globs is NOT on until that list takes it: the runner switches it off on the
+#     command line and prints a notice.
+#   - A check that is wrong for this code base is switched off or tuned here, never suppressed site by site. A check
+#     that would need more than 3 NOLINTs is a config question: the runner reports it per repository in a --repo
+#     run and over every checkout together in the workspace run; count the markers over the workspace before adding
+#     one. A remaining exception is `// NOLINTNEXTLINE(<primary check>) // <why this line is the exception>`.
+#   - Firmware-only checks are off here; tools/tidy.py (and USE_TIDY) switch them on for TUs compiled for an Arm
+#     target (marked "firmware only"; their options are set below). Host code (tests, printer, svd_converter) and
+#     editors on host files do not see them.
+#   - clang-diagnostic-* stays off: every tree builds with -Weverything -Werror; the warnings are the compiler's.
+#   - No WarningsAsErrors: the gate is tools/tidy.py (exit 1 on any finding of an enabled check). Editors and a
+#     USE_TIDY build show findings as warnings and keep building.
+
+Checks:
+  - '-*'
+
+  # ---- bugprone: real defects. Most of the family finds nothing today and stays on as a guard. ------------------
+  - bugprone-*
+  - -bugprone-casting-through-void            # its fix is a reinterpret_cast, which the layer rules keep out; the hits are byte storage
+  - -bugprone-crtp-constructor-accessibility  # the flagged "CRTP" bases are empty policy and trait structs, never built alone
+  - -bugprone-dynamic-static-initializers     # fires on extern linker symbols and constant-initialized inline statics; -Wglobal-constructors catches real dynamic init
+  - -bugprone-easily-swappable-parameters     # register, clock and pin functions take several integers by design
+  - -bugprone-random-generator-seed           # tests seed on purpose so that they are deterministic; firmware has no generator to seed
+  - -bugprone-signed-char-misuse              # std::int8_t is a small integer here (PIO assembler sentinels), and CharTypedefsToIgnore cannot match a member spelled std::int8_t (using-sugar, 23.1.1 fixture); -Wsign-conversion keeps the real char-to-int mixes visible
+  - -bugprone-signed-bitwise                  # signed shifts are defined since C++20; int IRQ numbers and shift counts (81 sites in 6 TUs even with IgnorePositiveIntegerLiterals)
+  - -bugprone-throwing-static-initialization  # reports constant initialization too (constinit does not silence it); firmware and host tests build with -fno-exceptions
+  - -bugprone-unhandled-exception-at-new      # asks for a try/catch around every new; firmware has none, host code lets bad_alloc terminate
+  # bugprone-narrowing-conversions stays ON: -Weverything does not see narrowing in compound assignment to a SIGNED
+  # type (`int i; i += int64;`, `int32_t s; s -= uint32_t;`); 0 sites today, a guard. Unsigned destinations
+  # (`uint32_t t; t += uint64;`, the register and tick math) are seen by neither: modular, so the check skips them.
+
+  # ---- clang-analyzer: path-sensitive bugs (null, uninitialized, shifts out of range, bounds, pointer subtraction
+  # across objects, non-volatile fixed-address reads, enum values out of range, placement new size) ---------------
+  - clang-analyzer-*
+  - -clang-analyzer-apiModeling.google.GTest  # no googletest
+  - -clang-analyzer-fuchsia.*                 # other platform
+  - -clang-analyzer-nullability.*             # needs _Nonnull annotations, which the code does not use
+  - -clang-analyzer-optin.mpi.*               # other platform
+  - -clang-analyzer-optin.osx.*               # other platform
+  - -clang-analyzer-optin.performance.GCDAntipattern  # other platform
+  - -clang-analyzer-optin.performance.Padding # cannot tell a compile-time configuration struct from a RAM table; layouts are chosen, -Wpadded is off on purpose
+  - -clang-analyzer-optin.taint.*             # no taint sources in firmware; noise on the host tools
+  - -clang-analyzer-osx.*                     # other platform
+  - -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling  # wants Annex K (memcpy_s); neither llvm-libc nor newlib has it
+  - -clang-analyzer-webkit.*                  # other platform
+
+  # ---- concurrency: libc calls that are not reentrant across ISRs, two cores and the host printer's threads ------
+  - concurrency-*
+
+  # ---- cppcoreguidelines: the type-safety profile, without the bounds profile -----------------------------------
+  - cppcoreguidelines-*
+  - -cppcoreguidelines-avoid-c-arrays                 # alias of modernize-avoid-c-arrays
+  - -cppcoreguidelines-avoid-const-or-ref-data-members # immutable configurations and driver references are members by design
+  - -cppcoreguidelines-avoid-do-while                 # do/while(0) macros and hardware poll loops (`do {} while(!ready)`)
+  - -cppcoreguidelines-avoid-magic-numbers            # alias of readability-magic-numbers
+  - -cppcoreguidelines-avoid-non-const-global-variables # ISR-shared state, .noinit records and registries are globals in firmware
+  - -cppcoreguidelines-c-copy-assignment-signature    # alias of misc-unconventional-assign-operator
+  - -cppcoreguidelines-explicit-constructor           # alias of misc-explicit-constructor
+  - -cppcoreguidelines-explicit-virtual-functions     # alias of modernize-use-override
+  - -cppcoreguidelines-macro-to-enum                  # alias of modernize-macro-to-enum
+  - -cppcoreguidelines-macro-usage                    # log, check and configuration macros need __LINE__, #cond and #if; naming covers macro names
+  - -cppcoreguidelines-missing-std-forward            # callbacks taken by forwarding reference are called more than once on purpose
+  - -cppcoreguidelines-no-suspend-with-lock          # no coroutines here (no co_await/co_yield/co_return in any checkout); 0.9 s matcher time per firmware unit
+  - -cppcoreguidelines-narrowing-conversions          # alias of bugprone-narrowing-conversions
+  - -cppcoreguidelines-noexcept-destructor            # alias of performance-noexcept-destructor
+  - -cppcoreguidelines-noexcept-move-operations       # alias of performance-noexcept-move-constructor
+  - -cppcoreguidelines-noexcept-swap                  # alias of performance-noexcept-swap
+  - -cppcoreguidelines-non-private-member-variables-in-classes # alias of misc-non-private-member-variables-in-classes
+  - -cppcoreguidelines-pro-bounds-array-to-pointer-decay # C APIs, inline asm operands and linker symbols decay by nature
+  - -cppcoreguidelines-pro-bounds-avoid-unchecked-container-access # its fix is .at(), which throws (-fno-exceptions); libc++ hardening traps out-of-range indexes
+  - -cppcoreguidelines-pro-bounds-constant-array-index # same, for every runtime index
+  - -cppcoreguidelines-pro-bounds-pointer-arithmetic  # DMA buffers, memory windows, fault frames and queues are pointer arithmetic
+  - -cppcoreguidelines-pro-type-member-init           # storage left uninitialized on purpose (StaticVector bytes, .noinit records, FixedString data); uninitialized READS are the analyzer's. Its real sites are fixed once from an audit run
+  - -cppcoreguidelines-pro-type-reinterpret-cast      # cannot be scoped by path; tools/layer_check.py owns casts with its keep list (Register layer, memory windows)
+  - -cppcoreguidelines-pro-type-vararg                # firmware only (host test harnesses and the printer print with printf)
+  - -cppcoreguidelines-rvalue-reference-param-not-moved # sinks consume by scope: a packet or buffer handle taken by && is released when the callee lets it die (net's packet sinks, 11 sites); a missed move is no defect
+  - -cppcoreguidelines-use-enum-class                # plain enums are the bit-flag, register-offset/value NTTP and signed-index idiom (BootGuard flags, STM32 GPIO offsets, gfx edge ids, aglio's unscoped-enum wire case): 5 NOLINTs in 4 checkouts even with IgnoreUnscopedEnumsInClasses; enum class stays the default by review
+  - -cppcoreguidelines-special-member-functions       # 66 of 80 baseline sites are non-copyable guards (copy deleted, trivial destructor), a shape 23.1.1 has no option for; no heap, no ownership to leak
+  - -cppcoreguidelines-use-default-member-init        # alias of modernize-use-default-member-init
+
+  # ---- misc ------------------------------------------------------------------------------------------------------
+  - misc-*
+  # misc-const-correctness judges ONE template instantiation: a local that only an `if constexpr` branch, another
+  # instantiation, an asm output or a lambda inside a template argument writes is reported (15 NOLINTs across the
+  # repositories), and its fix-it is unsafe here - REMOTE_FMT_SITE_TAG made const lets LTO merge call-site ids, a
+  # const local drops a lambda capture silently, a const made in the host tests' instantiation breaks the firmware
+  # instantiations that assign it. It finds no defect class, only missing const.
+  - -misc-const-correctness
+  - -misc-coroutine-hostile-raii             # no coroutines here (no co_await/co_yield/co_return in any checkout); 0.9 s matcher time per firmware unit
+  - -misc-definitions-in-headers             # the runtime glue headers define ABI symbols on purpose; every image is one TU
+  - -misc-explicit-constructor                # implicit conversions are the API: string literals to FixedString NTTPs, field values, bus addresses
+  - -misc-header-include-cycle                # tools/layer_check.py owns include cycles, with its keep table
+  - -misc-include-cleaner                     # judges main files only and misfires both ways on the umbrella headers (chip.hpp, core.hpp, drivers); audit only
+  - -misc-multiple-inheritance                # mixins of empty policy structs are a design tool
+  - -misc-no-recursion                        # cannot tell consteval recursion (parsers, format checks) from runtime recursion; audit only
+  - -misc-static-assert                       # false positive on every runtime assert with glibc's variadic assert macro
+  - -misc-use-internal-linkage                # -Wmissing-prototypes/-Wmissing-variable-declarations cover functions and variables; LTO internalizes; the rest is types in mains
+  # misc-non-private-member-variables-in-classes stays ON for PROTECTED data only (IgnorePublicMemberVariables):
+  # public data members are the API of descriptors, configurations and drivers (50 round-1 sites); protected data
+  # couples a base to every derived class.
+
+  # ---- modernize: mechanical improvements with fix-its ---------------------------------------------------------
+  - modernize-*
+  - -modernize-avoid-c-arrays                 # still flags `T const (&)[N]` and `char const (&)[N]`, the string-literal NTTP and consteval table idiom
+  - -modernize-avoid-c-style-cast             # -Wold-style-cast (in -Weverything -Werror) owns C casts, cppcoreguidelines-pro-type-cstyle-cast the dangerous ones; 23.1.1 reports an NTTP in a default member initializer of an aggregate-built class as a cast, with no spelling that avoids it (19 sites)
+  - -modernize-avoid-setjmp-longjmp          # firmware only (host tests leave a [[noreturn]] panic path with longjmp)
+  - -modernize-concat-nested-namespaces       # nested and A::B namespaces both read fine; 238 sites of churn without a defect
+  - -modernize-macro-to-enum                  # configuration macros are tested with #if and must stay macros
+  - -modernize-min-max-use-initializer-list   # turns two std::min/max calls into an initializer_list loop, a library call that can stay out of line in flash under a RAM function; nested calls are no defect
+  - -modernize-use-auto                       # the code spells types where they are not obvious
+  - -modernize-use-designated-initializers    # positional pin, CRC and value-name tables are compact on purpose; also the check that leaks out of the generated headers
+  - -modernize-use-integer-sign-comparison    # -Wsign-compare/-Wsign-conversion already force an explicit cast; it then flags that cast
+  - -modernize-use-std-format                 # firmware formats through remote_fmt, the host tools through fmt
+  - -modernize-use-std-print                  # same
+  - -modernize-use-trailing-return-type       # style
+
+  # ---- performance: stack, copies and soft float on small cores ------------------------------------------------
+  - performance-*
+  - -performance-enum-size                    # a narrower enum changes record layouts and can cost a zero-extension on Thumb; decided per RAM table (audit)
+  - -performance-faster-string-find           # alias of performance-prefer-single-char-overloads
+  - -performance-no-int-to-ptr                # addresses are integers in firmware (linker symbols, ROM tables, DMA)
+
+  # ---- portability ---------------------------------------------------------------------------------------------
+  - portability-*
+  - -portability-avoid-pragma-once            # #pragma once is the house style
+  - -portability-no-assembler                 # inline asm is the core port (cpsid, dmb, wfe, bkpt, mrs)
+  - -portability-restrict-system-includes     # firmware only (hosted runtime headers, see Includes below)
+  - -portability-simd-intrinsics             # no SIMD intrinsics here (Cortex-M0+/M33/M4 without MVE, host tools without them); 0.8 s matcher time per firmware unit
+  - -portability-template-virtual-member-function # an MSVC instantiation difference; no MSVC here
+
+  # ---- readability ---------------------------------------------------------------------------------------------
+  - readability-*
+  - -readability-avoid-nested-conditional-operator # constexpr selection chains
+  - -readability-avoid-return-with-void-value # `return fail(...)` in a void consteval step is the assemblers' error idiom
+  - -readability-convert-member-functions-to-static # stateless hardware handles and policy hooks are called through an object on purpose
+  - -readability-function-cognitive-complexity # clock solvers, consteval parsers and ISR state machines are complex by nature
+  - -readability-function-size                # no limit that means anything here
+  - -readability-identifier-length            # i, n, T, a/b are the idiom in short helpers
+  - -readability-magic-numbers                # register values, datasheet constants and bit positions are checked against the datasheet as written
+  - -readability-make-member-function-const   # a method that writes hardware registers touches no member and is still not const
+  - -readability-math-missing-parentheses     # style; -Wparentheses already catches the dangerous mixes
+  - -readability-named-parameter              # unnamed tag and unused parameters are the template idiom
+  - -readability-qualified-auto               # libc++ hardening modes change iterator types; auto* would depend on the mode
+  - -readability-redundant-casting            # a cast redundant on one target is needed on another (int32_t is long under gcc, size_t differs on the host)
+  - -readability-redundant-lambda-parameter-list # style
+  - -readability-redundant-member-init        # its fix-it drops a zero-fill (`A a{}` of a class with a defaulted constructor and an uninitialized member: garbage) and the `{}` that keeps -Wmissing-(designated-)field-initializers quiet on aggregates
+  - -readability-redundant-nested-if          # style; its fix adds parentheses and merges if constexpr chains
+  - -readability-redundant-parentheses        # flags requires(X) as clang-format writes it and template parameters in decltype
+  - -readability-redundant-qualified-alias    # its fix writes namespace-scope using-declarations, which the no-alias rule forbids
+  - -readability-redundant-typename           # both compilers accept either spelling; churn without a defect behind it
+  - -readability-static-accessed-through-instance # Reg::field.mask on a field object is the register API
+  - -readability-trailing-comma               # a trailing comma changes how clang-format lays out a braced list: a formatting decision
+  - -readability-use-anyofallof               # a loop with an early return reads better than a lambda in ISR and consteval code
+
+  # ---- google: only the primaries that fit (the rest are aliases, googletest, Objective-C or Google style) ------
+  - google-build-explicit-make-pair
+  - google-default-arguments                  # default arguments on virtual functions
+  - google-runtime-operator                   # overloaded unary &
+
+  # Not enabled: cert (all aliases since clang-tidy 23), llvm (header guards and namespace comments contradict
+  # #pragma once and the formatter), fuchsia (no default arguments, no operator overloading), hicpp (removed in 23),
+  # google-runtime-int and google-runtime-float (user-defined literals must take unsigned long long / long double: a
+  # floating unit literal is all 31 baseline sites), google-global-names-in-headers (every image is one TU - the reason
+  # misc-definitions-in-headers is off; headers like using_literals.hpp exist to put names in scope), altera, android,
+  # abseil, boost, darwin, linuxkernel, llvmlibc, mpi, objc, openmp, zircon (other platforms).
+
+# Every user header reports; what is not ours is cut by structure, not by repository name (CI checkouts live under
+# /opt/kvasir, /__w/..., <tree>/_deps/...): generated register and version headers, fetched dependencies, the
+# llvm_port-generated runtime libraries and vendored brigand. The patterns match the symlinked spellings too
+# (chip_rp2350/src/chip/rp_common/..., tests/../src/...). -isystem headers (libc, libc++, fmt, glaze, mp-units,
+# enchantum) are silent anyway. tools/tidy.py also drops every finding whose PRIMARY location is in one of these
+# paths (an excluded header still reports when one of its notes lands in a reported header) or in the build tree.
+HeaderFilterRegex: '.*'
+ExcludeHeaderFilterRegex: '(svd_converter_generated|cmake_git_version_generated|/_deps/|/lib/(libc|libcxx|compiler-rt)/|/Mpl/brigand\.hpp$)'
+SystemHeaders: false
+FormatStyle: none   # tools/tidy.py --fix formats the touched files with the repository's formatter afterwards
+
+CheckOptions:
+  # ---- bugprone -------------------------------------------------------------------------------------------------
+  # The check macros vanish at check level 0 (`false ? touch(cond) : 0`): a side effect in the condition would run
+  # in debug images and silently not in release. KVASIR_SOFT_CHECK always evaluates: not listed.
+  bugprone-assert-side-effect.AssertMacros: 'assert,KVASIR_CHECK,KVASIR_CHECK_EQ,KVASIR_CHECK_NE,KVASIR_CHECK_LT,KVASIR_CHECK_LE,KVASIR_CHECK_GT,KVASIR_CHECK_GE,KVASIR_DCHECK,KVASIR_DCHECK_EQ,KVASIR_DCHECK_NE,KVASIR_DCHECK_LT,KVASIR_DCHECK_LE,KVASIR_DCHECK_GT,KVASIR_DCHECK_GE'
+  # Callbacks stored in drivers.
+  bugprone-capturing-this-in-member-variable.FunctionWrapperTypes: '::std::function;::std::move_only_function;::Kvasir::StaticFunction'
+  # A host test's main that lets an exception out is a failing test (119 of the 120 baseline sites); destructors,
+  # moves and noexcept functions stay checked (the printer and svd_converter use exceptions).
+  bugprone-exception-escape.CheckMain: false
+  # A compile-time constant product (SamWaitBounds' template argument) is checked by constant evaluation anyway;
+  # the runtime tick * Hz products widened afterwards are the clock-math bug class this check is kept for.
+  bugprone-implicit-widening-of-multiplication-result.IgnoreConstantIntExpr: true
+  # int -> float loses bits above 2^24: soft float on the M0+, single precision on the M33/M4F FPUs.
+  bugprone-narrowing-conversions.WarnOnIntegerToFloatingPointNarrowingConversion: true
+  bugprone-narrowing-conversions.WarnOnEquivalentBitWidth: true
+  # The register and driver math lives in templates: a narrowing that depends on a template argument is only seen in
+  # the instantiation (0 extra sites on 4 register-heavy units: RP2350 example, chip conformance, SDK and driver tests).
+  bugprone-narrowing-conversions.WarnWithinTemplateInstantiation: true
+  bugprone-narrowing-conversions.PedanticMode: false
+  # ABI names that must be spelled this way: EABI helpers, linker-script symbols, linker --wrap pairs, stack
+  # protector, UBSan minimal runtime, libatomic, C++ ABI, llvm-libc and compiler-rt entry points, newlib syscalls. The
+  # builds pass -Wno-reserved-identifier, so this is the only guard.
+  bugprone-reserved-identifier.AllowedIdentifiers: '^__aeabi_.*$;^_LINKER_.*$;^__wrap_.*$;^__real_.*$;^__stack_chk_(fail|guard)$;^__ubsan_handle_.*$;^__atomic_.*$;^__sync_.*$;^__cxa_.*$;^__dso_handle$;^__llvm_libc_.*$;^__udivmoddi4$;^__assert_func$;^__libc_(init|fini)_array$;^_sbrk$;^_exit$'
+  # `sizeof(T) > 0` forces a template to be complete/instantiated.
+  bugprone-sizeof-expression.WarnOnSizeOfCompareToConstant: false
+  # static_cast<void>(f()) is how a result is discarded deliberately.
+  bugprone-unused-return-value.AllowCastToVoid: true
+  # the default list less boost::system::error_code: asio's error_code overloads (close, shutdown, connect, cancel,
+  # set_option ... with an `ec` out-parameter) also return the code they wrote into it - 24 discarded copies in the
+  # printer and its tests, none a lost error
+  bugprone-unused-return-value.CheckedReturnTypes: '^::std::error_code$;^::std::error_condition$;^::std::errc$;^::std::expected$'
+
+  # an empty catch that says why it swallows (`catch(...) { /* ignored: <why> */ }`): best-effort cleanup in
+  # destructors and noexcept paths, a probe that may reset under a write
+  bugprone-empty-catch.IgnoreCatchWithKeywords: '@TODO;@FIXME;ignored:'
+
+  # ---- concurrency ----------------------------------------------------------------------------------------------
+  # POSIX's list (strerror, strtok, rand, getenv, localtime ...): llvm-libc, newlib and glibc alike. exit() in the
+  # panic examples is not on it.
+  concurrency-mt-unsafe.FunctionSet: posix
+
+  # ---- cppcoreguidelines ----------------------------------------------------------------------------------------
+  # ---- misc -----------------------------------------------------------------------------------------------------
+  # Aggregates, descriptors and register snapshots are all-public by design; only mixed visibility is reported.
+  misc-non-private-member-variables-in-classes.IgnorePublicMemberVariables: true
+  # Parameters a log or check macro may compile out.
+  misc-unused-parameters.IgnoreMacroParameters: true
+
+  # ---- performance ----------------------------------------------------------------------------------------------
+  # std::move of a trivially copyable value (a handle, a packet descriptor, a register snapshot) is the author saying
+  # "this is consumed here"; it costs nothing. A move of a const object and a move that hides a copy stay reported.
+  performance-move-const-arg.CheckTriviallyCopyableMove: false
+
+  # ---- readability ----------------------------------------------------------------------------------------------
+  # Register reads and pointers as conditions (`if(apply(read(Regs::CTRL::enable)))`) stay as they are;
+  # `bool b = reg & mask;` and `uint8_t x = flag;` are still flagged.
+  readability-implicit-bool-conversion.AllowIntegerConditions: true
+  readability-implicit-bool-conversion.AllowPointerConditions: true
+  readability-operators-representation.BinaryOperators: '&&;&=;&;|;~;!;!=;||;|=;^;^='
+  readability-operators-representation.OverloadedOperators: '&&;&=;&;|;~;!;!=;||;|=;^;^='
+  # CHECK(a && b) expands to if(!(a && b)): not the author's expression (74 -> 1 site).
+  readability-simplify-boolean-expr.IgnoreMacros: true
+  # Its De Morgan rewrite negates comparisons: `!(p > lo && p < hi)` rejects a NaN, `p <= lo || p >= hi` lets it
+  # through (sensor range checks); a negated conjunction is written as meant.
+  readability-simplify-boolean-expr.SimplifyDeMorgan: false
+  # Integer suffixes upper case (the house spelling, 3991 U against 104 u, and 1l vs 11); float f/F are left alone.
+  readability-uppercase-literal-suffix.NewSuffixes: 'U;L;UL;LL;ULL;Z;UZ'
+
+  # ---- firmware only (switched on per TU by tools/tidy.py) ------------------------------------------------------
+  # Runtime headers that need a hosted OS, threads, streams, RTTI or exceptions. Containers (<vector>, <map>, <set>,
+  # <string>) and <random> stay allowed: firmware TUs use them in consteval code; the engines need no OS.
+  portability-restrict-system-includes.Includes: '*,-thread,-mutex,-shared_mutex,-condition_variable,-future,-semaphore,-latch,-barrier,-stop_token,-execution,-iostream,-istream,-ostream,-ios,-iosfwd,-streambuf,-sstream,-fstream,-iomanip,-syncstream,-spanstream,-filesystem,-regex,-locale,-codecvt,-format,-print,-stdexcept,-typeinfo,-cstdio,-stdio.h,-pthread.h,-unistd.h,-sys/*'
+
+  # ---- naming: the kinds the code already spells one way ---------------------------------------------------------
+  # Types, concepts and template parameters CamelCase; functions, methods, parameters, variables and members
+  # camelBack; macros UPPER_CASE. A trailing _ (state, private helpers) is allowed, not required. Constants,
+  # constexpr variables, enumerators and namespaces are spelled both ways today and are not checked (aNy_CasE).
+  # Names a std protocol fixes, C-linkage/ABI names and the names the log macros declare in every user are ignored.
+  readability-identifier-naming.ClassCase: CamelCase
+  readability-identifier-naming.ClassIgnoredRegexp: '^(formatter|hash|tuple_size|tuple_element|numeric_limits|common_type|pointer_traits|iterator_traits|is_[a-z_]+|[a-z_]+_tag)$'
+  readability-identifier-naming.StructCase: CamelCase
+  readability-identifier-naming.StructIgnoredRegexp: '^(formatter|hash|tuple_size|tuple_element|numeric_limits|common_type|pointer_traits|iterator_traits|is_[a-z_]+|[a-z_]+_tag)$'
+  readability-identifier-naming.UnionCase: CamelCase
+  readability-identifier-naming.EnumCase: CamelCase
+  readability-identifier-naming.ConceptCase: CamelCase
+  readability-identifier-naming.TypeAliasCase: CamelCase
+  readability-identifier-naming.TypeAliasIgnoredRegexp: '^[a-z][a-z0-9_]*$|_t$|^(UC_LOG_|REMOTE_FMT_|DO_NOT_USE_).*$'   # std protocol members (type, value_type, rep), *_t, macro-internal aliases
+  readability-identifier-naming.TypedefCase: lower_case    # only the C-compatible uc_log_env_t
+  readability-identifier-naming.TemplateParameterCase: CamelCase
+  readability-identifier-naming.FunctionCase: camelBack
+  readability-identifier-naming.FunctionIgnoredRegexp: '^(_LINKER_.*|__.*|_sbrk|_exit|kvasir_.*|uc_log_.*|JLINK_.*|main|[A-Z][A-Za-z0-9]*ISR|LLVMFuzzer[A-Za-z]+|format_to)$'   # JLINK_*: the J-Link DLL's C exports keep the vendor's names; LLVMFuzzer*: libFuzzer's entry point and hooks; format_to: remote_fmt's fmt-shaped free function, found by the fmt-style callers
+  readability-identifier-naming.MethodCase: camelBack
+  # Methods: a trailing _ on private helpers (fromList_); the std vocabulary of the containers, locks and
+  # formatters keeps its std spelling; ISR entries named by the linker script (ResetISR); rename_key: glaze's glz::meta member.
+  readability-identifier-naming.MethodIgnoredRegexp: '^([a-z][a-zA-Z0-9]*_|push_back|pop_back|emplace_back|push_front|pop_front|emplace_front|try_push_back|try_emplace_back|unchecked_push_back|unchecked_emplace_back|append_range|try_append_range|insert_range|assign_range|resize_and_overwrite|max_size|shrink_to_fit|remove_prefix|remove_suffix|starts_with|ends_with|find_first_of|find_last_of|has_value|value_or|try_lock|try_lock_for|try_lock_until|lock_shared|unlock_shared|format_to|parse|format|rename_key|[A-Z][A-Za-z0-9]*ISR)$'
+  readability-identifier-naming.ParameterCase: camelBack
+  # a trailing _ like the member it initialises (depth_ -> depth)
+  readability-identifier-naming.ParameterIgnoredRegexp: '^([a-z][a-zA-Z0-9]*_|UC_LOG_.*|REMOTE_FMT_.*|DO_NOT_USE_.*|UBSAN_.*|kvasir_.*)$'
+  readability-identifier-naming.VariableCase: camelBack
+  readability-identifier-naming.VariableIgnoredRegexp: '^(UC_LOG_.*|REMOTE_FMT_.*|DO_NOT_USE_.*|_LINKER_.*|__.*|kvasir_.*|uc_log_.*|[a-z][a-zA-Z0-9]*_)$'
+  readability-identifier-naming.LocalConstantCase: camelBack
+  readability-identifier-naming.LocalConstantIgnoredRegexp: '^(UC_LOG_.*|REMOTE_FMT_.*|DO_NOT_USE_.*)$'
+  readability-identifier-naming.ConstexprVariableCase: aNy_CasE
+  readability-identifier-naming.ConstantCase: aNy_CasE
+  readability-identifier-naming.EnumConstantCase: aNy_CasE
+  readability-identifier-naming.MemberCase: camelBack
+  readability-identifier-naming.MemberIgnoredRegexp: '^[a-z][a-zA-Z0-9]*_$'
+  readability-identifier-naming.MacroDefinitionCase: UPPER_CASE
+  readability-identifier-naming.IgnoreMainLikeFunctions: true

@@ -1,0 +1,8 @@
+# clang-tidy checks for firmware translation units only (a command with an Arm target or -mcpu=cortex-m*): they are
+# off in ../.clang-tidy, and tools/tidy.py and the CMake USE_TIDY switch (cmake/tidy.cmake) add them on the command
+# line for firmware. Host code (tests, printer, svd_converter) uses all three on purpose. Their options are in the config.
+# One check per line; `#` starts a comment.
+
+portability-restrict-system-includes   # no hosted runtime in firmware: threads, streams, filesystem, RTTI, exceptions
+cppcoreguidelines-pro-type-vararg      # no printf-style varargs in firmware; logs go through uc_log
+modernize-avoid-setjmp-longjmp         # no longjmp in firmware (host tests leave the panic path with it)
