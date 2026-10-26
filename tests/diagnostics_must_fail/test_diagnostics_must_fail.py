@@ -219,7 +219,8 @@ ROWS = [
     # Register's variadic factories take fields only since the pins and their factories live in Kvasir::Io
     ("a pin in Register's variadic set",
      "void f() { apply(R::set(CTRLREG::div, Kvasir::Io::PinLocation<0, 3>{})); }\n", [],
-     ["no matching function for call to"]),   # gcc quotes the name in typographic quotes, clang in straight ones
+     # gcc quotes the name in typographic quotes, clang in straight ones
+     ["no matching function for call to"]),
     ("clear of a write-only toggle field",
      "struct WoToggle { using Addr = R::Address<0x54, 0xFFFFFFFFU, 0, std::uint32_t>;\n"
      "  static constexpr R::FieldLocation<Addr, 1U, R::Access<R::AccessType::writeOnly, R::ReadActionType::normal,"

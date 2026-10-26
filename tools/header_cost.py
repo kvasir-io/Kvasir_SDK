@@ -135,7 +135,8 @@ def preprocess(entry):
         if line.strip():
             per_file[current] += 1
     # a pre-include that adds no line (stdc-predef.h is macros only) is not a file this source pulls in
-    files = {f for f in seen if not f.startswith("<") and not (f in preincluded and per_file[f] == 0)}
+    files = {f for f in seen if not f.startswith(
+        "<") and not (f in preincluded and per_file[f] == 0)}
     return per_file, files, args
 
 
