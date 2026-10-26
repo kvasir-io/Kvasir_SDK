@@ -67,10 +67,10 @@ FORMS.append((CRIT, ('crit',)))
 # (file, function name, why): functions only a fatal path calls, which log crit for it. The file is the tail of its
 # path, whole directories (matches()): the scan of the repository it lives in may start below the directory named.
 ALLOW = [
-    ('core/Fault.hpp', 'Log', 'the COREFAULT dump: called only from Fault::HandlerFor\'s logRecord after '
+    ('core/Fault.hpp', 'log', 'the COREFAULT dump: called only from Fault::HandlerFor\'s logRecord after '
                               'beginFatal()'),
     ('cortex_common/FaultLog.hpp', 'logCoreFault', 'the Armv7-M/Armv8-M COREFAULT dump: called only from a core\'s '
-                                                   'core/Fault.hpp Log'),
+                                                   'core/Fault.hpp log'),
     ('Runtime/ubsan.hpp', 'ubsanFatalReport',
      'the two UBSan reports that end the run: only inside KVASIR_DETAIL_FATAL'),
 ]
