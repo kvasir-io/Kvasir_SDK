@@ -1,9 +1,11 @@
 #pragma once
 
 #include "kvasir/Atomic/Atomic.hpp"
-#include "kvasir/Common/Core.hpp"
 #include "kvasir/Common/Tags.hpp"
-#include "kvasir/StartUp/LinkerSymbols.hpp"
+#include "kvasir/Mpl/List.hpp"
+#include "kvasir/Port/Capabilities.hpp"
+#include "kvasir/Port/Hooks.hpp"
+#include "kvasir/Port/LinkerSymbols.hpp"
 #include "kvasir/StartUp/StartUp.hpp"
 
 #include <algorithm>
@@ -18,9 +20,9 @@
 namespace Kvasir::Startup {
 
 #if defined(KVASIR_MULTICORE) && KVASIR_MULTICORE
-inline constexpr bool MulticoreEnabled = true;
+inline constexpr bool multicoreEnabled = true;
 #else
-inline constexpr bool MulticoreEnabled = false;
+inline constexpr bool multicoreEnabled = false;
 #endif
 
 // How long launch() waits for the other core to report ready, on a clock the primary core
@@ -28,7 +30,7 @@ inline constexpr bool MulticoreEnabled = false;
 //
 //   using Core1 = SecondaryCore<&core1Main, LaunchTimeout<Clock, 2000>, ...>;
 //
-// Without one the wait is a fixed number of polls (ReadyBudget), which is a time only for
+// Without one the wait is a fixed number of polls (readyBudget), which is a time only for
 // one core clock: a longer core 1 init list or a slower clock then fails launch for no
 // reason, so a real application should name its clock.
 template<typename Clock, std::uint32_t TimeoutMs>
@@ -68,9 +70,9 @@ struct NoCoreResetGuard {
 //
 // Listing the SecondaryCore in the primary Startup list launches it from runtimeInit, i.e.
 // after core 0's own list has completed and just before main(); launch() blocks until core
-// 1's list has completed too, so when main() runs, both cores are configured. Startup
-// static_asserts that no peripheral is in both lists and that nothing with a runtimeInit
-// follows the SecondaryCore.
+// 1's list has completed too, so when main() runs, both cores are configured. The rules over
+// both lists (no peripheral in both, nothing with a runtimeInit after the SecondaryCore, ...)
+// are Checks.hpp's ImageChecks, asserted by Startup.
 //
 // The stack is the linker's .stack1, sized by CORE1_STACK_SIZE (kvasir_executable_variants),
 // which also defines KVASIR_MULTICORE and with it the cross-core atomic shim and queue
@@ -79,48 +81,92 @@ struct NoCoreResetGuard {
 // stack limit, and an overflow there runs into core 0's stack top unnoticed. The stack is
 // filled with a pattern at launch, and stackHighWater() reads how much of it was ever used.
 //
-// The chip half (SecondaryCoreInit<Tag::User>: the CPACR mask, launch(), reset()) lives in
+// The chip half (SecondaryCoreInit<Tag::User>: the CPACR mask, launch(), reset(), optionally armCoreResetGuard(),
+// armOtherCoreStop() and PrimaryIsr) lives in
 // the chip's StartUp.hpp, next to FirstInitStep.
+namespace Detail {
+    template<typename List>
+    inline constexpr bool anyNoCoreResetGuard = false;
+
+    template<typename... Ts>
+    inline constexpr bool anyNoCoreResetGuard<brigand::list<Ts...>>
+      = (requires { Ts::noCoreResetGuard; } || ...);
+
+    template<typename Init>
+    struct PrimaryIsrOf {
+        using type = brigand::list<>;
+    };
+
+    template<typename Init>
+        requires requires { typename Init::PrimaryIsr; }
+    struct PrimaryIsrOf<Init> {
+        using type = typename Init::PrimaryIsr;
+    };
+
+    template<typename... Ts>
+    using FirstLaunchTimeout = MPL::FirstWhereT<ListRules::Detail::IsLaunchTimeout, Ts...>;
+
+    // The hooks and the early phase over the list as this core runs it (SecondaryCore::Entries: its groups replaced by
+    // their members, Entry.hpp), as the pack calls Startup's StartupImpl makes over its list.
+    template<typename List>
+    struct OnEntries;
+
+    template<typename... Es>
+    struct OnEntries<brigand::list<Es...>> {
+        template<typename H>
+        [[gnu::always_inline]] static void callEach() {
+            Detail::callEach<H, Es...>();
+        }
+
+        template<typename H>
+        [[gnu::always_inline]] static bool allTrue() {
+            return Detail::allTrue<H, Es...>();
+        }
+
+        template<typename P>
+        [[gnu::always_inline]] static void applyPhase() {
+            Detail::applyPhase<P, Es...>();
+        }
+    };
+}   // namespace Detail
+
 template<void (*Main)(), typename... Peripherals>
 struct SecondaryCore {
-    static_assert(sizeof...(Peripherals) >= 0 && MulticoreEnabled,
+    static_assert(sizeof...(Peripherals) >= 0 && multicoreEnabled,
                   "SecondaryCore needs a multicore build: pass CORE1_STACK_SIZE to "
                   "kvasir_executable_variants / target_configure_kvasir");
 
-    // The peripherals plus one generated dispatcher per shared vector (SharedIsr.hpp).
-    using PeripheralList = Detail::WithSharedDispatchers<Peripherals...>;
+    // The list as this core runs it: every group entry (Entry.hpp) replaced by its members in its place. Everything
+    // below reads it, never Peripherals... itself.
+    using Entries   = Detail::Entries<Peripherals...>;
+    using OnEntries = Detail::OnEntries<Entries>;
 
-    // The list's shape (ListRules.hpp), the same rules Startup applies to its own list.
-    static_assert(ListRules::NoDuplicateEntry<PeripheralList>::value,
-                  "a peripheral is listed twice in one SecondaryCore list: its init steps "
-                  "would run twice");
-    static_assert(ListRules::AllArePeripherals<Detail::IsSecondaryCore,
-                                               PeripheralList>::value,
-                  "a type in the SecondaryCore list is not a peripheral (no init step, Isr, "
-                  "runtime hook or Provides/Claims): a driver's Config listed instead of the "
-                  "driver, or a typo'd alias - it would contribute nothing");
-    static_assert(ListRules::NoSecondaryIn<Detail::IsSecondaryCore,
-                                           PeripheralList>::value,
-                  "a SecondaryCore inside a SecondaryCore's list: the chip has one other core, "
-                  "and only the primary Startup list launches it");
-    static_assert(ListRules::NoClockSettingsIn<PeripheralList>::value,
-                  "a ClockSettings in a SecondaryCore list: the clock tree is chip-wide and "
-                  "core 0's job (Startup's first argument)");
-    static_assert(Detail::InterruptReports<SecondaryCore,
-                                           PeripheralList>::value);
-    static_assert(
-      ListRules::EnabledLinesHandled<typename ListRules::EnabledInterruptsIn<PeripheralList>::type,
-                                     typename Detail::IsrsOf<PeripheralList>::type>::value,
-      "an init step enables an interrupt line for which nothing in this SecondaryCore's list "
-      "installs an Isr (see the Report above for the index)");
+    // The entries plus one generated dispatcher per shared vector (SharedIsr.hpp).
+    using PeripheralList = MPL::Expand<Detail::WithSharedDispatchers, Entries>;
+
+    // The list's checks (Checks.hpp): the same block as Startup's for its own list, so an error
+    // here names its offender and core 1 too. The rules over both lists run in Startup.
+    // The checks' view of the chip (StartUp.hpp's), its interrupt traits looked up late on this core's list.
+    using Context = Detail::StartupContext<SecondaryCore>;
+
+    static_assert(Checks::CheckList<Context,
+                                    Checks::Role::secondary,
+                                    1,
+                                    SecondaryCore,
+                                    Entries,
+                                    PeripheralList>::value);
 
     // The extra argument makes the lookup dependent on Main: a chip package without the
     // specialisation (single-core parts) then compiles unless a SecondaryCore is actually
     // used, instead of failing in every build that includes StartUp.hpp.
     using Init = SecondaryCoreInit<Kvasir::Tag::User, std::integral_constant<void (*)(), Main>>;
+    static_assert(Port::ChipSecondaryCore<Init>,
+                  "Kvasir port: the chip package provides no Startup::SecondaryCoreInit<Tag::User> "
+                  "with cpacrEnable "
+                  "(chip/StartUp.hpp) - this chip has no second core in Kvasir");
 
     // ARM "udf #255": a runaway into unused stack faults, and the watermark is unambiguous.
-    static constexpr std::uint32_t StackFill = 0xFFDEFFDE;
+    static constexpr std::uint32_t stackFill = 0xFFDEFFDE;
 
     // Declared before the vector table, whose type takes &entry: a static data member's
     // declaration is not a complete-class context, so the name has to be visible already.
@@ -133,16 +179,20 @@ struct SecondaryCore {
 
     [[noreturn]] static void start();
 
-    using IsrList = typename Detail::IsrPointersForList<std::addressof(_LINKER_stack1_end_),
-                                                        std::addressof(entry),
-                                                        PeripheralList>::type;
+    // This core's ISRs, through the list's IsrTransform if an entry has one (Entry.hpp; IsrProfiling on core 1).
+    using IsrList = typename Detail::
+      IsrTransformInT<typename Detail::IsrsOf<PeripheralList>::type, 1, Entries>::type;
+    using Table = Detail::VectorTable<std::addressof(_LINKER_stack1_end_),
+                                      std::addressof(entry),
+                                      typename Context::Traits,
+                                      IsrList>;
 
     // gnu::used does not instantiate a class-template member; launch() taking the address
     // for VTOR is what keeps this in the image, and the linker script keeps the section.
     [[gnu::used,
       gnu::section(".core1_vectors"),
-      gnu::aligned(Detail::vectorTableAlignment(brigand::size<IsrList>::value))]]
-    static constexpr NvicVectorTable<IsrList> nvicIsrVectors{};
+      gnu::aligned(Detail::vectorTableAlignment(Table::entries))]]
+    static constexpr Table nvicIsrVectors{};
 
     // From core 0. Handshakes with the core the bootrom parked; if that fails (core 1 is
     // already running something after a debugger restart of core 0 alone) resets it and
@@ -161,7 +211,7 @@ struct SecondaryCore {
         auto const sp = reinterpret_cast<std::uint32_t>(std::addressof(_LINKER_stack1_end_));
         auto const vt = reinterpret_cast<std::uint32_t>(std::addressof(nvicIsrVectors));
 
-        callPrimaryPrepares<Peripherals...>();
+        OnEntries::template callEach<Detail::RuntimeHook::PrimaryPrepare>();
         bool launched = handshake(pc, sp, vt);
         if(!launched) {
             reset();
@@ -169,7 +219,7 @@ struct SecondaryCore {
         }
         if(!launched) { return false; }
 
-        if(!callPrimarySyncs<Peripherals...>()) { return false; }
+        if(!OnEntries::template allTrue<Detail::RuntimeHook::PrimarySync>()) { return false; }
 
         return waitReady();
     }
@@ -183,8 +233,8 @@ struct SecondaryCore {
     static void reset() {
         Init::reset();
         ready.store(false, std::memory_order_relaxed);
-        Kvasir::Atomic::onSecondaryCoreReset();
-        callPrimaryPrepares<Peripherals...>();
+        Kvasir::Atomic::onOtherCoreStopped();
+        OnEntries::template callEach<Detail::RuntimeHook::PrimaryPrepare>();
     }
 
     // Whether every secondarySync() met its counterpart on the last launch.
@@ -193,73 +243,68 @@ struct SecondaryCore {
     // True once start() has run core 1's Startup list and handed over to Main.
     [[nodiscard]] static bool running() { return ready.load(std::memory_order_acquire); }
 
-    // Every function this core's peripherals added to Hook (Hooks.hpp), in list order: call it
+    // Every function this core's peripherals added to Hook (Port/Extends.hpp), in list order: call it
     // from Main for Hook::MainLoop on this core.
     template<typename Hook,
              typename... Args>
     [[gnu::always_inline]] static void run(Args const&... args) {
-        Kvasir::Startup::Detail::runHookOf<Hook>(static_cast<PeripheralList*>(nullptr), args...);
+        Kvasir::Startup::Detail::dispatch<Hook, void>(static_cast<PeripheralList*>(nullptr),
+                                                      args...);
     }
 
-    // run<Hook>() plus when the loop is next needed (Hooks.hpp Kvasir::Turn), for a loop that sleeps.
+    // run<Hook>() plus when the loop is next needed (Port/Extends.hpp Kvasir::Turn), for a loop that sleeps.
     template<typename Hook,
              typename... Args>
     [[gnu::always_inline]] static Kvasir::Turn runTurn(Args const&... args) {
-        return Kvasir::Startup::Detail::runTurnOf<Hook>(static_cast<PeripheralList*>(nullptr),
-                                                        args...);
+        return Kvasir::Startup::Detail::dispatch<Hook, Kvasir::Turn>(
+          static_cast<PeripheralList*>(nullptr),
+          args...);
     }
 
-    using LocalPeripherals = PeripheralList;
+    // This core's list (its entries), for Executor::adopt: the generated dispatchers add no Extend.
+    using LocalPeripherals = Entries;
 
     // Bytes of .stack1 that have ever been written since launch(), from the fill pattern.
     [[nodiscard]] static std::size_t stackHighWater() {
-        auto const* p   = stackBegin();
-        auto const* end = stackEnd();
-        while(p < end && *p == StackFill) { ++p; }
-        return static_cast<std::size_t>(end - p) * sizeof(std::uint32_t);
+        auto const* const words = stackBegin();
+        std::size_t const n     = stackSize() / sizeof(std::uint32_t);
+        std::size_t       fill  = 0;
+        while(fill < n && words[fill] == stackFill) { ++fill; }
+        return (n - fill) * sizeof(std::uint32_t);
     }
 
+    // On the symbols' addresses: two linker symbols are two objects to the compiler, their pointer difference UB.
     [[nodiscard]] static std::size_t stackSize() {
-        return static_cast<std::size_t>(stackEnd() - stackBegin()) * sizeof(std::uint32_t);
+        return linkerAddress<_LINKER_stack1_end_>() - linkerAddress<_LINKER_stack1_start_>();
     }
+
+    // Core 0's vectors the chip half needs while core 1 runs (RP: the NMI that parks core 0 after a fatal path on core
+    // 1, Port::StopOtherCore); this entry is in core 0's list, so they go into core 0's table. armOtherCoreStop(),
+    // before the launch, arms what they answer.
+    using Isr = typename Detail::PrimaryIsrOf<Init>::type;
 
     // What makes a SecondaryCore a Startup-list element: core 0 launches it here. A core
     // that does not come up is fatal for a list-launched core: main() would run against a
-    // dead partner. Logged before the assert so a build without asserts still says so.
+    // dead partner (a firmware that wants to retry calls launch() from main instead).
     static void runtimeInit() {
-        if constexpr(!(requires { Peripherals::noCoreResetGuard; } || ...)
+        if constexpr(!Detail::anyNoCoreResetGuard<Entries>
                      && requires { Init::armCoreResetGuard(); })
         {
             Init::armCoreResetGuard();
         }
-        [[maybe_unused]] bool const launched = launch();
-        if(!launched) {
-            UC_LOG_C("secondary core did not come up (handshake, rendezvous or ready wait)");
+        if constexpr(requires { Init::armOtherCoreStop(); }) { Init::armOtherCoreStop(); }
+        if(!launch()) {
+            KVASIR_DETAIL_FATAL(
+              UC_LOG_C("secondary core did not come up (handshake, rendezvous or ready wait)"),
+              ::Kvasir::Panic::raise(::Kvasir::Panic::Cause::secondaryCore));
         }
-        assert(launched);
     }
 
 private:
     // Polls of the ready flag when no LaunchTimeout is listed. At 200 MHz roughly 0.2 s.
-    static constexpr std::uint32_t ReadyBudget = 10'000'000;
+    static constexpr std::uint32_t readyBudget = 10'000'000;
 
-    template<typename T>
-      struct IsLaunchTimeout : std::bool_constant < requires {
-        T::isLaunchTimeout;
-    }>{};
-
-    template<typename... Ts>
-    struct FindLaunchTimeout {
-        using type = void;
-    };
-
-    template<typename T, typename... Ts>
-    struct FindLaunchTimeout<T, Ts...> {
-        using type = std::
-          conditional_t<IsLaunchTimeout<T>::value, T, typename FindLaunchTimeout<Ts...>::type>;
-    };
-
-    using Timeout = typename FindLaunchTimeout<Peripherals...>::type;
+    using Timeout = MPL::Expand<Detail::FirstLaunchTimeout, Entries>;
 
     static bool handshake(std::uint32_t pc,
                           std::uint32_t sp,
@@ -270,7 +315,7 @@ private:
 
     static bool waitReady() {
         if constexpr(std::is_void_v<Timeout>) {
-            for(std::uint32_t i = 0; i < ReadyBudget; ++i) {
+            for(std::uint32_t i = 0; i < readyBudget; ++i) {
                 if(ready.load(std::memory_order_acquire)) { return true; }
             }
             return false;
@@ -297,49 +342,7 @@ private:
     // resetting shared state there is race-free. Only the very first attempt after a
     // core-0-only debugger restart can meet a core 1 still running the old image; that
     // handshake fails, reset() stops core 1, and the prepare runs again on clean ground.
-    template<typename T>
-    static void callPrimaryPrepare() {
-        if constexpr(requires { T::primaryPrepare(); }) { T::primaryPrepare(); }
-    }
-
-    template<typename... Ts>
-    static void callPrimaryPrepares() {
-        (callPrimaryPrepare<Ts>(), ...);
-    }
-
-    template<typename T>
-    static bool callPrimarySync() {
-        if constexpr(requires {
-                         { T::primarySync() } -> std::same_as<bool>;
-                     })
-        {
-            return T::primarySync();
-        } else {
-            return true;
-        }
-    }
-
-    template<typename... Ts>
-    static bool callPrimarySyncs() {
-        return (callPrimarySync<Ts>() && ...);
-    }
-
-    template<typename T>
-    static bool callSecondarySync() {
-        if constexpr(requires {
-                         { T::secondarySync() } -> std::same_as<bool>;
-                     })
-        {
-            return T::secondarySync();
-        } else {
-            return true;
-        }
-    }
-
-    template<typename... Ts>
-    static bool callSecondarySyncs() {
-        return (callSecondarySync<Ts>() && ...);
-    }
+    // They are called through Entry.hpp's table (Detail::callEach / Detail::allTrue).
 
     static std::uint32_t* stackBegin() {
         return reinterpret_cast<std::uint32_t*>(std::addressof(_LINKER_stack1_start_));
@@ -349,17 +352,21 @@ private:
         return reinterpret_cast<std::uint32_t*>(std::addressof(_LINKER_stack1_end_));
     }
 
-    static void fillStack() { std::fill(stackBegin(), stackEnd(), StackFill); }
+    static void fillStack() { std::fill(stackBegin(), stackEnd(), stackFill); }
 };
 
 template<void (*Main)(),
          typename... Peripherals>
 void SecondaryCore<Main,
                    Peripherals...>::entry() {
-#if defined(__ARM_ARCH_8M_MAIN__)
-    // CPACR is read-modify-written so the bits the bootrom set (cp7 on the RP2350) stay.
-    // The mask comes in a register: it is not a Thumb modified immediate. dsb/isb make the
-    // enable take effect before the first instruction that could use a coprocessor.
+#if KVASIR_CORE_ARMV8M_MAIN
+    // CPACR (0xE000ED88, DDI0553B.y D1.2.14, md l.69493) is read-modify-written so the bits
+    // the bootrom set stay: cp7 on the RP2350, whose boot ROM runs RCP instructions on core 1
+    // while it waits for the launch (RP2350 datasheet 3.6.3.1, md l.5085; a coprocessor needs
+    // its CPACR bits, 3.6, md l.4562). The mask comes in a register: it is not a Thumb modified
+    // immediate. dsb/isb make the enable take effect before the first instruction that could
+    // use a coprocessor (an SCS write is visible after its completion and a Context
+    // synchronization event, DDI0553B.y B7.2.16 RSJQJ/RNPDJ, md l.10750-10754).
     asm volatile(
       "movw r0, #0xED88   \n"   // CPACR
       "movt r0, #0xE000   \n"
@@ -386,17 +393,13 @@ void SecondaryCore<Main,
                    Peripherals...>::start() {
     Init{}();
 
-    Kvasir::Register::apply(GetEarlyInitT<Peripherals...>{});
-    Kvasir::Register::apply(GetPowerClockInitT<Peripherals...>{});
-    Kvasir::Register::apply(GetPinInitT<Peripherals...>{});
-    Kvasir::Register::apply(GetPeripheryInitT<Peripherals...>{});
-    Kvasir::Register::apply(Detail::ExpandListT<GetInterruptInitT, PeripheralList>{});
-    callPreEnableRuntimeInits<Peripherals...>();
-    Kvasir::Nvic::enable_all();
-    Kvasir::Register::apply(Detail::ExpandListT<GetPeripheryEnableInitT, PeripheralList>{});
-    callRuntimeInits<Peripherals...>();
+    OnEntries::template applyPhase<Detail::Phase::Early>();
+    // the same sequence as core 0's, over the list with the shared-vector dispatchers (they add
+    // only interrupt phases: the other phases and the hooks are those of Entries)
+    MPL::Expand<Detail::InitPhases, PeripheralList>::run();
 
-    syncedOk.store(callSecondarySyncs<Peripherals...>(), std::memory_order_release);
+    syncedOk.store(OnEntries::template allTrue<Detail::RuntimeHook::SecondarySync>(),
+                   std::memory_order_release);
     ready.store(true, std::memory_order_release);
 
     Main();

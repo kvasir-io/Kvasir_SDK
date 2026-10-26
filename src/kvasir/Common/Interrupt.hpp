@@ -1,9 +1,8 @@
 #pragma once
 
 #include "kvasir/Mpl/Types.hpp"
-#include "kvasir/Mpl/Utility.hpp"
 
-#include <cassert>
+#include <type_traits>
 
 namespace Kvasir { namespace Nvic {
     namespace Action {
@@ -20,38 +19,22 @@ namespace Kvasir { namespace Nvic {
         template<int I>
         struct SetPriority {};
 
-        struct TriggerInterrupt {};
-
-        static constexpr Enable         enable{};
-        static constexpr Disable        disable{};
-        static constexpr SetPending     setPending{};
-        static constexpr ClearPending   clearPending{};
+        static constexpr Enable       enable{};
+        static constexpr Disable      disable{};
+        static constexpr SetPending   setPending{};
+        static constexpr ClearPending clearPending{};
+        // other levels: SetPriority<P>{} (makeSetPriority<P>); the core layer rejects a level its priority fields
+        // cannot hold, 0 .. 2^bits - 1 for the bits its core.svd implements (Armv6-M: 2, DDI0419E B1.5.4, md
+        // l.7093; Armv7-M / Armv8-M Mainline: 3 to 8, DDI0403E Table B1-6, md l.17585, DDI0553B.y RGGCP, md l.4060)
         static constexpr SetPriority<0> setPriority0{};
-        static constexpr SetPriority<1> setPriority1{};
-        static constexpr SetPriority<2> setPriority2{};
-        static constexpr SetPriority<3> setPriority3{};
-        static constexpr SetPriority<4> setPriority4{};
-        static constexpr SetPriority<5> setPriority5{};
-        static constexpr SetPriority<6> setPriority6{};
-        static constexpr SetPriority<7> setPriority7{};
-        // 8-15 only exist on a core with four priority bits (the RP2350's Cortex-M33); the
-        // core layer rejects a level its priority fields cannot hold (0-3 on a Cortex-M0+).
-        static constexpr SetPriority<8>   setPriority8{};
-        static constexpr SetPriority<9>   setPriority9{};
-        static constexpr SetPriority<10>  setPriority10{};
-        static constexpr SetPriority<11>  setPriority11{};
-        static constexpr SetPriority<12>  setPriority12{};
-        static constexpr SetPriority<13>  setPriority13{};
-        static constexpr SetPriority<14>  setPriority14{};
-        static constexpr SetPriority<15>  setPriority15{};
-        static constexpr TriggerInterrupt triggerInterrupt{};
     }   // namespace Action
 
+    // An interrupt line as a type, read as Index<I>::value (or x.value of a constant such as Interrupt::adc). An
+    // MPL::IntegralConstant, but not a runtime int: the deleted conversion hides integral_constant's operator int, so
+    // an interrupt index passed where an int is wanted does not compile, and write(field, index) is a type mismatch.
     template<int I>
-    struct Index {
-        static constexpr int value = I;
-
-        constexpr int index() const { return value; }
+    struct Index : std::integral_constant<int, I> {
+        operator int() const = delete;
     };
 
     template<typename TAction, typename TIndex>
@@ -122,16 +105,6 @@ namespace Kvasir { namespace Nvic {
         return MPL::list(makeClearPending(Ts{})...);
     }
 
-    template<int I>
-    constexpr auto makeTriggerInterrupt(Index<I>) {
-        return MakeActionT<Action::TriggerInterrupt, Index<I>>{};
-    }
-
-    template<typename... Ts>
-    constexpr auto makeTriggerInterrupt(brigand::list<Ts...>) {
-        return MPL::list(makeTriggerInterrupt(Ts{})...);
-    }
-
     template<int Priority,
              int I>
     constexpr auto makeSetPriority(Index<I>) {
@@ -157,14 +130,28 @@ namespace Kvasir { namespace Nvic {
         using IType                               = Index<I>;
     };
 
+    namespace Detail {
+        template<IsrFunctionPointer F, typename Indexes>
+        struct IsrsForImpl;
+
+        template<IsrFunctionPointer F, typename... Ts>
+        struct IsrsForImpl<F, brigand::list<Ts...>> {
+            using type = brigand::list<Isr<F, Index<Ts::value>>...>;
+        };
+    }   // namespace Detail
+
+    /// One Isr entry per interrupt index of a driver, all on one handler:
+    /// `using Isr = Nvic::IsrsFor<&onIsr, InterruptIndexs>;`
+    /// Indexes may be cv-qualified: a list taken with `decltype` of a
+    /// `static constexpr` member is `const brigand::list<...>`.
+    template<IsrFunctionPointer F, typename Indexes>
+    using IsrsFor = typename Detail::IsrsForImpl<F, std::remove_cvref_t<Indexes>>::type;
+
     class DefaultIsrs {
     public:
         [[noreturn]] static void onIsr();
     };
 
-    using UnusedIsr = Isr<std::addressof(DefaultIsrs::onIsr), Index<0>>;
-
-    template<typename T = void>
-    struct InterruptOffsetTraits;   // specialized by each chip, in chip/Interrupt.hpp
+    using UnusedIsr = Isr<&DefaultIsrs::onIsr, Index<0>>;
 
 }}   // namespace Kvasir::Nvic

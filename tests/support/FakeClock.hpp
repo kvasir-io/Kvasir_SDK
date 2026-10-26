@@ -14,13 +14,16 @@ struct FakeClockT {
     using period     = typename duration::period;
     using time_point = std::chrono::time_point<FakeClockT, duration>;
 
-    static inline time_point current{};
+    /// The clock's epoch (a noexcept function: a static initialized from it cannot throw).
+    static constexpr time_point epoch() noexcept { return time_point{}; }
+
+    static inline time_point current = epoch();
     static constexpr bool    runsAsleep
       = true;   // Kvasir::Executor: a sleep moves it (support/FakeWake.hpp)
 
     static time_point now() { return current; }
 
-    static void reset() { current = time_point{}; }
+    static void reset() { current = epoch(); }
 
     template<typename Rep,
              typename Period>
@@ -34,7 +37,7 @@ struct FakeClockT {
              typename Period>
     static void set(std::chrono::duration<Rep,
                                           Period> t) {
-        current = time_point{} + std::chrono::duration_cast<duration>(t);
+        current = epoch() + std::chrono::duration_cast<duration>(t);
     }
 };
 

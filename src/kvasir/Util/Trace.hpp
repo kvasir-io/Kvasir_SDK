@@ -1,5 +1,6 @@
 #pragma once
 
+#include "kvasir/Util/Diagnostic.hpp"
 #include "kvasir/Util/attributes.hpp"
 
 #include <array>
@@ -13,26 +14,15 @@
 ///     UsbTrace::record(now_us, ints, sie, buff);
 namespace Kvasir::Trace {
 
+/// A ring's or field's name: a string literal as a template argument (the toolkit's FixedString).
 template<std::size_t N>
-struct Name {
-    std::array<char, N> text{};
-
-    // NOLINTNEXTLINE(google-explicit-constructor): so that a literal is a template argument
-    constexpr Name(char const (&literal)[N]) {
-        for(std::size_t i = 0; i != N; ++i) { text[i] = literal[i]; }
-    }
-
-    static constexpr std::size_t length = N - 1;
-};
-
-template<std::size_t N>
-Name(char const (&)[N]) -> Name<N>;
+using Name = Diagnostic::FixedString<N>;
 
 /// What a ring is: constant, in flash. `layout` points at "name:field,field,...\0".
 /// (This used to be the head of the ring's one RAM object, with the count in it: the
 /// magic made the whole ring an initialised object, 784 bytes of flash for a 64-record ring.)
 struct Descriptor {
-    static constexpr std::uint32_t Magic = 0x4352544BU;   // "KTRC" in memory
+    static constexpr std::uint32_t magicValue = 0x4352544BU;   // "KTRC" in memory
 
     std::uint32_t magic;
     std::uint16_t fields;
@@ -51,30 +41,30 @@ struct Ring {
                   "a trace ring needs at least one field");
     static_assert(sizeof(char const*) == 4 || sizeof(char const*) == 8);
 
-    static constexpr std::size_t FieldCount = sizeof...(Fields);
-    using Record                            = std::array<std::uint32_t, FieldCount>;
+    static constexpr std::size_t fieldCount = sizeof...(Fields);
+    using Record                            = std::array<std::uint32_t, fieldCount>;
 
 private:
-    static constexpr std::size_t LayoutSize
-      = RingName.length + 1 + (Fields.length + ...) + FieldCount;
+    static constexpr std::size_t layoutSize
+      = RingName.length + 1 + (Fields.length + ...) + fieldCount;
 
     static constexpr std::array<char,
-                                LayoutSize>
+                                layoutSize>
     makeLayout() {
-        std::array<char, LayoutSize> out{};
+        std::array<char, layoutSize> out{};
         std::size_t                  at  = 0;
         auto const                   put = [&](auto const& name, char after) {
             for(std::size_t i = 0; i != name.length; ++i) { out[at++] = name.text[i]; }
             out[at++] = after;
         };
         put(RingName, ':');
-        std::size_t left = FieldCount;
+        std::size_t left = fieldCount;
         ((put(Fields, --left == 0 ? '\0' : ',')), ...);
         return out;
     }
 
 public:
-    static constexpr std::array<char, LayoutSize> layout = makeLayout();
+    static constexpr std::array<char, layoutSize> layout = makeLayout();
 
     // All zero at start, so it costs no flash: the records ever written (the next one goes to
     // count % Capacity), then the records.
@@ -83,11 +73,11 @@ public:
         std::array<Record, Capacity> records;
     };
 
-    // `kvasir_bench.py trace` finds a ring by these two symbols. Nothing in the firmware reads the
+    // uc_log's printer (`kvasir_bench.py trace`) finds a ring by these two symbols. Nothing in the firmware reads the
     // descriptor, so it is kept through the linker's garbage collection by `retain`.
     [[KVASIR_USED_RETAIN]] static constexpr Descriptor descriptor{
-      Descriptor::Magic,
-      static_cast<std::uint16_t>(FieldCount),
+      Descriptor::magicValue,
+      static_cast<std::uint16_t>(fieldCount),
       static_cast<std::uint16_t>(Capacity),
       layout.data()};
 
@@ -95,7 +85,7 @@ public:
 
     template<typename... Ts>
     [[gnu::always_inline]] static void record(Ts... values) {
-        static_assert(sizeof...(Ts) == FieldCount,
+        static_assert(sizeof...(Ts) == fieldCount,
                       "record() takes one value per field of the ring");
         static_cast<void>(
           &descriptor);   // an odr-use: the descriptor exists wherever a ring records

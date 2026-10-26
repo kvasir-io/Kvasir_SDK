@@ -19,3 +19,8 @@ SECTIONS
     .kvasir_meta 0 (INFO) : { KEEP(*(.kvasir_meta)) }
     /DISCARD/ : { *(.ARM.exidx*) *(.ARM.attributes) }
 }
+/* the image end and the flash end as linker/common.ld and common_flash.ld give them; a test moves the end with
+   --defsym=_LINKER_INTERN_image_end_flash_=..., as a chip script would */
+_LINKER_INTERN_rom_end_ = ORIGIN(flash) + LENGTH(flash);
+PROVIDE(_LINKER_INTERN_image_end_flash_ = LOADADDR(.trap_data) + SIZEOF(.trap_data));
+_LINKER_image_end_flash_ = _LINKER_INTERN_image_end_flash_;

@@ -1,0 +1,27 @@
+Kvasir patch: libc src/__support/OSUtil/exit.h
+Why:       llvm-libc's internal assertions (LIBC_ASSERT) end in internal::exit, which calls the vendor's
+           __llvm_libc_exit. Out of line, the panic record __llvm_libc_exit writes from its return
+           address named internal::exit for every assert; inline, it names the assert's own function.
+Upstream:  none - a baremetal vendor hook detail; upstream keeps one exit per OS in OSUtil/<os>/.
+Proof:     on a device a LIBC_ASSERT (free() of a pointer outside the heap) ends in a panic, cause
+           abort, detail 255, whose site symbolises to the asserting function (kvasir_bench.py crash).
+Drop when: never while Kvasir provides __llvm_libc_exit and wants the caller's site.
+
+--- a/src/__support/OSUtil/exit.h
++++ b/src/__support/OSUtil/exit.h
+@@ -14,7 +14,14 @@
+ namespace LIBC_NAMESPACE_DECL {
+ namespace internal {
+ 
+-[[noreturn]] void exit(int status);
++// Kvasir: inline, for the baremetal target only Kvasir builds. The vendor's
++// __llvm_libc_exit is then called from the caller's own code (a LIBC_ASSERT)
++// and its return address names that site, not this function.
++extern "C" [[noreturn]] void __llvm_libc_exit(int status);
++
++[[noreturn, gnu::always_inline]] inline void exit(int status) {
++  __llvm_libc_exit(status);
++}
+ 
+ } // namespace internal
+ } // namespace LIBC_NAMESPACE_DECL

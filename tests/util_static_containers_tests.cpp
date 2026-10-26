@@ -21,6 +21,10 @@ using Kvasir::StaticString;
 
 static_assert(StaticString<8>{}.max_size() == 8);
 static_assert(StaticString<8>{}.capacity() == 8);
+// static and noexcept, as StaticVector's
+static_assert(StaticString<8>::capacity() == 8);
+static_assert(StaticString<8>::max_size() == 8);
+static_assert(noexcept(StaticString<8>::capacity()));
 static_assert(StaticString<8>{}.empty());
 
 // construction and conversion happen at compile time
@@ -28,40 +32,41 @@ static_assert(std::string_view{StaticString<8>{"abc"}} == "abc");
 static_assert(StaticString<8>{"abc"}.size() == 3);
 static_assert(StaticString<3>{"abc"}.full());
 
-static void stringConstruction() {
+namespace {
+void stringConstruction() {
     Kvasir::Test::test("stringConstruction");
 
-    StaticString<16> empty;
+    StaticString<16> const empty;
     CHECK(empty.empty());
     CHECK_EQ(empty.size(), 0U);
     CHECK_EQ(empty.capacity(), 16U);
     CHECK(!empty.full());
 
     // from a string literal
-    StaticString<16> fromLiteral{"hello"};
+    StaticString<16> const fromLiteral{"hello"};
     CHECK_EQ(fromLiteral.size(), 5U);
     CHECK(std::string_view{fromLiteral} == "hello");
 
     // from a string_view
-    StaticString<16> fromView{std::string_view{"world"}};
+    StaticString<16> const fromView{std::string_view{"world"}};
     CHECK(std::string_view{fromView} == "world");
 
     // copy construction from a differently sized StaticString
-    StaticString<32> wider{fromLiteral};
+    StaticString<32> const wider{fromLiteral};
     CHECK(std::string_view{wider} == "hello");
     CHECK_EQ(wider.capacity(), 32U);
 
     // exactly at capacity
-    StaticString<5> exact{"hello"};
+    StaticString<5> const exact{"hello"};
     CHECK(exact.full());
     CHECK(std::string_view{exact} == "hello");
 
     // the empty string
-    StaticString<4> nothing{""};
+    StaticString<4> const nothing{""};
     CHECK(nothing.empty());
 }
 
-static void stringAssignment() {
+void stringAssignment() {
     Kvasir::Test::test("stringAssignment");
 
     StaticString<16> s{"initial"};
@@ -72,7 +77,7 @@ static void stringAssignment() {
     s = std::string_view{"view"};
     CHECK(std::string_view{s} == "view");
 
-    StaticString<8> other{"other"};
+    StaticString<8> const other{"other"};
     s = other;
     CHECK(std::string_view{s} == "other");
 
@@ -86,7 +91,7 @@ static void stringAssignment() {
     CHECK(s.empty());
 }
 
-static void stringElementAccess() {
+void stringElementAccess() {
     Kvasir::Test::test("stringElementAccess");
 
     StaticString<16> s{"abcde"};
@@ -106,16 +111,16 @@ static void stringElementAccess() {
 
     // iteration, forwards and backwards
     std::string_view const expected{"AbcdE"};
-    CHECK(std::equal(s.begin(), s.end(), expected.begin(), expected.end()));
+    CHECK(std::ranges::equal(s, expected));
 
-    std::vector<char> reversed{s.rbegin(), s.rend()};
+    std::vector<char> const reversed{s.rbegin(), s.rend()};
     CHECK((reversed == std::vector<char>{'E', 'd', 'c', 'b', 'A'}));
 
-    CHECK(std::equal(cs.begin(), cs.end(), expected.begin(), expected.end()));
+    CHECK(std::ranges::equal(cs, expected));
     CHECK(std::distance(cs.rbegin(), cs.rend()) == 5);
 }
 
-static void stringModifiers() {
+void stringModifiers() {
     Kvasir::Test::test("stringModifiers");
 
     StaticString<16> s;
@@ -147,24 +152,24 @@ static void stringModifiers() {
     CHECK(s.empty());
 }
 
-// put and put_uint append, at compile time too
+// put and putUint append, at compile time too
 static_assert([] {
     StaticString<8> s;
     s.put("a");
-    s.put_uint(42);
+    s.putUint(42);
     return std::string_view{s} == "a42";
 }());
 
-static void stringPut() {
+void stringPut() {
     Kvasir::Test::test("stringPut");
 
     StaticString<24> s;
     s.put("id=");
-    s.put_uint(0);
+    s.putUint(0);
     CHECK(std::string_view{s} == "id=0");
 
     s.put(std::string_view{" max="});
-    s.put_uint(4294967295U);
+    s.putUint(4294967295U);
     CHECK(std::string_view{s} == "id=0 max=4294967295");
 
     // an empty view appends nothing
@@ -173,15 +178,15 @@ static void stringPut() {
 
     // the digits exactly fill the capacity
     StaticString<3> exact;
-    exact.put_uint(123);
+    exact.putUint(123);
     CHECK(exact.full());
     CHECK(std::string_view{exact} == "123");
 }
 
-static void stringOperations() {
+void stringOperations() {
     Kvasir::Test::test("stringOperations");
 
-    StaticString<16> s{"prefix_body"};
+    StaticString<16> const s{"prefix_body"};
 
     CHECK(s.starts_with("prefix"));
     CHECK(s.starts_with("prefix_body"));
@@ -199,8 +204,8 @@ static void stringOperations() {
     CHECK(empty.starts_with(""));
 
     // concatenation
-    StaticString<16> a{"foo"};
-    auto const       joined = a + "bar";
+    StaticString<16> const a{"foo"};
+    auto const             joined = a + "bar";
     CHECK(std::string_view{joined} == "foobar");
     CHECK(std::string_view{a} == "foo");   // the original is unchanged
 
@@ -208,13 +213,13 @@ static void stringOperations() {
     CHECK(empties.empty());
 }
 
-static void stringComparison() {
+void stringComparison() {
     Kvasir::Test::test("stringComparison");
 
-    StaticString<16> a{"abc"};
-    StaticString<16> b{"abc"};
-    StaticString<8>  narrow{"abc"};
-    StaticString<16> different{"abd"};
+    StaticString<16> const a{"abc"};
+    StaticString<16> const b{"abc"};
+    StaticString<8> const  narrow{"abc"};
+    StaticString<16> const different{"abd"};
 
     CHECK(a == b);
     CHECK(a == narrow);   // capacity does not take part in the comparison
@@ -227,27 +232,7 @@ static void stringComparison() {
     CHECK(a == std::string_view{"abc"});
     CHECK(!(a == std::string_view{"abd"}));
 
-    CHECK(StaticString<4>{} == "");
-}
-
-// operator""_ss is declared as `template<char... chars>`, which the language only uses for
-// user defined *numeric* literals -- `"text"_ss` does not compile. Building a StaticString
-// from a string literal therefore goes through the constructor; the literal operator only
-// works on digit sequences.
-static void stringLiteral() {
-    Kvasir::Test::test("stringLiteral");
-
-    using namespace Kvasir;
-
-    auto const s = 12345_ss;
-    CHECK(std::string_view{s} == "12345");
-    CHECK_EQ(s.size(), 5U);
-    CHECK_EQ(s.capacity(), 5U);
-    CHECK(s.full());
-
-    // digit separators are part of the literal's character pack and are kept verbatim
-    auto const separated = 1'2_ss;
-    CHECK(std::string_view{separated} == "1'2");
+    CHECK(StaticString<4>{} == std::string_view{});
 }
 
 // ===========================================================================
@@ -263,14 +248,36 @@ static_assert(StaticMap<int,
                         4>::max_size()
               == 4);
 
+// aglio and remote_fmt tell a map from a set by mapped_type, and aglio's remove_pair_const takes the
+// map's elements apart as std::pair: these typedefs are load-bearing
+static_assert(std::is_same_v<StaticMap<int,
+                                       int,
+                                       4>::value_type,
+                             std::pair<int,
+                                       int>>);
+template<typename C>
+concept HasMappedType = requires { typename C::mapped_type; };
+template<typename C>
+concept HasKeyType = requires { typename C::key_type; };
+static_assert(HasMappedType<StaticMap<int,
+                                      int,
+                                      4>>
+              && HasKeyType<StaticMap<int,
+                                      int,
+                                      4>>);
+static_assert(!HasMappedType<StaticSet<int,
+                                       4>>
+              && HasKeyType<StaticSet<int,
+                                      4>>);
+
 // Note: StaticMap is not usable in a constant expression. Its element type is
-// std::pair<Key, Value>, which is trivially copyable but not trivially *default*
-// constructible, so StaticVector selects the non_trivial storage backend -- and that
+// std::pair<Key, Value>, which is not trivially copyable (its assignments are user provided)
+// nor trivially default constructible, so StaticVector selects the non_trivial storage backend -- and that
 // backend manages lifetimes with placement new and explicit destructor calls, neither of
 // which is allowed during constant evaluation. StaticSet<int, N> stores plain ints and so
 // does stay constexpr usable (see below).
 
-static void mapInsertAndLookup() {
+void mapInsertAndLookup() {
     Kvasir::Test::test("mapInsertAndLookup");
 
     StaticMap<int, int, 4> m;
@@ -299,17 +306,20 @@ static void mapInsertAndLookup() {
     CHECK(m.contains(3));
     CHECK(!m.contains(4));
 
-    CHECK(m.find(2) != m.end());
-    CHECK(m.find(2)->second == 20);
-    CHECK(m.find(4) == m.end());
+    auto const two = m.find(2);
+    CHECK(two != m.end() && two->second == 20);
+    auto const four = m.find(4);
+    CHECK(four == m.end());
 
     CHECK(m.at(1) == 10);
     CHECK(m.at(2) == 20);
 
     auto const& cm = m;
     CHECK(cm.at(3) == 30);
-    CHECK(cm.find(3) != cm.end());
-    CHECK(cm.find(9) == cm.end());
+    auto const three = cm.find(3);
+    CHECK(three != cm.end() && three->second == 30);
+    auto const nine = cm.find(9);
+    CHECK(nine == cm.end());
     CHECK(cm.contains(2));
 
     // insertion order is preserved
@@ -327,7 +337,7 @@ static void mapInsertAndLookup() {
     CHECK(it3->second == 10);
 }
 
-static void mapInsertOrAssignAndSubscript() {
+void mapInsertOrAssignAndSubscript() {
     Kvasir::Test::test("mapInsertOrAssignAndSubscript");
 
     StaticMap<int, int, 4> m;
@@ -355,12 +365,12 @@ static void mapInsertOrAssignAndSubscript() {
     CHECK_EQ(m.size(), 2U);
 
     // insert_unchecked skips the duplicate search
-    m.insert_unchecked(5, 50);
+    m.insertUnchecked(5, 50);
     CHECK(m.at(5) == 50);
     CHECK_EQ(m.size(), 3U);
 }
 
-static void mapErase() {
+void mapErase() {
     Kvasir::Test::test("mapErase");
 
     StaticMap<int, int, 8> m{
@@ -396,7 +406,7 @@ static void mapErase() {
     CHECK(!m.contains(3));
 }
 
-static void mapConstructionAndEquality() {
+void mapConstructionAndEquality() {
     Kvasir::Test::test("mapConstructionAndEquality");
 
     // duplicate keys in the initializer list: the first one wins
@@ -408,23 +418,23 @@ static void mapConstructionAndEquality() {
     CHECK_EQ(withDuplicates.size(), 2U);
     CHECK(withDuplicates.at(1) == 10);
 
-    StaticMap<int, int, 4> a{
+    StaticMap<int, int, 4> const a{
       {1, 10},
       {2, 20}
     };
-    StaticMap<int, int, 4> sameContentDifferentOrder{
+    StaticMap<int, int, 4> const sameContentDifferentOrder{
       {2, 20},
       {1, 10}
     };
-    StaticMap<int, int, 4> differentValue{
+    StaticMap<int, int, 4> const differentValue{
       {1, 10},
       {2, 21}
     };
-    StaticMap<int, int, 4> differentKey{
+    StaticMap<int, int, 4> const differentKey{
       {1, 10},
       {3, 20}
     };
-    StaticMap<int, int, 4> shorter{
+    StaticMap<int, int, 4> const shorter{
       {1, 10}
     };
 
@@ -443,7 +453,7 @@ static void mapConstructionAndEquality() {
     assigned = a;
     CHECK(assigned == a);
 
-    StaticMap<int, int, 4> moved{std::move(copy)};
+    StaticMap<int, int, 4> const moved{std::move(copy)};
     CHECK(moved == a);
 
     StaticMap<int, int, 4> moveAssigned;
@@ -457,7 +467,7 @@ static void mapConstructionAndEquality() {
 }
 
 // a key type that is only equality comparable, which is all StaticMap requires
-static void mapWithNonTrivialKey() {
+void mapWithNonTrivialKey() {
     Kvasir::Test::test("mapWithNonTrivialKey");
 
     StaticMap<StaticString<8>, int, 4> m;
@@ -487,7 +497,7 @@ static_assert([] {
     return s.size() == 3 && s.contains(1) && !s.contains(9);
 }());
 
-static void setInsertAndLookup() {
+void setInsertAndLookup() {
     Kvasir::Test::test("setInsertAndLookup");
 
     StaticSet<int, 4> s;
@@ -512,17 +522,20 @@ static void setInsertAndLookup() {
     CHECK(s.contains(1));
     CHECK(s.contains(3));
     CHECK(!s.contains(4));
-    CHECK(s.find(2) != s.end());
-    CHECK(*s.find(2) == 2);
-    CHECK(s.find(4) == s.end());
+    auto const two = s.find(2);
+    CHECK(two != s.end() && *two == 2);
+    auto const four = s.find(4);
+    CHECK(four == s.end());
 
-    auto const& cs = s;
-    CHECK(cs.find(1) != cs.end());
-    CHECK(cs.find(9) == cs.end());
+    auto const& cs  = s;
+    auto const  one = cs.find(1);
+    CHECK(one != cs.end() && *one == 1);
+    auto const nine = cs.find(9);
+    CHECK(nine == cs.end());
     CHECK(cs.contains(2));
 
     // insertion order is preserved
-    std::vector<int> values{s.begin(), s.end()};
+    std::vector<int> const values{s.begin(), s.end()};
     CHECK((values == std::vector<int>{1, 2, 3}));
 
     s.insert(4);
@@ -530,14 +543,14 @@ static void setInsertAndLookup() {
 
     // insert_unchecked skips the duplicate search
     StaticSet<int, 4> u;
-    u.insert_unchecked(7);
-    u.insert_unchecked(8);
+    u.insertUnchecked(7);
+    u.insertUnchecked(8);
     CHECK(u.contains(7));
     CHECK(u.contains(8));
     CHECK_EQ(u.size(), 2U);
 }
 
-static void setErase() {
+void setErase() {
     Kvasir::Test::test("setErase");
 
     StaticSet<int, 8> s{1, 2, 3, 4};
@@ -549,7 +562,7 @@ static void setErase() {
     CHECK_EQ(s.erase(99), 0U);
     CHECK_EQ(s.size(), 3U);
 
-    std::vector<int> values{s.begin(), s.end()};
+    std::vector<int> const values{s.begin(), s.end()};
     CHECK((values == std::vector<int>{1, 3, 4}));
 
     auto next = s.erase(s.begin());
@@ -560,17 +573,17 @@ static void setErase() {
     CHECK(s.empty());
 }
 
-static void setConstructionAndEquality() {
+void setConstructionAndEquality() {
     Kvasir::Test::test("setConstructionAndEquality");
 
     // duplicates in the initializer list collapse
-    StaticSet<int, 4> withDuplicates{1, 1, 2};
+    StaticSet<int, 4> const withDuplicates{1, 1, 2};
     CHECK_EQ(withDuplicates.size(), 2U);
 
-    StaticSet<int, 4> a{1, 2};
-    StaticSet<int, 4> reordered{2, 1};
-    StaticSet<int, 4> different{1, 3};
-    StaticSet<int, 4> shorter{1};
+    StaticSet<int, 4> const a{1, 2};
+    StaticSet<int, 4> const reordered{2, 1};
+    StaticSet<int, 4> const different{1, 3};
+    StaticSet<int, 4> const shorter{1};
 
     CHECK(a == reordered);   // equality is order independent
     CHECK(!(a != reordered));
@@ -584,7 +597,7 @@ static void setConstructionAndEquality() {
     assigned = a;
     CHECK(assigned == a);
 
-    StaticSet<int, 4> moved{std::move(copy)};
+    StaticSet<int, 4> const moved{std::move(copy)};
     CHECK(moved == a);
 
     StaticSet<int, 4> const empty1;
@@ -592,6 +605,8 @@ static void setConstructionAndEquality() {
     CHECK(empty1 == empty2);
     CHECK(empty1 != a);
 }
+
+}   // namespace
 
 int main() {
     stringConstruction();
@@ -601,7 +616,6 @@ int main() {
     stringPut();
     stringOperations();
     stringComparison();
-    stringLiteral();
 
     mapInsertAndLookup();
     mapInsertOrAssignAndSubscript();

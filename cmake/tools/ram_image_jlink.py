@@ -17,10 +17,13 @@ The template is the script with {vector_table}, {initial_sp} and {reset_pc} in i
 
 import struct
 import sys
+from pathlib import Path
 
-VECTORS_SYMBOL = b"_LINKER_vectors_start_"
-SHT_PROGBITS = 1
-SHT_SYMTAB = 2
+sys.dont_write_bytecode = True      # no __pycache__ in cmake/tools
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from kvasir_elf import Elf  # noqa: E402
+
+VECTORS_SYMBOL = "_LINKER_vectors_start_"
 
 
 def die(msg: str) -> None:
@@ -29,33 +32,19 @@ def die(msg: str) -> None:
 
 def vector_table(data: bytes) -> tuple[int, int, int]:
     """(address, word 0, word 1) of the image's vector table."""
-    if data[:4] != b"\x7fELF" or data[4] != 1 or data[5] != 1:
+    try:
+        elf = Elf(data)
+    except ValueError:
         die("not a 32-bit little-endian ELF")
-    shoff, = struct.unpack_from("<I", data, 32)
-    shentsize, shnum = struct.unpack_from("<HH", data, 46)
-    sections = [struct.unpack_from(
-        "<IIIIIIIIII", data, shoff + i * shentsize) for i in range(shnum)]
-
-    table = None
-    for sh in sections:
-        if sh[1] != SHT_SYMTAB:
-            continue
-        strtab = sections[sh[6]]
-        for off in range(sh[4], sh[4] + sh[5], sh[9]):
-            name, value = struct.unpack_from("<II", data, off)
-            start = strtab[4] + name
-            if data[start:start + len(VECTORS_SYMBOL) + 1] == VECTORS_SYMBOL + b"\0":
-                table = value
-                break
-    if table is None:
-        die(f"no symbol {VECTORS_SYMBOL.decode()}")
-
-    for sh in sections:
-        addr, offset, size = sh[3], sh[4], sh[5]
-        if sh[1] == SHT_PROGBITS and addr <= table and table + 8 <= addr + size:
-            sp, reset = struct.unpack_from("<II", data, offset + table - addr)
-            return table, sp, reset
-    die(f"no loaded section holds the vector table at 0x{table:08X}")
+    found = elf.symbol(VECTORS_SYMBOL)
+    if found is None:
+        die(f"no symbol {VECTORS_SYMBOL}")
+    table = found[0]
+    words = elf.progbits_at(table, 8)
+    if words is None:
+        die(f"no loaded section holds the vector table at 0x{table:08X}")
+    sp, reset = struct.unpack_from("<II", words)
+    return table, sp, reset
 
 
 def main() -> None:

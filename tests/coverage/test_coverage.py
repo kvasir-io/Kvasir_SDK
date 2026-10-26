@@ -10,14 +10,16 @@ Both counter modes (one byte a region, 64-bit counts). Without clang++ or the ll
 
 import json
 import re
-import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SDK = HERE.parent.parent
+sys.path.insert(0, str(SDK / 'tests' / 'tooling'))
+import armtc  # noqa: E402  when a missing tool is a skip or a failure
 RT = SDK / 'lib' / 'compiler-rt'
 
 
@@ -42,9 +44,7 @@ class Coverage(unittest.TestCase):
         cls.tmp.cleanup()
 
     def run_mode(self, mode):
-        for tool in ('clang', 'clang++', 'llvm-profdata', 'llvm-cov'):
-            if shutil.which(tool) is None:
-                self.skipTest(f'{tool} not found')
+        armtc.need(self, 'clang', 'clang++', 'llvm-profdata', 'llvm-cov')
         out = Path(self.tmp.name) / mode
         out.mkdir()
         objects = []
@@ -54,7 +54,7 @@ class Coverage(unittest.TestCase):
                             f'-I{RT / "include"}', str(source), '-o', str(obj)], check=True)
             objects.append(str(obj))
         lib = out / 'lib.o'
-        subprocess.run(['clang++', '-std=c++20', '-c', '-O1', '-fprofile-instr-generate', '-fcoverage-mapping',
+        subprocess.run(['clang++', '-std=c++26', '-c', '-O1', '-fprofile-instr-generate', '-fcoverage-mapping',
                         *MODES[mode], str(HERE / 'lib.cpp'), '-o', str(lib)], check=True)
         exe = out / 'driver'
         # no -fprofile-instr-generate at the link: the driver must not bring the host's own profile runtime

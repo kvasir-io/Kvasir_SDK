@@ -23,7 +23,7 @@ Drop when: never; on each port check that upstream still defines _LIBCPP_VERBOSE
 +extern void log_assert(int Line, const char* Filename, const char* Expr);
 +}
 +
-+// Kvasir_SDK kvasir/Util/Panic.hpp: every fatal path ends in raise(); Cause::assertion is 0 and
++// Kvasir_SDK kvasir/Runtime/Panic.hpp: every fatal path ends in raise(); Cause::assertion is 0 and
 +// the underlying type unsigned char, fixed on both sides.
 +#ifndef KVASIR_PANIC_RAISE_DECLARED
 +#define KVASIR_PANIC_RAISE_DECLARED 1

@@ -2,8 +2,9 @@
 // policy that records: fed while every check beats; a silent check starves exactly after its window (the first
 // window is grace + maxInterval), feeding stops and the policy runs once; a blocked loop counts its real time;
 // suspend/resume; AllChecksReported once; the statistics; the starvation record and its name hash.
-#include "kvasir/Util/Health.hpp"
+#include "kvasir/Health/Health.hpp"
 
+#include "support/FakeClock.hpp"
 #include "test_harness.hpp"
 
 #include <chrono>
@@ -15,18 +16,10 @@ namespace H = Kvasir::Health;
 using namespace std::chrono_literals;
 
 namespace {
-struct FakeClock {
-    using rep        = std::int64_t;
-    using period     = std::milli;
-    using duration   = std::chrono::milliseconds;
-    using time_point = std::chrono::time_point<FakeClock>;
-    static inline time_point t{};
-
-    static time_point now() { return t; }
-};
+using FakeClock = Kvasir::Test::FakeClockT<std::chrono::milliseconds>;
 
 struct FakeWatchdog {
-    static constexpr auto Timeout = std::chrono::milliseconds{500};
+    static constexpr auto timeout = std::chrono::milliseconds{500};
     static inline int     feeds   = 0;
 
     static void feed() { ++feeds; }
@@ -75,7 +68,7 @@ using Sup = H::Supervisor<FakeStartup, FakeWatchdog, FakeClock, Config>;
 void step(std::chrono::milliseconds d,
           bool                      fast,
           bool                      slow) {
-    FakeClock::t += d;
+    FakeClock::advance(d);
     if(fast) { H::checkIn<FastHealth>(); }
     if(slow) { H::checkIn<SlowHealth>(); }
     Sup::service();
@@ -83,7 +76,9 @@ void step(std::chrono::milliseconds d,
 }   // namespace
 
 template<>
-inline constexpr auto Kvasir::Health::injectedPolicy<> = TestPolicy{};
+struct Kvasir::Health::StarvationReaction<Kvasir::Tag::User> {
+    using type = TestPolicy;
+};
 
 static_assert(H::fnv1a("") == 0x811C'9DC5U);
 

@@ -1,0 +1,40 @@
+name: Dispatch chip images
+
+# Reusable: the one list of chip images (kvasirio/<chip>) that a new kvasirio/kvasir image or a kvasir_devices push
+# rebuilds - every chip image on DockerHub. It dispatches each chip repository's <chip>-docker-build.yml (a caller of
+# chip-image.yml) on master. Callers: this repository's containers.yml (after kvasirio/kvasir is pushed) and
+# kvasir_devices' trigger-chip-images.yml (the chip images clone kvasir_devices master). A failed dispatch fails the
+# run, so a missing token or a renamed chip workflow is seen; the next push tries again. chip_stm32f413 has the same docker workflow
+# but no repository on GitHub yet: add it here once kvasirio/stm32f413 exists.
+
+on:
+    workflow_call:
+        secrets:
+            CROSS_REPO_TOKEN:
+                required: true
+
+jobs:
+    dispatch:
+        # act runs as 'nektos/act' and has no CROSS_REPO_TOKEN: nothing to dispatch from a local run
+        if: github.actor != 'nektos/act'
+        runs-on: ubuntu-latest
+        steps:
+            - name: Dispatch the chip image builds
+              uses: actions/github-script@v8
+              with:
+                github-token: ${{ secrets.CROSS_REPO_TOKEN }}
+                script: |
+                    const chips = ['rp2350', 'rp2040', 'atsamd21', 'atsamc21', 'atsame51'];
+                    const failed = [];
+                    for (const chip of chips) {
+                        const repo = `chip_${chip}`;
+                        const workflow = `${chip}-docker-build.yml`;
+                        try {
+                            await github.rest.actions.createWorkflowDispatch({
+                                owner: context.repo.owner, repo, workflow_id: workflow, ref: 'master' });
+                            core.info(`dispatched ${repo}/${workflow}`);
+                        } catch (e) {
+                            failed.push(`${repo}: ${e.message}`);
+                        }
+                    }
+                    if (failed.length) core.setFailed(failed.join('; '));

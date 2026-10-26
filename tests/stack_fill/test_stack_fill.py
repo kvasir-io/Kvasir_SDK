@@ -15,11 +15,14 @@ and checks that a heap or minimum stack that does not fit fails the link with a 
 
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent.parent / 'tests' / 'tooling'))
+import armtc  # noqa: E402  when a missing tool is a skip or a failure
 LINKER_DIR = HERE.parent.parent / 'linker'
 
 PROTECTOR = 32   # image.S's .stackProtector
@@ -50,12 +53,10 @@ class StackFill(unittest.TestCase):
         cls.objects = {}
         if shutil.which('clang'):
             assembler = ['clang', '--target=thumbv7m-none-eabi', '-c']
-        elif shutil.which('arm-none-eabi-gcc'):
+        else:   # a skip without either; a failure if KVASIR_TEST_REQUIRE names arm-gcc
+            armtc.need(None, 'arm-none-eabi-gcc')
             assembler = ['arm-none-eabi-gcc',
                          '-mcpu=cortex-m3', '-mthumb', '-c']
-        else:
-            raise unittest.SkipTest(
-                'no ARM assembler (clang or arm-none-eabi-gcc)')
         for boot2 in (False, True):
             obj = cls.tmp / f'image{"_boot2" if boot2 else ""}.o'
             subprocess.run(assembler + (['-DBOOT2'] if boot2 else []) +
@@ -67,13 +68,11 @@ class StackFill(unittest.TestCase):
         shutil.rmtree(cls.tmp)
 
     def link(self, linker, layout, min_stack, heap):
-        if shutil.which(LINKERS[linker][0]) is None:
-            self.skipTest(f'{LINKERS[linker][0]} not found')
+        armtc.need(self, LINKERS[linker][0])
         script, ram, boot2 = LAYOUTS[layout]
         elf = self.tmp / f'{linker}_{layout}_{min_stack}_{heap}.elf'
         cmd = LINKERS[linker] + [
             f'--library-path={LINKER_DIR}',
-            f'--defsym=cmake_ram_size={ram}',
             f'--defsym=cmake_min_stack_size={min_stack}',
             f'--defsym=cmake_heap_size={heap}',
             '--defsym=cmake_core1_stack_size=0',
@@ -86,9 +85,7 @@ class StackFill(unittest.TestCase):
 
     def sections(self, elf):
         """name -> (size, address) from the linked image"""
-        tool = shutil.which('llvm-size') or shutil.which('arm-none-eabi-size')
-        if tool is None:
-            self.skipTest('no llvm-size / arm-none-eabi-size')
+        tool = armtc.first(self, 'llvm-size', 'arm-none-eabi-size')
         out = subprocess.run([tool, '-A', '-d', str(elf)],
                              capture_output=True, text=True, check=True).stdout
         found = {}
@@ -99,9 +96,7 @@ class StackFill(unittest.TestCase):
         return found
 
     def symbols(self, elf):
-        tool = shutil.which('llvm-nm') or shutil.which('arm-none-eabi-nm')
-        if tool is None:
-            self.skipTest('no llvm-nm / arm-none-eabi-nm')
+        tool = armtc.first(self, 'llvm-nm', 'arm-none-eabi-nm')
         out = subprocess.run(
             [tool, str(elf)], capture_output=True, text=True, check=True).stdout
         return {parts[2]: int(parts[0], 16) for parts in (line.split() for line in out.splitlines()) if len(parts) == 3}

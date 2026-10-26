@@ -1,6 +1,8 @@
 // Kvasir::Register::waitUntil (Register/Wait.hpp) on the register mock: a modelled register that turns true
-// after k reads; Polls / Microseconds / Until bounds; the Report, Count and Panic policies; the injected policy
-// specialised after the first use still wins; Unbounded counts nothing.
+// after k reads; Polls / Microseconds / Until bounds; the Report, Count and Panic policies; the image's policy
+// specialised after the first use still wins; Unbounded counts nothing; MicrosecondsBound over the specialised
+// CpuHzCeiling<Tag::User>.
+#include "harness/PanicCatcher.hpp"
 #include "kvasir/Register/Wait.hpp"
 #include "test_registers.hpp"
 
@@ -12,31 +14,7 @@
 using namespace Kvasir::Register;
 using namespace Kvasir::Test;
 
-namespace Kvasir::Panic {
-[[noreturn,
-  gnu::noinline]] void
-raise(Cause cause) {
-    Detail::dispatch(Info{cause, 0});
-}
-
-[[noreturn]] void raiseAt(Cause         cause,
-                          std::uint32_t pc,
-                          std::uint32_t detail) {
-    Detail::dispatch(Info{cause, pc, detail});
-}
-}   // namespace Kvasir::Panic
-
 namespace {
-std::jmp_buf                       back;
-std::optional<Kvasir::Panic::Info> seen;
-
-struct TestHandler {
-    [[noreturn]] static void operator()(Kvasir::Panic::Info const& info) {
-        seen = info;
-        std::longjmp(back, 1);
-    }
-};
-
 // a clock that a test moves by hand
 struct FakeClock {
     using time_point = std::uint32_t;
@@ -58,22 +36,30 @@ static_assert(Bound::Microseconds<1'000,
 static_assert(Bound::Polls<7>::polls == 7);
 }   // namespace
 
-// the injected wait policy, specialised after Wait.hpp was included (and before the first instantiation of a
+// the image's wait policy (the hook), specialised after Wait.hpp was included (and before the first instantiation of a
 // waitUntil that uses it)
 template<>
-inline constexpr auto Kvasir::Panic::injectedHandler<> = TestHandler{};
-template<>
-inline constexpr auto Kvasir::Register::injectedWaitPolicy<> = OnTimeout::Report{};
+struct Kvasir::Panic::PanicReaction<Kvasir::Tag::User> {
+    using type = Kvasir::Test::CatchPanic;
+};
 
-// TSan's longjmp interceptor aborts on a jump out of a function that does not return; this test has no threads for
-// TSan to judge.
-#if defined(__SANITIZE_THREAD__)
-    #define WAIT_TEST_NO_LONGJMP 1
-#elif defined(__has_feature)
-    #if __has_feature(thread_sanitizer)
-        #define WAIT_TEST_NO_LONGJMP 1
-    #endif
-#endif
+template<>
+struct Kvasir::Register::WaitPolicy<Kvasir::Tag::User> {
+    using type = OnTimeout::Report;
+};
+
+// what a chip package's chip/WaitBounds.hpp does with its CpuHzCeiling
+template<>
+struct Kvasir::Register::CpuHzCeiling<Kvasir::Tag::User> {
+    static constexpr std::uint64_t value = 48'000'000;
+};
+
+static_assert(MicrosecondsBound<1'000>::polls
+              == Bound::Microseconds<1'000,
+                                     48'000'000>::polls);
+static_assert(std::is_same_v<MicrosecondsBound<1'000>,
+                             Bound::Microseconds<1'000,
+                                                 48'000'000>>);
 
 int main() {
     test("isSet: true on the 5th read, Report");
@@ -130,19 +116,19 @@ int main() {
         CHECK(h.timedOut && h.polls == 20);
     }
 
-#ifndef WAIT_TEST_NO_LONGJMP
+#ifndef KVASIR_TEST_NO_LONGJMP
     test("Panic: cause timeout, the register's address as the detail");
     becomesTrueAfter(1'000'000);
-    seen.reset();
+    panicSeen.reset();
     Kvasir::Panic::Detail::entered = false;
-    if(setjmp(back) == 0) {
+    if(setjmp(panicBack) == 0) {
         (void)waitUntil<Bound::Polls<2>, OnTimeout::Panic>(isSet(CtrlReg::en));
     }
-    CHECK(seen && seen->cause == Kvasir::Panic::Cause::timeout);
-    CHECK(seen && seen->detail == CtrlReg::Addr::value);
+    CHECK(panicSeen && panicSeen->cause == Kvasir::Panic::Cause::timeout);
+    CHECK(panicSeen && panicSeen->detail == CtrlReg::Addr::value);
 #endif
 
-    test("the injected policy (Report here) is the one without a policy argument");
+    test("the image's policy (Report here) is the one without a policy argument");
     becomesTrueAfter(1'000'000);
     auto const i = waitUntil<Bound::Polls<3>>(isSet(CtrlReg::en));
     CHECK(i.timedOut && i.polls == 3);

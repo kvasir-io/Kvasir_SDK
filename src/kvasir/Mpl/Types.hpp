@@ -1,77 +1,32 @@
 #pragma once
 #include "brigand.hpp"
 
+#include <concepts>
+#include <type_traits>
+
 namespace Kvasir { namespace MPL {
 
-    namespace Detail {
-        // in some cases we need a type that the user will never use
-        struct InternalUseOnly {};
-    }   // namespace Detail
-
-    // used to move the point of compilation to the point of instantiation of the parameter
-    // use this class to static assert only if an implausible specialization is actually instantiated
-    template<typename>
+    // The one dependent false (Util/Diagnostic.hpp's Check and the Startup reports use it too): a static_assert on
+    // it fires only when the template around it is instantiated. A named `static constexpr bool x =
+    // AlwaysFalse<T>::value;` makes clang print "due to requirement 'x'" instead of the template arguments.
+    template<typename...>
     struct AlwaysFalse {
-        enum { value = 0 };
+        static constexpr bool value = false;
     };
 
-    template<>
-    struct AlwaysFalse<Detail::InternalUseOnly> {
-        enum { value = 1 };
-    };
-
+    // A compile-time integer: std::integral_constant, or a tag type derived from one (Nvic::Index, Io::HwPort,
+    // Io::Pin). Read as T::value. Register's literal write() takes every IntegralConstant and checks the type in its
+    // body: a narrower constraint would send a constant that misses it into the runtime overload through
+    // integral_constant's implicit conversion.
     template<typename T>
-    struct Return {
-        using type = T;
-    };
-
-    // Wrapper for integral type template parameters
-    template<typename T, T I>
-    struct Value {
-        static constexpr T value{I};
-        using type = Value<T, I>;
-    };
-
-    template<bool B>
-    using Bool      = Value<bool, B>;
-    using TrueType  = Bool<true>;
-    using FalseType = Bool<false>;
-
-    template<int I>
-    using Int = Value<int, I>;
-
-    template<unsigned I>
-    using Unsigned = Value<unsigned, I>;
+    concept IntegralConstant = requires {
+        typename T::value_type;
+        T::value;
+    } && std::derived_from<T, std::integral_constant<typename T::value_type, T::value>>;
 
     template<typename... Ts>
     constexpr brigand::list<Ts...> list(Ts...) {
         return brigand::list<Ts...>{};
     }
-
-    // wrapper for template template parameters
-    template<template<typename...> class T>
-    struct Template {
-        template<typename... Ts>
-        using apply = T<Ts...>;
-    };
-
-    template<typename T, typename... Ts>
-    using ApplyTemplateT = typename T::template apply<Ts...>::type;
-
-    template<typename T, typename U>
-    struct Pair {
-        using type   = Pair<T, U>;
-        using First  = T;
-        using Second = U;
-    };
-
-    template<typename T>
-    using PairFirst = typename T::First;
-    template<typename T>
-    using PairSecond = typename T::Second;
-
-    // used for debugging
-    template<typename...>
-    struct Print;
 
 }}   // namespace Kvasir::MPL

@@ -1,0 +1,52 @@
+name: LLVM port
+
+# lib/{libc,libcxx,compiler-rt} against what tools/llvm_port says they are: upstream at lib/*/UPSTREAM's tag + Kvasir's
+# patches + its owned files. A finding is an edit the next LLVM port would lose (each finding says what to do:
+# --save-patches, owned.txt, ...; tools/llvm_port/README.md). Runs on every push and pull request that touches the
+# runtime libraries (their submodule pointers included) or the port tool, monthly, and on demand: a sparse clone of the
+# tag, then the full check with the libc headers build; the selftest seeds drift into a scratch copy.
+
+on:
+    push:
+        branches:
+            - master
+        paths:
+            - 'lib/**'
+            - 'tools/llvm_port/**'
+            - '.github/workflows/llvm-port.yml'
+    pull_request:
+        branches:
+            - master
+        paths:
+            - 'lib/**'
+            - 'tools/llvm_port/**'
+            - '.github/workflows/llvm-port.yml'
+    schedule:
+        # the 1st of every month at 02:00 UTC: an upstream fetch that stopped working shows up without a lib/ change
+        - cron: '0 2 1 * *'
+    workflow_dispatch:
+
+jobs:
+    drift-check:
+        runs-on: ubuntu-latest
+        container:
+            image: archlinux:latest
+        steps:
+            - name: Set up the tools
+              run: |
+                pacman -Syu --noconfirm
+                pacman -S --noconfirm git cmake base-devel clang python python-yaml rsync patch diffutils
+
+            - name: Checkout repository
+              uses: actions/checkout@v6
+              with:
+                submodules: recursive
+
+            - name: llvm-project at the ported tag
+              run: echo "LLVM=$(tools/llvm_port/fetch-llvm)" >> "$GITHUB_ENV"
+
+            - name: Drift check
+              run: NO_COLOR=1 tools/llvm_port/libcport --check "$LLVM" .
+
+            - name: Drift check selftest
+              run: tools/llvm_port/tests/check_selftest.sh "$LLVM" .

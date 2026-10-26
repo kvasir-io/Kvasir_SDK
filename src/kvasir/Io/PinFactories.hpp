@@ -1,9 +1,8 @@
 #pragma once
 #include "Utility.hpp"
-#include "kvasir/Mpl/Utility.hpp"
+#include "kvasir/Mpl/Types.hpp"
 
-namespace Kvasir {
-namespace Io {
+namespace Kvasir { namespace Io {
     /// This generic Metafunction which all pin factories resolve to.
     /// It relies on the user to include a chip file which specializes this template
     /// with the proper resulting Register::Action
@@ -16,47 +15,33 @@ namespace Io {
     template<typename TAction, typename TPinLocation>
     using MakeActionT = typename MakeAction<TAction, TPinLocation>::type;
 
-    namespace Detail {
-        // make sure we actually got a PinLocation as a parameter
-        template<typename TAction, typename TPortPin>
-        struct MakeActionIfPinLocation {
-            // static_assert(MPL::AlwaysFalse<TAction>::value,"parameter is not a PinLocation");
-        };
-
-        template<typename TAction, int Port, int Pin>
-        struct MakeActionIfPinLocation<TAction, Register::PinLocation<Port, Pin>> {
-            using type = MakeActionT<TAction, Register::PinLocation<Port, Pin>>;
-        };
-
-        template<typename TAction, typename TPinLocation>
-        using MakeActionIfPinLocationT =
-          typename MakeActionIfPinLocation<TAction, TPinLocation>::type;
-    }   // namespace Detail
-
-    template<typename TPort,
-             typename TPin>
-    constexpr Register::PinLocation<TPort::value,
-                                    TPin::value>
-    makePinLocation(TPort,
-                    TPin) {
+    // a port tag and a pin tag, in that order (makePinLocation(port0, pin25))
+    template<int P,
+             int N>
+    constexpr PinLocation<P,
+                          N>
+    makePinLocation(HwPort<P>,
+                    Pin<N>) {
         return {};
     }
-}   // namespace Io
 
-namespace Register {
+    // The pin factories: a PinLocation becomes the chip's Register::Action (MakeAction), several pins a list of them.
+    // They live here, next to PinLocation, and are found by argument-dependent lookup at every unqualified call
+    // (`apply(makeOutput(HW::Pin::led{}))`); Register's factories of the same names take fields only.
     template<typename TAction,
              typename T>
-    constexpr Io::Detail::MakeActionIfPinLocationT<TAction,
-                                                   T>
+        requires(Detail::IsPinLocation<T>::value)
+    constexpr MakeActionT<TAction,
+                          T>
     action(TAction,
            T) {
         return {};
     }
 
     template<typename T>
-    constexpr Io::Detail::MakeActionIfPinLocationT<
-      Io::Action::Input<Io::PullConfiguration::PullNone>,
-      T>
+        requires(Detail::IsPinLocation<T>::value)
+    constexpr MakeActionT<Action::Input<PullConfiguration::pullNone>,
+                          T>
     makeInput(T) {
         return {};
     }
@@ -64,6 +49,8 @@ namespace Register {
     template<typename T,
              typename U,
              typename... Ts>
+        requires(Detail::IsPinLocation<T>::value && Detail::IsPinLocation<U>::value
+                 && (Detail::IsPinLocation<Ts>::value && ...))
     constexpr decltype(MPL::list(makeInput(T{}),
                                  makeInput(U{}),
                                  makeInput(Ts{})...)) makeInput(T,
@@ -73,10 +60,11 @@ namespace Register {
     }
 
     template<typename T>
-    constexpr Io::Detail::MakeActionIfPinLocationT<Io::Action::Output<Io::OutputType::PushPull,
-                                                                      Io::OutputSpeed::Low,
-                                                                      Io::OutputInit::Low>,
-                                                   T>
+        requires(Detail::IsPinLocation<T>::value)
+    constexpr MakeActionT<Action::Output<OutputType::pushPull,
+                                         OutputSpeed::low,
+                                         OutputInit::low>,
+                          T>
     makeOutput(T) {
         return {};
     }
@@ -84,6 +72,8 @@ namespace Register {
     template<typename T,
              typename U,
              typename... Ts>
+        requires(Detail::IsPinLocation<T>::value && Detail::IsPinLocation<U>::value
+                 && (Detail::IsPinLocation<Ts>::value && ...))
     constexpr decltype(MPL::list(makeOutput(T{}),
                                  makeOutput(U{}),
                                  makeOutput(Ts{})...)) makeOutput(T,
@@ -93,56 +83,86 @@ namespace Register {
     }
 
     template<typename T>
-    constexpr Io::Detail::MakeActionIfPinLocationT<Io::Action::Output<Io::OutputType::PushPull,
-                                                                      Io::OutputSpeed::Low,
-                                                                      Io::OutputInit::High>,
-                                                   T>
+        requires(Detail::IsPinLocation<T>::value)
+    constexpr MakeActionT<Action::Output<OutputType::pushPull,
+                                         OutputSpeed::low,
+                                         OutputInit::high>,
+                          T>
     makeOutputInitHigh(T) {
         return {};
     }
 
-    template<typename TPortPin>
-    constexpr Io::Detail::MakeActionIfPinLocationT<Io::Action::Set,
-                                                   TPortPin>
-    set(TPortPin) {
+    template<typename T>
+        requires(Detail::IsPinLocation<T>::value)
+    constexpr MakeActionT<Action::Set,
+                          T>
+    set(T) {
         return {};
     }
 
-    template<typename TPortPin>
-    constexpr Io::Detail::MakeActionIfPinLocationT<Io::Action::Clear,
-                                                   TPortPin>
-    clear(TPortPin) {
+    template<typename T>
+        requires(Detail::IsPinLocation<T>::value)
+    constexpr MakeActionT<Action::Clear,
+                          T>
+    clear(T) {
         return {};
     }
 
-    template<typename TPortPin>
-    constexpr Io::Detail::MakeActionIfPinLocationT<Io::Action::Toggle,
-                                                   TPortPin>
-    toggle(TPortPin) {
+    template<typename T,
+             typename U,
+             typename... Ts>
+        requires(Detail::IsPinLocation<T>::value && Detail::IsPinLocation<U>::value
+                 && (Detail::IsPinLocation<Ts>::value && ...))
+    [[gnu::always_inline]] constexpr brigand::list<decltype(clear(T{})),
+                                                   decltype(clear(U{})),
+                                                   decltype(clear(Ts{}))...>
+      clear(T,
+            U,
+            Ts...) {
         return {};
     }
 
-    template<typename TPP1,
-             typename TPP2,
-             typename... TPortPins>
-    constexpr brigand::list<Io::Detail::MakeActionIfPinLocationT<Io::Action::Toggle,
-                                                                 TPP1>,
-                            Io::Detail::MakeActionIfPinLocationT<Io::Action::Toggle,
-                                                                 TPP2>,
-                            Io::Detail::MakeActionIfPinLocationT<Io::Action::Toggle,
-                                                                 TPortPins>...>
-    toggle(TPP1,
-           TPP2,
-           TPortPins...) {
+    template<typename T>
+        requires(Detail::IsPinLocation<T>::value)
+    constexpr MakeActionT<Action::Toggle,
+                          T>
+    toggle(T) {
         return {};
     }
 
-    template<typename TPortPin>
-    constexpr Io::Detail::MakeActionIfPinLocationT<Io::Action::Read,
-                                                   TPortPin>
-    read(TPortPin) {
+    template<typename T,
+             typename U,
+             typename... Ts>
+        requires(Detail::IsPinLocation<T>::value && Detail::IsPinLocation<U>::value
+                 && (Detail::IsPinLocation<Ts>::value && ...))
+    constexpr brigand::list<decltype(toggle(T{})),
+                            decltype(toggle(U{})),
+                            decltype(toggle(Ts{}))...>
+      toggle(T,
+             U,
+             Ts...) {
         return {};
     }
 
-}   // namespace Register
-}   // namespace Kvasir
+    template<typename T>
+        requires(Detail::IsPinLocation<T>::value)
+    constexpr MakeActionT<Action::Read,
+                          T>
+    read(T) {
+        return {};
+    }
+
+    template<typename T,
+             typename U,
+             typename... Ts>
+        requires(Detail::IsPinLocation<T>::value && Detail::IsPinLocation<U>::value
+                 && (Detail::IsPinLocation<Ts>::value && ...))
+    [[gnu::always_inline]] constexpr brigand::list<decltype(read(T{})),
+                                                   decltype(read(U{})),
+                                                   decltype(read(Ts{}))...>
+      read(T,
+           U,
+           Ts...) {
+        return {};
+    }
+}}   // namespace Kvasir::Io

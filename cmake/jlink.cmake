@@ -1,17 +1,18 @@
-# J-Link Flash and Debug Configuration Provides functions to configure J-Link debugging and flashing capabilities
-# Generates J-Link command files and CMake targets for embedded development
+# The JLinkExe side of an image: flash_<target> (its <target>_flash.hex, or a RAM image loaded and started by hand) and
+# the tree's reset and connect targets, as J-Link Commander scripts. The printer's targets (log_<target>) are uc_log's
+# (target_add_uc_log_rtt_jlink).
 
+# OFF: no JLinkExe targets (a tree on a machine without JLinkExe); the printer's targets stay
 set(KVASIR_ENABLE_JLINK
     true
-    CACHE BOOL "Enable J-Link flash and debug support")
+    CACHE BOOL "Enable the JLinkExe flash, reset and connect targets")
 
 function(target_add_flash_jlink target)
-    if(POLICY CMP0174)
-        cmake_policy(SET CMP0174 NEW)
+    if(NOT KVASIR_ENABLE_JLINK)
+        return()
     endif()
-    cmake_parse_arguments(
-        PARSE_ARGV 1 PARSED_ARGS "RAM_ONLY" "TARGET_MPU;SWD_SPEED;JLINK_IP;JLINK_PROBE;SUFFIX;AUXILIARY_TARGETS_PREFIX"
-        "DEPENDS;CONNECT_COMMANDS")
+    cmake_parse_arguments(PARSE_ARGV 1 PARSED_ARGS "RAM_ONLY" "TARGET_MPU;SWD_SPEED;JLINK_IP;JLINK_PROBE"
+                          "CONNECT_COMMANDS")
 
     if(PARSED_ARGS_UNPARSED_ARGUMENTS)
         message(FATAL_ERROR "unknown argument ${PARSED_ARGS_UNPARSED_ARGUMENTS}")
@@ -21,44 +22,43 @@ function(target_add_flash_jlink target)
         message(FATAL_ERROR "needs TARGET_MPU")
     endif()
 
-    # empty: the probe's maximum (the DLL clamps it), as uc_log's printer does
+    # empty: uc_log's default (UC_LOG_SWD_DEFAULT_KHZ, uc_log/CMakeLists.txt), the printer's speed too. A probe whose
+    # maximum is too fast for the target falls back to connect-under-reset, which resets the target even on an attach:
+    # such a tree needs a lower SWD_SPEED.
     if(NOT PARSED_ARGS_SWD_SPEED)
-        set(PARSED_ARGS_SWD_SPEED 100000)
-    endif()
-
-    if(NOT PARSED_ARGS_SUFFIX)
-        set(PARSED_ARGS_SUFFIX "")
-    endif()
-
-    if(NOT PARSED_ARGS_AUXILIARY_TARGETS_PREFIX)
-        set(PARSED_ARGS_AUXILIARY_TARGETS_PREFIX "")
-    endif()
-
-    if(NOT KVASIR_ENABLE_JLINK)
-        return()
+        if(NOT DEFINED UC_LOG_SWD_DEFAULT_KHZ)
+            message(FATAL_ERROR "target_add_flash_jlink: no SWD_SPEED and no UC_LOG_SWD_DEFAULT_KHZ (uc_log first)")
+        endif()
+        set(PARSED_ARGS_SWD_SPEED ${UC_LOG_SWD_DEFAULT_KHZ})
     endif()
 
     # Which J-Link on USB. The commander's USB command takes a serial number or a nickname (it resolves the nickname
     # itself; quoted, or a nickname with a space is cut at the space and the connect fails - but a QUOTED serial number
     # is taken for a nickname and fails, so a serial goes in bare); a bare USB with two probes on the bus fails to
     # connect, and -USB on the command line clashes with the USB line in the script, so the name goes into the script.
+    # jlink_open, the start of every script: the probe line and `connect`. connect.jlink is only this - an attach that
+    # changes nothing on the target.
     if(NOT PARSED_ARGS_JLINK_IP OR "${PARSED_ARGS_JLINK_IP}" STREQUAL "")
         if(PARSED_ARGS_JLINK_PROBE MATCHES "^[0-9]+$")
-            set(jlink_connect_command "USB ${PARSED_ARGS_JLINK_PROBE}\nconnect\nr\nh\n")
+            set(jlink_open "USB ${PARSED_ARGS_JLINK_PROBE}\nconnect\n")
         elseif(PARSED_ARGS_JLINK_PROBE AND NOT PARSED_ARGS_JLINK_PROBE STREQUAL "")
-            set(jlink_connect_command "USB \"${PARSED_ARGS_JLINK_PROBE}\"\nconnect\nr\nh\n")
+            set(jlink_open "USB \"${PARSED_ARGS_JLINK_PROBE}\"\nconnect\n")
         else()
-            set(jlink_connect_command "USB\nconnect\nr\nh\n")
+            set(jlink_open "USB\nconnect\n")
         endif()
     else()
-        set(jlink_connect_command "IP ${PARSED_ARGS_JLINK_IP}\nconnect\nr\nh\n")
+        set(jlink_open "IP ${PARSED_ARGS_JLINK_IP}\nconnect\n")
     endif()
 
-    # chip package's TARGET_JLINK_CONNECT_COMMANDS, run right after `connect`
+    # jlink_connect_command, before a reset or a download: the chip package's kvasir_chip(JLINK_CONNECT_COMMANDS) right
+    # after `connect` (they make the chip safe to reset or write, e.g. a second core sent back to its boot ROM), then
+    # reset and halt
+    set(jlink_connect_command "${jlink_open}")
     if(PARSED_ARGS_CONNECT_COMMANDS)
         list(JOIN PARSED_ARGS_CONNECT_COMMANDS "\n" jlink_connect_extra)
-        string(REPLACE "connect\n" "connect\n${jlink_connect_extra}\n" jlink_connect_command "${jlink_connect_command}")
+        string(APPEND jlink_connect_command "${jlink_connect_extra}\n")
     endif()
+    string(APPEND jlink_connect_command "r\nh\n")
 
     find_program(jlinkexe JLinkExe REQUIRED)
 
@@ -88,7 +88,7 @@ function(target_add_flash_jlink target)
             OUTPUT
             ${target}_flash.jlink.in
             CONTENT
-            "${jlink_connect_command}loadfile ${target}${PARSED_ARGS_SUFFIX}\n${jlink_nvic_clear}w4 0xE000ED08 {vector_table}\nwreg MSP {initial_sp}\nwreg XPSR 0x01000000\nSetPC {reset_pc}\ng\nq"
+            "${jlink_connect_command}loadfile ${target}_flash.hex\n${jlink_nvic_clear}w4 0xE000ED08 {vector_table}\nwreg MSP {initial_sp}\nwreg XPSR 0x01000000\nSetPC {reset_pc}\ng\nq"
             NEWLINE_STYLE
             UNIX)
         add_custom_command(
@@ -119,7 +119,7 @@ function(target_add_flash_jlink target)
             OUTPUT
             ${target}_flash.jlink
             CONTENT
-            "${jlink_connect_command}loadfile ${target}${PARSED_ARGS_SUFFIX}\nr\nh\nr\ng\nq"
+            "${jlink_connect_command}loadfile ${target}_flash.hex\nr\nh\nr\ng\nq"
             NEWLINE_STYLE
             UNIX)
     endif()
@@ -144,14 +144,14 @@ function(target_add_flash_jlink target)
     add_custom_target(
         flash_${target}
         COMMAND ${jlinkexe} ${jlink_args} -CommandFile ${target}_flash.jlink
-        DEPENDS ${target} ${PARSED_ARGS_DEPENDS})
+        DEPENDS ${target})
 
-    set(aux_suffix ${PARSED_ARGS_AUXILIARY_TARGETS_PREFIX})
-    if(NOT TARGET ${aux_suffix}reset)
+    # the tree's `reset` and `connect` targets, through the probe of the first image that configures them
+    if(NOT TARGET reset)
         file(
             CONFIGURE
             OUTPUT
-            ${aux_suffix}reset.jlink
+            reset.jlink
             CONTENT
             "${jlink_connect_command}r\ng\nq"
             NEWLINE_STYLE
@@ -159,28 +159,28 @@ function(target_add_flash_jlink target)
 
         add_custom_target(
             reset
-            COMMAND ${jlinkexe} ${jlink_args} -CommandFile ${aux_suffix}reset.jlink
-            DEPENDS ${aux_suffix}reset.jlink)
+            COMMAND ${jlinkexe} ${jlink_args} -CommandFile reset.jlink
+            DEPENDS reset.jlink)
 
         file(
             CONFIGURE
             OUTPUT
-            ${aux_suffix}connect.jlink
+            connect.jlink
             CONTENT
-            "${jlink_connect_command}"
+            "${jlink_open}"
             NEWLINE_STYLE
             UNIX)
 
         add_custom_target(
-            ${aux_suffix}connect
-            COMMAND ${jlinkexe} ${jlink_args} -CommandFile ${aux_suffix}connect.jlink
-            DEPENDS ${aux_suffix}connect.jlink)
+            connect
+            COMMAND ${jlinkexe} ${jlink_args} -CommandFile connect.jlink
+            DEPENDS connect.jlink)
 
         set_property(
             TARGET ${target}
             APPEND
-            PROPERTY ADDITIONAL_CLEAN_FILES ${CMAKE_CURRENT_BINARY_DIR}/${aux_suffix}reset.jlink
-                     ${CMAKE_CURRENT_BINARY_DIR}/${aux_suffix}connect.jlink)
+            PROPERTY ADDITIONAL_CLEAN_FILES ${CMAKE_CURRENT_BINARY_DIR}/reset.jlink
+                     ${CMAKE_CURRENT_BINARY_DIR}/connect.jlink)
     endif()
 
 endfunction()

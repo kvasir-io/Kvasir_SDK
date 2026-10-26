@@ -1,11 +1,11 @@
-#include "multicore_test.hpp"
+#include "test_harness.hpp"
 
 #include <cstdint>
 #include <kvasir/Atomic/Spinlock.hpp>
 #include <thread>
 
 namespace {
-constexpr std::uint32_t Iterations = 200'000;
+constexpr std::uint32_t iterations = 200'000;
 
 template<typename Lock>
 void exactCount(char const* name) {
@@ -13,8 +13,8 @@ void exactCount(char const* name) {
     Lock          lock{};
     std::uint32_t counter = 0;
 
-    auto worker = [&] {
-        for(std::uint32_t i = 0; i < Iterations; ++i) {
+    auto const worker = [&] {
+        for(std::uint32_t i = 0; i < iterations; ++i) {
             Kvasir::Atomic::LockGuard const guard{lock};
             ++counter;
         }
@@ -23,7 +23,7 @@ void exactCount(char const* name) {
     std::thread b{worker};
     a.join();
     b.join();
-    CHECK(counter == 2 * Iterations);
+    CHECK(counter == 2 * iterations);
 }
 
 void tryLock() {
@@ -39,7 +39,7 @@ void tryLock() {
 
 int main() {
     exactCount<Kvasir::Atomic::Spinlock>("spinlock keeps every increment");
-    exactCount<Kvasir::Atomic::CriticalSection>("critical section keeps every increment");
+    exactCount<Kvasir::Atomic::IrqSpinlock>("critical section keeps every increment");
     tryLock();
-    return Kvasir::Test::finish();
+    return Kvasir::Test::report();
 }

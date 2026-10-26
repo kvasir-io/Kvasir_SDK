@@ -115,14 +115,20 @@ static_assert(4294967295_u32 == 4294967295U);
 static_assert(18446744073709551615_u64 == 18446744073709551615ULL);
 static_assert(255_b == std::byte{255});
 static_assert(0xff_b == std::byte{0xff});
-// _i and _u are validated against the minimum width the standard guarantees for int
-static_assert(32767_i == 32767);
-static_assert(65535_u == 65535);
+// _i and _u take int's and unsigned's own range (32 bits on every Kvasir target and host)
+static_assert(sizeof(int) == 4);
+static_assert(2147483647_i == 2147483647);
+static_assert(40000_u == 40000U);
+static_assert(4294967295_u == 4294967295U);
 
-// the following would each be a compile error ("integer literal overflow"), which is the
-// property that makes these literals useful in register code:
-//   256_u8   65536_u16   4294967296_u32   128_i8   65536_u   32768_i
-// they cannot be expressed as a static_assert because the diagnostic is a hard error.
+// the full 64-bit range parses, and a digit separator may follow the leading 0 of an octal literal
+static_assert(0xffff'ffff'ffff'ffff_u64 == ~0ULL);
+static_assert(0'7_u32 == 7);
+
+// out-of-range literals (256_u8, 2147483648_i, ...), literals past 64 bits and non-digits (1.5_u32) are
+// compile errors - the property that makes these literals useful in register code. A hard error
+// cannot be a static_assert: the cases and the message each one prints are in
+// literals_must_fail/test_literals_must_fail.py.
 
 // ---------------------------------------------------------------------------
 // the literals are usable in constant expressions in the places register code needs them

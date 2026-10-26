@@ -1,0 +1,29 @@
+name: clang-tidy new checks
+
+# Weekly: the checks the current clang-tidy (archlinux) enables under the globs of .clang-tidy that
+# tools/tidy_checks.txt does not hold yet. The runner keeps them off everywhere until they are reviewed; a red run is the
+# reminder to review them in one SDK change (`tools/tidy.py --update-checks`, then each new check on, tuned, or off
+# with its reason, and the fixes). Blocks nothing.
+
+on:
+    schedule:
+        - cron: '0 3 * * 1'
+    workflow_dispatch:
+
+jobs:
+    new-checks:
+        runs-on: ubuntu-latest
+        container:
+            image: archlinux:latest
+
+        steps:
+            - name: Set up clang-tidy
+              run: |
+                pacman -Syu --noconfirm --disable-download-timeout
+                pacman -S --noconfirm --disable-download-timeout git python clang
+
+            - name: Checkout repository
+              uses: actions/checkout@v6
+
+            - name: New checks
+              run: python3 -B tools/tidy.py --new-checks

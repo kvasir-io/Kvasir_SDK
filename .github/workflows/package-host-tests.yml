@@ -1,0 +1,76 @@
+name: Package host tests
+
+# Reusable: a package's host tests (a CMake tree, by default tests/) with gcc and clang in archlinux, built and run
+# with ctest, and the plain clang job's tree through clang-tidy (.github/actions/tidy). Most of the packages' checks are
+# static_asserts, so building is the test. The tests fetch what is not next to them themselves (Kvasir_SDK, cores, ...:
+# FetchContent), so a lone checkout of the caller is all they need.
+# Callers: the chip, chip-common and core-common repositories' ci.yml / tests.yml; each says there what its tests cover.
+
+on:
+    workflow_call:
+        inputs:
+            source-dir:
+                description: 'the CMake tree of the tests, relative to the repository'
+                required: false
+                type: string
+                default: tests
+            extra-packages:
+                description: 'pacman packages besides git cmake ninja base-devel (and clang for the clang jobs)'
+                required: false
+                type: string
+                default: ''
+            submodules:
+                description: 'actions/checkout submodules: false, true or recursive'
+                required: false
+                type: string
+                default: 'false'
+            sanitizers:
+                description: 'also run both compilers with ASan+UBSan (-fno-sanitize-recover=all)'
+                required: false
+                type: boolean
+                default: false
+
+jobs:
+    test:
+        name: ${{ matrix.compiler.cc }}${{ matrix.compiler.sanitizer && ' asan+ubsan' || '' }}
+        runs-on: ubuntu-latest
+        container:
+            image: archlinux:latest
+        strategy:
+            fail-fast: false
+            matrix:
+                compiler: ${{ fromJSON(inputs.sanitizers && '[{"cc":"gcc","cxx":"g++"},{"cc":"gcc","cxx":"g++","sanitizer":"address,undefined"},{"cc":"clang","cxx":"clang++"},{"cc":"clang","cxx":"clang++","sanitizer":"address,undefined"}]' || '[{"cc":"gcc","cxx":"g++"},{"cc":"clang","cxx":"clang++"}]') }}
+
+        steps:
+            - name: Set up C++ environment
+              run: |
+                pacman -Syu --noconfirm --disable-download-timeout
+                pacman -S --noconfirm --disable-download-timeout git cmake ninja base-devel python ${{ inputs.extra-packages }} ${{ matrix.compiler.cc == 'clang' && 'clang' || '' }}
+
+            - name: Checkout repository
+              uses: actions/checkout@v6
+              with:
+                submodules: ${{ inputs.submodules }}
+
+            - name: Configure CMake
+              run: >
+                cmake -S ${{ inputs.source-dir }} -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+                ${{ matrix.compiler.sanitizer && format('"-DCMAKE_CXX_FLAGS=-fsanitize={0} -fno-sanitize-recover=all"', matrix.compiler.sanitizer) || '' }}
+              env:
+                CC: ${{ matrix.compiler.cc }}
+                CXX: ${{ matrix.compiler.cxx }}
+
+            - name: Build tests
+              run: cmake --build build -j"$(nproc)"
+
+            - name: Run tests
+              run: ctest --test-dir build --output-on-failure
+
+            # clang-tidy (Kvasir_SDK master's tools/tidy.py and .clang-tidy) over the package's host tests, plain clang
+            # job only: the package's findings fail, the SDK's and other packages' are counted as foreign
+            - name: clang-tidy
+              if: matrix.compiler.cc == 'clang' && !matrix.compiler.sanitizer
+              uses: kvasir-io/Kvasir_SDK/.github/actions/tidy@master
+              timeout-minutes: 30
+              with:
+                trees: build

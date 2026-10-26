@@ -1,20 +1,15 @@
 #pragma once
+#include "core/Barrier.hpp"
+#include "core_peripherals/SCB.hpp"
 #include "kvasir/Common/Interrupt.hpp"
+#include "kvasir/Port/Interrupts.hpp"
+#include "kvasir/Register/Memory.hpp"
+#include "kvasir/Register/Register.hpp"
 #include "kvasir/StartUp/Resources.hpp"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
-
-// VTOR through the core package's SCB (every firmware has it; a host test of the list rules does not, and uses only
-// the table's size)
-#if __has_include("core_peripherals/SCB.hpp")
-    #include "core_peripherals/SCB.hpp"
-    #include "kvasir/Register/Register.hpp"
-    #define KVASIR_RAM_VECTOR_TABLE_SCB 1
-#else
-    #define KVASIR_RAM_VECTOR_TABLE_SCB 0
-#endif
 
 // The boot core's vector table in RAM.
 //
@@ -31,22 +26,25 @@
 //                                              Kvasir::Startup::RamVectorTable<>, Resus>;
 //
 // Entries: the table's size in words, a power of two at or above the chip's count (16 core
-// exceptions + IRQs: 68 on the RP2350, 42 on the RP2040); it is also the alignment VTOR
-// requires. A size below the chip's count fails the build: the IRQs past it would fetch zero
+// exceptions + IRQs: 16 + 52 = 68 on the RP2350, RP2350 datasheet 3.2 "52 interrupt inputs"
+// (RP2350_Datasheet.md l.3746); 16 + 32 = 48 on the RP2040, whose NVIC has 32 inputs with
+// IRQs 26-31 tied to zero, RP2040 datasheet 2.3.2 (RP2040_Datasheet.md l.2923-2925) - the
+// generated interruptEnd is 52 / 32); it is also the alignment VTOR requires. A size below the chip's count fails the build: the IRQs past it would fetch zero
 // vectors. Reading past the real table copies whatever follows it, harmlessly. Traits is the
 // chip's interrupt table (chip/Interrupt.hpp), a parameter only so that a host test can
-// name another.
+// name another (core_cortex_common tests/decoders, over the generated SCB).
 namespace Kvasir { namespace Startup {
     struct RamVectorTableTag {
         static constexpr bool sharedClaim = true;
     };
 
-    template<std::size_t Entries = 128, typename Traits = Nvic::InterruptOffsetTraits<>>
+    template<std::size_t Entries = 128,
+             typename Traits     = Nvic::InterruptOffsetTraits<Kvasir::Tag::User>>
     struct RamVectorTable {
         static_assert(Entries >= 32 && (Entries & (Entries - 1)) == 0,
                       "Entries is the table size in words and its alignment: a power of two");
         static_assert(
-          Entries >= static_cast<std::size_t>(16 + Traits::end),
+          Entries >= 16 + static_cast<std::size_t>(Traits::end),
           "Entries is below this chip's vector count (16 core exceptions + "
           "InterruptOffsetTraits::end IRQs): the IRQs past it would fetch zero vectors");
 
@@ -55,18 +53,18 @@ namespace Kvasir { namespace Startup {
         alignas(Entries * sizeof(std::uint32_t)) inline static std::array<std::uint32_t,
                                                                           Entries> table{};
 
-#if KVASIR_RAM_VECTOR_TABLE_SCB
         using Vtor = Kvasir::Peripheral::SCB::Registers<>::VTOR;
 
         static void preEnableRuntimeInit() {
             // the table VTOR points at now (flash, or a RAM image's own): memory, read as such
-            auto const* src = reinterpret_cast<std::uint32_t const volatile*>(
-              Kvasir::Register::readWhole(Vtor::FULLREGISTER));
-            for(std::size_t i = 0; i < Entries; ++i) { table[i] = src[i]; }
-            asm volatile("dsb" ::: "memory");
+            Kvasir::Memory::loadWords(Kvasir::Register::readWhole(Vtor::FULLREGISTER),
+                                      table.data(),
+                                      Entries);
+            Kvasir::Core::dsb();
             Kvasir::Register::writeWhole(Vtor::FULLREGISTER,
                                          reinterpret_cast<std::uint32_t>(table.data()));
-            asm volatile("dsb\n isb" ::: "memory");
+            Kvasir::Core::dsb();
+            Kvasir::Core::isb();
         }
 
         /// Whether VTOR points at the RAM copy.
@@ -74,6 +72,5 @@ namespace Kvasir { namespace Startup {
             return Kvasir::Register::readWhole(Vtor::FULLREGISTER)
                 == reinterpret_cast<std::uint32_t>(table.data());
         }
-#endif
     };
 }}   // namespace Kvasir::Startup

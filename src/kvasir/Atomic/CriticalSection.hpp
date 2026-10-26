@@ -19,21 +19,25 @@
 //
 // f's result is built inside the section; a reference into the guarded data outlives it.
 //
-// Another policy is injected by the application, from any header, before or after this one:
+// Another policy is the image's choice, a late hook (the table in kvasir/Port/Hooks.hpp), specialised from any header,
+// before or after this one:
 //
 //     template<>
-//     inline constexpr auto Kvasir::Atomic::injectedCriticalSection<> = MyPolicy{};
+//     struct Kvasir::Atomic::CriticalSectionPolicy<Kvasir::Tag::User> { using type = MyPolicy; };
 //
-// The empty pack in criticalSection makes the lookup dependent, so the specialisation is taken at
-// instantiation, not where this header is read; the return type is spelled out (f's own), not
-// deduced, because deducing it would instantiate the body at the first call. Every translation unit of a firmware must see the
-// same specialisation (put it in the header they all include); nothing can check that.
+// criticalSection reads it through Port::LateT with its own empty pack, so the specialisation is taken at
+// instantiation; the return type is spelled out (f's own), not deduced, because deducing it would instantiate the
+// body at the first call. Every translation unit of a firmware must see the same specialisation (put it in the header
+// they all include); nothing can check that.
 //
-// Flash/XIP code that masks interrupts because XIP is off is not a critical section over data and
-// keeps Nvic::InterruptGuard.
+// Flash/XIP code that masks interrupts because XIP is off is not a critical section over data: it masks with
+// Core::IrqGuard (core/InterruptMask.hpp), which is what Policy::IrqMask runs under too.
 
 #include "kvasir/Atomic/Atomic.hpp"
 #include "kvasir/Atomic/Spinlock.hpp"
+#include "kvasir/Atomic/Sync.hpp"
+#include "kvasir/Common/Tags.hpp"
+#include "kvasir/Port/Hooks.hpp"
 
 #include <concepts>
 #include <utility>
@@ -65,19 +69,20 @@ struct GlobalSection {};
 // A policy runs a callable with its exclusion held, per tag, and hands back exactly what the
 // callable returns (the probe returns int&&: a policy that decays the result does not satisfy this).
 template<typename P>
-concept CriticalSectionPolicy = requires(int&& (*f)(), bool (*pred)()) {
+concept CriticalSectionPolicyShape = requires(int&& (*f)(), bool (*pred)()) {
     { P::template run<Detail::ProbeTag>(f) } -> std::same_as<int&&>;
     { P::template run<Detail::ProbeTag>(f, pred) } -> std::same_as<int&&>;
 };
 
-namespace Policy {
+// The policies carry the KVASIR_MULTICORE ABI tag (Sync.hpp): Policy::Default switches with it.
+inline namespace KVASIR_ATOMIC_ABI { namespace Policy {
 
     // One core. The tag is ignored: masking interrupts excludes everything.
     struct IrqMask {
         template<typename Tag,
                  typename F>
         [[gnu::always_inline]] static decltype(auto) run(F&& f) {
-            Nvic::InterruptGuard<Nvic::Global> const guard{};
+            Core::IrqGuard const guard{};
             return std::forward<F>(f)();
         }
 
@@ -92,7 +97,7 @@ namespace Policy {
         static decltype(auto) run(F&&    f,
                                   Pred&& pred) {
             while(true) {
-                Nvic::InterruptGuard<Nvic::Global> const guard{};
+                Core::IrqGuard const guard{};
                 if(pred()) { return std::forward<F>(f)(); }
                 Detail::waitForInterrupt();
             }
@@ -103,7 +108,7 @@ namespace Policy {
     // pre-empt the holder and spin on the lock it holds (Spinlock.hpp's rule).
     struct IrqMaskAndLock {
         template<typename Tag>
-        static inline CriticalSection section{};
+        static inline IrqSpinlock section{};
 
         template<typename Tag,
                  typename F>
@@ -145,7 +150,7 @@ namespace Policy {
                                   Pred&& pred) {
             while(true) {
                 {
-                    std::unique_lock lock{mutex<Tag>};
+                    std::unique_lock const lock{mutex<Tag>};
                     if(pred()) { return std::forward<F>(f)(); }
                 }
                 std::this_thread::yield();
@@ -160,13 +165,16 @@ namespace Policy {
     using Default = IrqMask;
 #endif
 
-    static_assert(CriticalSectionPolicy<IrqMask>);
-    static_assert(CriticalSectionPolicy<IrqMaskAndLock>);
-    static_assert(CriticalSectionPolicy<Default>);
-}   // namespace Policy
+    static_assert(CriticalSectionPolicyShape<IrqMask>);
+    static_assert(CriticalSectionPolicyShape<IrqMaskAndLock>);
+    static_assert(CriticalSectionPolicyShape<Default>);
+}}   // namespace KVASIR_ATOMIC_ABI::Policy
 
-template<typename...>
-inline constexpr auto injectedCriticalSection = Policy::Default{};
+// The image's policy (header comment): type, one of Policy:: or the application's own.
+template<typename T, typename... Ts>
+struct CriticalSectionPolicy {
+    using type = Policy::Default;
+};
 
 template<typename Tag = GlobalSection,
          typename... Dummy,
@@ -176,9 +184,11 @@ template<typename Tag = GlobalSection,
 [[gnu::always_inline]] inline auto criticalSection(F&& f,
                                                    Pred&&... pred)
   -> decltype(std::forward<F>(f)()) {
-    CriticalSectionPolicy auto const& policy = injectedCriticalSection<Dummy...>;
-    return std::remove_cvref_t<decltype(policy)>::template run<Tag>(std::forward<F>(f),
-                                                                    std::forward<Pred>(pred)...);
+    using P = typename Port::LateT<CriticalSectionPolicy<::Kvasir::Tag::User>, Dummy...>::type;
+    static_assert(CriticalSectionPolicyShape<P>,
+                  "CriticalSectionPolicy<Tag::User>::type is not a critical-section policy "
+                  "(CriticalSection.hpp)");
+    return P::template run<Tag>(std::forward<F>(f), std::forward<Pred>(pred)...);
 }
 
 }   // namespace Kvasir::Atomic

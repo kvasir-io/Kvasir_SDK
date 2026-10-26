@@ -31,22 +31,7 @@
 
 namespace Kvasir::Prescaler {
 
-namespace detail {
-    // not constexpr: reaching it in a constant expression is the compile error
-    inline std::uint64_t prescalerArithmeticOverflowsSixtyFourBits(std::uint64_t a,
-                                                                   std::uint64_t b) {
-        return a * b;
-    }
-}   // namespace detail
-
-constexpr std::uint64_t mulChecked(std::uint64_t a,
-                                   std::uint64_t b) {
-    std::uint64_t r{};
-    if(__builtin_mul_overflow(a, b, &r)) {
-        return detail::prescalerArithmeticOverflowsSixtyFourBits(a, b);
-    }
-    return r;
-}
+// mulChecked(a, b): Util/Diagnostic.hpp (Text::fixed1 uses it too)
 
 // An exact rate: num / den Hz. The achieved rate of a divider is almost never an integer.
 struct Rational {
@@ -56,7 +41,7 @@ struct Rational {
     constexpr bool operator==(Rational const&) const = default;
 };
 
-// Relative tolerance num / den; from a std::ratio so every existing config keeps its spelling.
+// Relative tolerance num / den, made from the std::ratio a config spells it as.
 struct Tolerance {
     std::uint64_t num{};
     std::uint64_t den{1};
@@ -64,7 +49,7 @@ struct Tolerance {
     template<std::intmax_t N,
              std::intmax_t D>
     consteval Tolerance(std::ratio<N,
-                                   D>)   // NOLINT(google-explicit-constructor)
+                                   D>)
       : num{static_cast<std::uint64_t>(N)}
       , den{static_cast<std::uint64_t>(D)} {
         static_assert(N >= 0 && D > 0);
@@ -119,17 +104,19 @@ constexpr std::int64_t errorIn(Rational      a,
     return above(a, wanted) ? static_cast<std::int64_t>(v) : -static_cast<std::int64_t>(v);
 }
 
+// What a divider search found: the setting, the rate it gives, and whether one fits (Kvasir::Result is another thing:
+// an outcome that can fail).
 template<typename Setting>
-struct Result {
+struct Choice {
     Setting  setting{};
     Rational achieved{};
     bool     found{};
 
-    constexpr std::int64_t errorPpm(std::uint64_t wanted) const {
+    [[nodiscard]] constexpr std::int64_t errorPpm(std::uint64_t wanted) const {
         return errorIn(achieved, wanted, 1'000'000);
     }
 
-    constexpr std::int64_t errorPpb(std::uint64_t wanted) const {
+    [[nodiscard]] constexpr std::int64_t errorPpb(std::uint64_t wanted) const {
         return errorIn(achieved, wanted, 1'000'000'000);
     }
 };
@@ -155,9 +142,9 @@ constexpr auto search(std::uint64_t in,
                       Pick          pick,
                       Prefer&&      prefer) {
     using Setting = std::ranges::range_value_t<Cs>;
-    Result<Setting> best{};
-    Result<Setting> nearest{};
-    auto const      better = [&](Rational a, Setting const& c, Result<Setting> const& kept) {
+    Choice<Setting> best{};
+    Choice<Setting> nearest{};
+    auto const      better = [&](Rational a, Setting const& c, Choice<Setting> const& kept) {
         if(!kept.found || closer(a, kept.achieved, want)) { return true; }
         return !closer(kept.achieved, a, want) && prefer(c, kept.setting);
     };
@@ -169,7 +156,7 @@ constexpr auto search(std::uint64_t in,
                       : pick == Pick::notBelow                           ? !below(a, want)
                                                                          : true;
         if(!ok) { continue; }
-        if(pick == Pick::firstFit) { return Result<Setting>{c, a, true}; }
+        if(pick == Pick::firstFit) { return Choice<Setting>{c, a, true}; }
         if(better(a, c, best)) { best = {c, a, true}; }
     }
     return best.found ? best : nearest;
@@ -268,7 +255,7 @@ constexpr auto fromPowerOfTwo(std::uint64_t in,
 
 // The divisor as one integer D = integer * 2^fracBits + fraction, so a fraction that would round
 // up to 2^fracBits carries into the integer part.
-constexpr Result<IntFrac> fromFixedPoint(std::uint64_t in,
+constexpr Choice<IntFrac> fromFixedPoint(std::uint64_t in,
                                          std::uint64_t want,
                                          Fixed         f,
                                          Pick          pick = Pick::nearest) {
@@ -361,94 +348,29 @@ constexpr bool requireInTolerance(Rational      achieved,
 
 // ---- the message -------------------------------------------------------------------------------
 
-template<std::size_t N>
-struct FixedString {
-    std::array<char, N> text{};
-
-    consteval FixedString(char const (&s)[N]) {   // NOLINT(google-explicit-constructor)
-        std::copy_n(s, N, text.begin());
-    }
-
-    constexpr std::string_view view() const { return {text.data(), N - 1}; }
-};
-
-// a string literal as a template argument deduces N (and keeps clang's -Wctad-maybe-unsupported
-// quiet, which a firmware build treats as an error)
-template<std::size_t N>
-FixedString(char const (&)[N]) -> FixedString<N>;
-
-namespace detail {
-    struct Writer {
-        std::array<char, 240> out{};
-        std::size_t           n{};
-
-        constexpr Writer& text(std::string_view s) {
-            for(char c : s) {
-                if(n < out.size()) { out[n++] = c; }
-            }
-            return *this;
-        }
-
-        constexpr Writer& integer(std::uint64_t v) {
-            std::array<char, 24> b{};
-            auto const           r = std::to_chars(b.data(), b.data() + b.size(), v);
-            return text({b.data(), static_cast<std::size_t>(r.ptr - b.data())});
-        }
-
-        constexpr Writer& signedInteger(std::int64_t v) {
-            if(v >= 0) { text("+"); }
-            std::array<char, 24> b{};
-            auto const           r = std::to_chars(b.data(), b.data() + b.size(), v);
-            return text({b.data(), static_cast<std::size_t>(r.ptr - b.data())});
-        }
-
-        // num / den with one decimal, rounded to nearest
-        constexpr Writer& fixed1(Rational a) {
-            auto const tenths = (mulChecked(a.num, 10) + a.den / 2) / a.den;
-            integer(tenths / 10);
-            text(".");
-            return integer(tenths % 10);
-        }
-    };
-}   // namespace detail
-
-template<Rational Achieved, std::uint64_t Wanted, Tolerance Tol, FixedString What>
-struct ToleranceMessage {
-    static constexpr detail::Writer storage = [] {
-        detail::Writer w{};
-        if(!What.view().empty()) { w.text(What.view()).text(": "); }
-        w.text("wanted ").integer(Wanted).text(" Hz, got ").fixed1(Achieved).text(" Hz (");
-        w.signedInteger(errorIn(Achieved, Wanted, 1'000'000)).text(" ppm), allowed ");
-        w.integer((Tol.num * 1'000'000 + Tol.den / 2) / Tol.den).text(" ppm");
-        return w;
-    }();
-
-    constexpr std::size_t size() const { return storage.n; }
-
-    constexpr char const* data() const { return storage.out.data(); }
-
-    constexpr std::string_view view() const { return {data(), size()}; }
-};
-
-// The same text, built only when the check fails (Kvasir::Diagnostic::lazy): clang evaluates a static_assert's message
-// even when the assert holds, and ToleranceMessage's storage is computed wherever it is used.
-template<Rational Achieved, std::uint64_t Wanted, Tolerance Tol, FixedString What>
+// The message, built only when the check fails (Kvasir::Diagnostic::Check): clang evaluates a static_assert's message
+// even when the assert holds.
+template<Rational Achieved, std::uint64_t Wanted, Tolerance Tol, Diagnostic::FixedString What>
 struct ToleranceText {
-    consteval Kvasir::Diagnostic::Text operator()() const {
-        Kvasir::Diagnostic::Text t;
-        t << ToleranceMessage<Achieved, Wanted, Tol, What>{}.view();
+    consteval Diagnostic::Text operator()() const {
+        Diagnostic::Text t;
+        if(!What.view().empty()) { t << What.view() << ": "; }
+        t << "wanted ";
+        t.dec(Wanted) << " Hz, got ";
+        t.fixed1(Achieved.num, Achieved.den) << " Hz (";
+        t.sdec(errorIn(Achieved, Wanted, 1'000'000), true) << " ppm), allowed ";
+        t.dec((mulChecked(Tol.num, 1'000'000) + Tol.den / 2) / Tol.den) << " ppm";
         return t;
     }
 };
 
-template<Rational      Achieved,
-         std::uint64_t Wanted,
-         Tolerance     Tol,
-         FixedString   What = "">
+template<Rational                Achieved,
+         std::uint64_t           Wanted,
+         Tolerance               Tol,
+         Diagnostic::FixedString What = "">
 consteval void assertInTolerance() {
     KVASIR_STATIC_ASSERT((inTolerance(Achieved, Wanted, Tol)),
-                         (ToleranceText<Achieved, Wanted, Tol, What>),
-                         (ToleranceMessage<Achieved, Wanted, Tol, What>{}));
+                         (ToleranceText<Achieved, Wanted, Tol, What>));
 }
 
 }   // namespace Kvasir::Prescaler

@@ -6,26 +6,19 @@
 
 using namespace Kvasir::Register;
 using namespace Kvasir::Test;
-using R = Recorder::Read;
-using W = Recorder::Write;
 
-template<typename T,
-         unsigned V>
-constexpr auto ctv() {
-    return Kvasir::Register::value<T, static_cast<T>(V)>();
-}
-
+namespace {
 // an explicit read plus writes to the same register: the explicit read stays separate
 // from the RMW read (cmd, bit 8, is not covered by the writes, so a RMW read is needed)
 template<typename Reg>
-static void explicitReadPlusRmwWrite() {
-    test("explicitReadPlusRmwWrite");
+void explicitReadPlusRmwWrite() {
+    testFor<Reg>("explicitReadPlusRmwWrite");
 
-    using stopT = typename decltype(Reg::stop)::DataType;
+    using StopT = typename decltype(Reg::stop)::DataType;
 
     auto const v = runtimeValue(0x21);
 
-    apply(read(Reg::dat), write(Reg::dat, v), write(Reg::stop, ctv<stopT, 1>()));
+    apply(read(Reg::dat), write(Reg::dat, v), write(Reg::stop, ctv<StopT, 1>()));
 
     checkActions({
       R{Reg::Addr::value,             0},
@@ -37,16 +30,16 @@ static void explicitReadPlusRmwWrite() {
 // RMW merges the injected register content into the written value: bit 8 comes from the
 // read, dat and stop from the write actions
 template<typename Reg>
-static void rmwMergesInjectedValue() {
-    test("rmwMergesInjectedValue");
+void rmwMergesInjectedValue() {
+    testFor<Reg>("rmwMergesInjectedValue");
 
-    using stopT = typename decltype(Reg::stop)::DataType;
+    using StopT = typename decltype(Reg::stop)::DataType;
 
     auto const v = runtimeValue(0x44);
 
     recorder.setReadValue(Reg::Addr::value, 0x100);   // bit 8 set
 
-    apply(write(Reg::dat, v), write(Reg::stop, ctv<stopT, 1>()));
+    apply(write(Reg::dat, v), write(Reg::stop, ctv<StopT, 1>()));
 
     checkActions({
       R{Reg::Addr::value,                     0x100},
@@ -55,7 +48,7 @@ static void rmwMergesInjectedValue() {
 }
 
 // writing one field preserves the other readable bits of the register
-static void rmwPreservesUnwrittenBits() {
+void rmwPreservesUnwrittenBits() {
     test("rmwPreservesUnwrittenBits");
 
     recorder.setReadValue(ThirdReg::Addr::value, 0xAABBCC);
@@ -70,7 +63,7 @@ static void rmwPreservesUnwrittenBits() {
 }
 
 // two runtime writes covering all bits below the write-ignored area need no read
-static void noRmwWhenAllFieldsCovered() {
+void noRmwWhenAllFieldsCovered() {
     test("noRmwWhenAllFieldsCovered");
 
     recorder.setReadValue(SecondReg::Addr::value, 0xCDAB);
@@ -83,7 +76,7 @@ static void noRmwWhenAllFieldsCovered() {
 }
 
 // writing non-adjacent fields preserves the field in between
-static void rmwNonAdjacentFields() {
+void rmwNonAdjacentFields() {
     test("rmwNonAdjacentFields");
 
     recorder.setReadValue(ThirdReg::Addr::value, 0xCCBBAA);
@@ -97,7 +90,7 @@ static void rmwNonAdjacentFields() {
 }
 
 // a compile-time and a runtime write to the same field or together
-static void rmwRuntimeMergesWithCompileTime() {
+void rmwRuntimeMergesWithCompileTime() {
     test("rmwRuntimeMergesWithCompileTime");
 
     recorder.setReadValue(ThirdReg::Addr::value, 0xFFFFFF);
@@ -113,7 +106,7 @@ static void rmwRuntimeMergesWithCompileTime() {
 }
 
 // RMW on two registers in one apply: each register gets its own read+write pair
-static void rmwMultipleRegisters() {
+void rmwMultipleRegisters() {
     test("rmwMultipleRegisters");
 
     recorder.setReadValue(SimpleTestReg::Addr::value, 0xFFFF);
@@ -124,35 +117,35 @@ static void rmwMultipleRegisters() {
     CHECK(recorder.actions.size() == 4);
     CHECK(readCount(SimpleTestReg::Addr::value) == 1);
     CHECK(readCount(ThirdReg::Addr::value) == 1);
-    // dat = 0x11, cmd/stop (bits 9..8) preserved from the read
-    CHECK_EQ(writtenValue(SimpleTestReg::Addr::value), 0x311U);
+    // dat = 0x11, cmd/stop (bits 9..8) and the reserved bits 15..10 preserved from the read
+    CHECK_EQ(writtenValue(SimpleTestReg::Addr::value), 0xFF11U);
     // mode = 0x33, control/config preserved from the read
     CHECK_EQ(writtenValue(ThirdReg::Addr::value), 0x335555U);
 }
 
 // runtime writes to a field outside the writable mask still perform RMW and preserve
 // the rest of the register
-static void rmwPartialRegisterWrite() {
+void rmwPartialRegisterWrite() {
     test("rmwPartialRegisterWrite");
 
     recorder.setReadValue(ThirdReg::Addr::value, 0x123456);
 
     apply(write(ThirdReg::config, runtimeValue(0xAB)));
 
-    // config = 0xAB, control preserved, bits 31..16 write-ignored-if-zero
+    // config = 0xAB, control and the reserved bits 31..16 preserved (write-ignored-if-zero, written back as read)
     checkActions({
       R{ThirdReg::Addr::value, 0x123456},
-      W{ThirdReg::Addr::value,   0xAB56}
+      W{ThirdReg::Addr::value, 0x12AB56}
     });
 }
 
 // compile-time writes to the same register merge into one write no matter where a
 // read of that register appears in the argument list; the reads always execute first
-static void writeMergeIndependentOfReadPosition() {
+void writeMergeIndependentOfReadPosition() {
     test("writeMergeIndependentOfReadPosition");
 
-    using cmdT  = typename decltype(SimpleTestReg::cmd)::DataType;
-    using stopT = typename decltype(SimpleTestReg::stop)::DataType;
+    using CmdT  = typename decltype(SimpleTestReg::cmd)::DataType;
+    using StopT = typename decltype(SimpleTestReg::stop)::DataType;
 
     // explicit read + RMW read + one merged write, identical for every argument order
     std::vector<Kvasir::Test::Recorder::Action> const expected{
@@ -163,53 +156,53 @@ static void writeMergeIndependentOfReadPosition() {
 
     recorder.reset();
     recorder.setReadValues(SimpleTestReg::Addr::value, {0xAB, 0xAB});
-    apply(write(SimpleTestReg::cmd, ctv<cmdT, 1>()),
+    apply(write(SimpleTestReg::cmd, ctv<CmdT, 1>()),
           read(SimpleTestReg::dat),
-          write(SimpleTestReg::stop, ctv<stopT, 1>()));
+          write(SimpleTestReg::stop, ctv<StopT, 1>()));
     checkActions(expected);
 
     recorder.reset();
     recorder.setReadValues(SimpleTestReg::Addr::value, {0xAB, 0xAB});
-    apply(write(SimpleTestReg::cmd, ctv<cmdT, 1>()),
-          write(SimpleTestReg::stop, ctv<stopT, 1>()),
+    apply(write(SimpleTestReg::cmd, ctv<CmdT, 1>()),
+          write(SimpleTestReg::stop, ctv<StopT, 1>()),
           read(SimpleTestReg::dat));
     checkActions(expected);
 
     recorder.reset();
     recorder.setReadValues(SimpleTestReg::Addr::value, {0xAB, 0xAB});
     apply(read(SimpleTestReg::dat),
-          write(SimpleTestReg::cmd, ctv<cmdT, 1>()),
-          write(SimpleTestReg::stop, ctv<stopT, 1>()));
+          write(SimpleTestReg::cmd, ctv<CmdT, 1>()),
+          write(SimpleTestReg::stop, ctv<StopT, 1>()));
     checkActions(expected);
 }
 
 // A key register and a read-with-side-effect register refuse the RMW the
 // executors would do; the check as a trait (a failing static_assert cannot be tested in this TU)
 namespace RmwHazards {
-using Kvasir::Register::Detail::GetAddress;
-using Kvasir::Register::Detail::rmwAllowed;
-static_assert(rmwAllowed<GetAddress<CtrlReg::Addr>,
-                         0x1>(),
-              "a normal register allows it");
-static_assert(!rmwAllowed<GetAddress<KeyReg::Addr>,
-                          0x4>(),
-              "a write without the key may not read");
-static_assert(rmwAllowed<GetAddress<KeyReg::Addr>,
-                         0xFFFF0004>(),
-              "with the key it may");
-static_assert(!rmwAllowed<GetAddress<FifoReg::Addr>,
-                          0xFF>(),
-              "never on a read side effect");
-static_assert(!rmwAllowed<GetAddress<IcrstReg::Addr>,
-                          0xF>(),
-              "an unclassified write-only bit must be named");
-static_assert(rmwAllowed<GetAddress<IcrstReg::Addr>,
-                         0x80F>(),
-              "named in the same write it may");
+    using Kvasir::Register::RegisterTraits;
+    using Kvasir::Register::Detail::rmwAllowed;
+    static_assert(rmwAllowed<RegisterTraits<CtrlReg::Addr>,
+                             0x1>(),
+                  "a normal register allows it");
+    static_assert(!rmwAllowed<RegisterTraits<KeyReg::Addr>,
+                              0x4>(),
+                  "a write without the key may not read");
+    static_assert(rmwAllowed<RegisterTraits<KeyReg::Addr>,
+                             0xFFFF0004>(),
+                  "with the key it may");
+    static_assert(!rmwAllowed<RegisterTraits<FifoReg::Addr>,
+                              0xFF>(),
+                  "never on a read side effect");
+    static_assert(!rmwAllowed<RegisterTraits<IcrstReg::Addr>,
+                              0xF>(),
+                  "an unclassified write-only bit must be named");
+    static_assert(rmwAllowed<RegisterTraits<IcrstReg::Addr>,
+                             0x80F>(),
+                  "named in the same write it may");
 }   // namespace RmwHazards
 
 // a register with no readable field: one store of exactly the named bits, no read
-static void writeOnlyRegisterNeverRead() {
+void writeOnlyRegisterNeverRead() {
     test("writeOnlyRegisterNeverRead");
     recorder.setReadValue(SetResetReg::Addr::value, 0xFFFFFFFF);   // a read would bring these in
     apply(set(SetResetReg::bs5));
@@ -225,7 +218,7 @@ static void writeOnlyRegisterNeverRead() {
 }
 
 // with the write-only bit named, the partial write reads the rest and writes the bit as given
-static void writeOnlyBitNamed() {
+void writeOnlyBitNamed() {
     test("writeOnlyBitNamed");
     recorder.setReadValue(IcrstReg::Addr::value, 0xA0);
     apply(write(IcrstReg::latency, Kvasir::Register::value<std::uint32_t, 5U>()),
@@ -237,15 +230,17 @@ static void writeOnlyBitNamed() {
 }
 
 // a key register written whole (key + field): one write, no read
-static void keyRegisterWrittenWhole() {
+void keyRegisterWrittenWhole() {
     test("keyRegisterWrittenWhole");
-    using keyT   = typename decltype(KeyReg::key)::DataType;
-    using resetT = typename decltype(KeyReg::reset)::DataType;
-    apply(write(KeyReg::key, Kvasir::Register::value<keyT, 0x05FAU>()),
-          write(KeyReg::reset, Kvasir::Register::value<resetT, 1U>()));
+    using KeyT   = typename decltype(KeyReg::key)::DataType;
+    using ResetT = typename decltype(KeyReg::reset)::DataType;
+    apply(write(KeyReg::key, Kvasir::Register::value<KeyT, 0x05FAU>()),
+          write(KeyReg::reset, Kvasir::Register::value<ResetT, 1U>()));
     checkActionKinds(
       "rw");   // bits 15..3, 1..0 are neither ignored nor written: read, key supplied
 }
+
+}   // namespace
 
 int main() {
     keyRegisterWrittenWhole();
@@ -265,9 +260,5 @@ int main() {
     rmwPartialRegisterWrite();
     writeMergeIndependentOfReadPosition();
 
-    if(Kvasir::Test::failures != 0) {
-        std::print("{} checks failed\n", Kvasir::Test::failures);
-        return 1;
-    }
-    return 0;
+    return Kvasir::Test::report();
 }

@@ -1,13 +1,13 @@
-// Kvasir::Flash::CellStore (Util/CellStore.hpp) on a fake NOR flash with power cuts (support/FakeNorFlash.hpp):
+// Kvasir::Flash::CellStore (Runtime/CellStore.hpp) on a fake NOR flash with power cuts (support/FakeNorFlash.hpp):
 // round trips and sequences, SkipUnchanged; the ring's wear (erases even, no page programmed twice between erases,
 // no 0 -> 1 asked for); a power cut at EVERY flash operation of a scenario, then a second cut in the recovery, for
 // 2/3/4-sector stores with 1/2/16-page cells and a cell bigger than a sector - after each cut the store holds the
 // last value stored or the one in flight, never an older one, never nothing; torn cells skipped and a sector of
-// noise erased before use; the import of a SimpleEeprom record that never erases it before the copy exists (a cut
-// at every operation of the import too); a version change with and without migrate. Failures without a power cut: a
+// noise erased before use; a cell whose length is not sizeof(T) loads as nothing. Failures without a power cut: a
 // locked sector, a refused program, a program that claims success and writes nothing (with and without the
 // read-back); CellEeprom's retry of a refused store.
-#include "kvasir/Util/CellStore.hpp"
+#include "kvasir/Runtime/CellStore.hpp"
+#include "support/FakeClock.hpp"
 #include "support/FakeNorFlash.hpp"
 #include "test_harness.hpp"
 
@@ -15,7 +15,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <optional>
 #include <span>
 
@@ -31,7 +30,7 @@ struct Value {
     static Value make(std::uint32_t i) {
         Value v{};
         for(std::size_t j = 0; j != N; ++j) {
-            v.b[j] = static_cast<std::uint8_t>(i * 31U + j * 7U + (i >> 3U));
+            v.b[j] = static_cast<std::uint8_t>(std::size_t{i} * 31U + j * 7U + (i >> 3U));
         }
         return v;
     }
@@ -63,8 +62,8 @@ bool cutScenario(std::uint32_t count,
     auto const check = [&](std::uint32_t inFlight) {
         Flash::powerOn();
         Store::forget();
-        V    got{};
-        bool loaded = Store::load(got);
+        V          got{};
+        bool const loaded = Store::load(got);
         if(lastOk == 0) { return !loaded || got == V::make(inFlight); }
         return loaded && (got == V::make(lastOk) || got == V::make(inFlight));
     };
@@ -122,7 +121,6 @@ struct Rp4c;
 struct Big;
 struct Wear;
 struct Torn;
-struct Leg;
 struct Ver;
 
 using V8    = Value<8>;
@@ -138,41 +136,10 @@ using Flash4c  = Kvasir::Test::FakeNorFlash<Rp4c, 4096, 256, 2>;
 using FlashBig = Kvasir::Test::FakeNorFlash<Big, 4096, 256, 4>;
 using FlashW   = Kvasir::Test::FakeNorFlash<Wear, 4096, 256, 2>;
 using FlashT   = Kvasir::Test::FakeNorFlash<Torn, 4096, 256, 2>;
-using FlashL   = Kvasir::Test::FakeNorFlash<Leg, 4096, 256, 2>;
 using FlashV   = Kvasir::Test::FakeNorFlash<Ver, 4096, 256, 2>;
 // the SAM shape: 256-byte rows of 64-byte pages
 struct Sam;
 using FlashSam = Kvasir::Test::FakeNorFlash<Sam, 256, 64, 4>;
-
-// SimpleEeprom's record {T, uint16 crc} with a CRC-16, read from the fake flash at sector 1
-struct LegacyRecord {
-    V8            v;
-    std::uint16_t crc;
-};
-
-std::uint16_t crc16(V8 const& v) {
-    return static_cast<std::uint16_t>(
-      Kvasir::Crc::Crc16Ccitt<>::compute(std::as_bytes(std::span{&v, 1})));
-}
-
-struct TestLegacy {
-    static bool read(V8& out) {
-        LegacyRecord r{};
-        std::memcpy(&r, FlashL::raw(4096, sizeof r).data(), sizeof r);
-        if(r.crc != crc16(r.v)) { return false; }
-        out = r.v;
-        return true;
-    }
-
-    template<typename Region>
-    static constexpr std::optional<std::uint32_t> sectorIn() {
-        return 1;
-    }
-};
-
-struct LegacyCfg : KF::CellStoreDefaults {
-    using Legacy = TestLegacy;
-};
 
 struct V1 {
     std::uint32_t a;
@@ -183,44 +150,16 @@ struct V2 {
     std::uint32_t b;
 };
 
-struct V2Cfg : KF::CellStoreDefaults {
-    static constexpr std::uint16_t Version = 2;
-};
-
-struct V2Migrate : V2Cfg {
-    static bool migrate(std::uint16_t version,
-                        std::uint16_t length,
-                        auto const&   read,
-                        V2&           out) {
-        V1 old{};
-        if(version != 1 || length != sizeof old
-           || !read(0, std::as_writable_bytes(std::span{&old, 1})))
-        {
-            return false;
-        }
-        out = V2{old.a, 77};
-        return true;
-    }
-};
-
 struct EraseAheadCfg : KF::CellStoreDefaults {
-    static constexpr std::size_t EraseAhead = 2;
+    static constexpr std::size_t eraseAhead = 2;
 };
 
 struct NoVerifyCfg : KF::CellStoreDefaults {
-    static constexpr bool VerifyAfterWrite = false;
+    static constexpr bool verifyAfterWrite = false;
 };
 
 // a clock the test moves by hand, for CellEeprom's retry
-struct TestClock {
-    using rep        = std::int64_t;
-    using period     = std::milli;
-    using duration   = std::chrono::milliseconds;
-    using time_point = std::chrono::time_point<TestClock>;
-    static inline time_point t{};
-
-    static time_point now() { return t; }
-};
+using TestClock = Kvasir::Test::FakeClockT<std::chrono::milliseconds>;
 }   // namespace
 
 int main() {
@@ -229,7 +168,7 @@ int main() {
     {
         test("basics: empty, round trip, sequences 1 2 3 in cells 0 1 2, a reboot, SkipUnchanged");
         using S = KF::CellStore<Flash2, V8>;
-        static_assert(S::CellBytes == 256 && S::CellsPerBlock == 16 && S::Blocks == 2);
+        static_assert(S::cellBytes == 256 && S::cellsPerBlock == 16 && S::blocks == 2);
         Flash2::blank();
         S::forget();
         V8 got{};
@@ -261,12 +200,12 @@ int main() {
             if(w && w->erased) { ++erasedStores; }
         }
         // the first round over both blank sectors erases nothing: (100 000 - 32) / 16 erases
-        constexpr std::uint32_t Erases = (100'000 - 32) / 16;
-        CHECK(allOk && erasedStores == Erases);
+        constexpr std::uint32_t erases = (100'000 - 32) / 16;
+        CHECK(allOk && erasedStores == erases);
         auto const e0 = FlashW::erases[0];
         auto const e1 = FlashW::erases[1];
         CHECK((e0 > e1 ? e0 - e1 : e1 - e0) <= 1);
-        CHECK(e0 + e1 == Erases);
+        CHECK(e0 + e1 == erases);
         CHECK(FlashW::maxPagePrograms() <= 1 && FlashW::overprograms == 0
               && FlashW::pageCrossings == 0);
         S::forget();
@@ -290,15 +229,13 @@ int main() {
       30);
     {
         using S = KF::CellStore<FlashBig, V6000>;
-        static_assert(S::CellBytes == 8192 && S::SectorsPerBlock == 2 && S::Blocks == 2
-                      && S::CellsPerBlock == 1);
-        cutEverywhere<FlashBig, S, V6000>(
-          "power cut at every operation: a cell of two sectors (omniscope's shape)",
-          6);
+        static_assert(S::cellBytes == 8192 && S::sectorsPerBlock == 2 && S::blocks == 2
+                      && S::cellsPerBlock == 1);
+        cutEverywhere<FlashBig, S, V6000>("power cut at every operation: a cell of two sectors", 6);
     }
     {
         using S = KF::CellStore<FlashSam, V8>;
-        static_assert(S::CellBytes == 64 && S::CellsPerBlock == 4 && S::Blocks == 4);
+        static_assert(S::cellBytes == 64 && S::cellsPerBlock == 4 && S::blocks == 4);
         cutEverywhere<FlashSam, S, V8>(
           "power cut at every operation: the SAM shape (64-byte pages, 256-byte rows)",
           40);
@@ -310,7 +247,7 @@ int main() {
         FlashT::blank();
         S::forget();
         for(std::uint32_t i = 1; i <= 4; ++i) { (void)S::store(V8::make(i)); }
-        auto torn = FlashT::raw(5 * 256, 256);   // cell 5: noise
+        auto const torn = FlashT::raw(5 * 256, 256);   // cell 5: noise
         for(std::size_t i = 0; i != torn.size(); ++i) {
             torn[i] = static_cast<std::byte>(i * 13U + 1U);
         }
@@ -332,53 +269,13 @@ int main() {
     }
 
     {
-        test("legacy import: into the other sector, never over the record before the copy exists");
-        using S        = KF::CellStore<FlashL, V8, LegacyCfg>;
-        auto const put = [] {
-            FlashL::blank();
-            LegacyRecord r{V8::make(42), crc16(V8::make(42))};
-            std::memcpy(FlashL::raw(4096, sizeof r).data(), &r, sizeof r);
-        };
-        put();
-        S::forget();
-        V8 got{};
-        CHECK(S::load(got) && got == V8::make(42) && S::stats().imported && S::stats().block == 0);
-        CHECK(FlashL::raw(4096, 1)[0] != std::byte{0xFF});   // the legacy bytes untouched
-        // a cut at every operation of the import: the import or the legacy record is there
-        bool everyCut = true;
-        for(std::uint64_t k = 0; k != 4; ++k) {
-            put();
-            S::forget();
-            FlashL::cutAfter(k);
-            V8 v{};
-            (void)S::load(v);
-            FlashL::powerOn();
-            S::forget();
-            V8 again{};
-            everyCut = everyCut && S::load(again) && again == V8::make(42);
-        }
-        CHECK(everyCut);
-        // a legacy record with a bad CRC: nothing
-        FlashL::blank();
-        LegacyRecord bad{V8::make(42), static_cast<std::uint16_t>(crc16(V8::make(42)) ^ 1U)};
-        std::memcpy(FlashL::raw(4096, sizeof bad).data(), &bad, sizeof bad);
-        S::forget();
-        CHECK(!S::load(got) && !S::stats().imported);
-    }
-
-    {
-        test(
-          "versions: a migrate reads the old cell; without it nothing, and the next store goes "
-          "after it");
+        test("a cell of another length loads as nothing, and the next store goes after it");
         using S1 = KF::CellStore<FlashV, V1>;
         FlashV::blank();
         S1::forget();
         (void)S1::store(V1{5});
-        using S2m = KF::CellStore<FlashV, V2, V2Migrate>;
-        S2m::forget();
         V2 got{};
-        CHECK(S2m::load(got) && got.a == 5 && got.b == 77);
-        using S2 = KF::CellStore<FlashV, V2, V2Cfg>;
+        using S2 = KF::CellStore<FlashV, V2>;
         S2::forget();
         CHECK(!S2::load(got));
         auto const w = S2::store(V2{6, 7});
@@ -402,7 +299,7 @@ int main() {
     }
 
     {
-        test("EraseAhead: maintain() erases the next sector early, the store then needs no erase");
+        test("EraseAhead: turn() erases the next sector early, the store then needs no erase");
         using S = KF::CellStore<Flash2, V8, EraseAheadCfg>;
         Flash2::blank();
         S::forget();
@@ -412,9 +309,9 @@ int main() {
             (void)S::store(V8::make(i));
         }   // sector 0 again, 2 left
         auto const erases = Flash2::erases[1];
-        S::maintain();
+        S::turn();
         CHECK(Flash2::erases[1] == erases + 1);
-        S::maintain();   // once only
+        S::turn();   // once only
         CHECK(Flash2::erases[1] == erases + 1);
         (void)S::store(V8::make(47));
         (void)S::store(V8::make(48));
@@ -499,33 +396,37 @@ int main() {
         using S = KF::CellStore<Flash2, V8>;
         using E = KF::CellEeprom<S, TestClock>;
         static_assert(!std::is_same_v<E::Extends, brigand::list<>>);
-        static_assert(std::is_same_v<KF::CellEeprom<S>::Extends, brigand::list<>>);
         Flash2::blank();
         S::forget();
         E::forget();
-        TestClock::t = TestClock::time_point{};
+        TestClock::reset();
         Flash2::lockSectors(0b11);
         E::value() = V8::make(5);
         CHECK(!E::writeValue() && E::pending() && E::retry().failures == 1);
-        TestClock::t += std::chrono::milliseconds{999};
-        E::maintain();   // before the pause: no attempt
+        CHECK(E::link() == Kvasir::Link::starting);
+        TestClock::advance(std::chrono::milliseconds{999});
+        E::turn();   // before the pause: no attempt
         CHECK(E::retry().failures == 1);
-        TestClock::t += std::chrono::milliseconds{1};
-        E::maintain();   // 1 s: tried, refused again, the pause doubled
+        TestClock::advance(std::chrono::milliseconds{1});
+        E::turn();   // 1 s: tried, refused again, the pause doubled
         CHECK(E::pending() && E::retry().failures == 2
-              && E::retry().next == TestClock::t + std::chrono::seconds{2});
+              && E::retry().next == TestClock::now() + std::chrono::seconds{2});
+        CHECK(E::link() == Kvasir::Link::starting);   // two failures: not absent yet
+        TestClock::advance(std::chrono::seconds{2});
+        E::turn();   // the third refusal
+        CHECK(E::retry().failures == 3 && E::link() == Kvasir::Link::absent);
         Flash2::lockSectors(0);
-        TestClock::t += std::chrono::seconds{1};
-        E::maintain();
+        TestClock::advance(std::chrono::seconds{3});
+        E::turn();
         CHECK(E::pending());   // not due yet
-        TestClock::t += std::chrono::seconds{1};
-        E::maintain();
-        CHECK(!E::pending() && E::retry().failures == 0);
+        TestClock::advance(std::chrono::seconds{1});
+        E::turn();
+        CHECK(!E::pending() && E::retry().failures == 0 && E::link() == Kvasir::Link::answering);
         S::forget();
         CHECK(S::load() == V8::make(5));
-        TestClock::t += std::chrono::hours{1};
+        TestClock::advance(std::chrono::hours{1});
         auto const ops = Flash2::ops;
-        E::maintain();   // nothing pending: nothing done
+        E::turn();   // nothing pending: nothing done
         CHECK(Flash2::ops == ops);
     }
 

@@ -1,27 +1,27 @@
-#include "multicore_test.hpp"
+#include "test_harness.hpp"
 
 #include <cstdint>
 #include <kvasir/Atomic/Queue.hpp>
 #include <thread>
 
 namespace {
-constexpr std::uint32_t Items = 500'000;
+constexpr std::uint32_t items = 500'000;
 
 void inOrderAcrossThreads() {
     Kvasir::Test::test("SPSC queue delivers every item in order across threads");
     static_assert(std::is_same_v<Kvasir::Atomic::DefaultSync, Kvasir::Atomic::SyncThread>,
                   "the multicore tests build with KVASIR_MULTICORE");
-    Kvasir::Atomic::Queue<std::uint32_t, 64, Kvasir::Atomic::OverFlowPolicyIgnore> q{};
+    Kvasir::Atomic::Queue<std::uint32_t, 64, Kvasir::Atomic::OverflowPolicyIgnore> q{};
 
     std::uint32_t errors = 0;
     std::thread   consumer{[&] {
-        for(std::uint32_t i = 0; i < Items; ++i) {
+        for(std::uint32_t i = 0; i < items; ++i) {
             std::uint32_t v{};
-            while(!q.pop_into(v)) {}
+            while(!q.popInto(v)) {}
             if(v != i) { ++errors; }
         }
     }};
-    for(std::uint32_t i = 0; i < Items; ++i) {
+    for(std::uint32_t i = 0; i < items; ++i) {
         while(q.size() == q.max_size()) {}
         q.push(i);
     }
@@ -32,7 +32,7 @@ void inOrderAcrossThreads() {
 
 void capacity() {
     Kvasir::Test::test("capacity is Size - 1 and overflow is ignored by policy");
-    Kvasir::Atomic::Queue<int, 4, Kvasir::Atomic::OverFlowPolicyIgnore> q{};
+    Kvasir::Atomic::Queue<int, 4, Kvasir::Atomic::OverflowPolicyIgnore> q{};
     CHECK(q.max_size() == 3);
     q.push(1);
     q.push(2);
@@ -40,24 +40,24 @@ void capacity() {
     q.push(4);   // dropped
     CHECK(q.size() == 3);
     int v{};
-    CHECK(q.pop_into(v) && v == 1);
-    CHECK(q.pop_into(v) && v == 2);
-    CHECK(q.pop_into(v) && v == 3);
-    CHECK(!q.pop_into(v));
+    CHECK(q.popInto(v) && v == 1);
+    CHECK(q.popInto(v) && v == 2);
+    CHECK(q.popInto(v) && v == 3);
+    CHECK(!q.popInto(v));
 }
 
 void forEachQueued() {
     Kvasir::Test::test(
       "forEachQueued: oldest first across the wrap, writes through the reference, nothing when "
       "empty");
-    Kvasir::Atomic::Queue<int, 4, Kvasir::Atomic::OverFlowPolicyIgnore> q{};
+    Kvasir::Atomic::Queue<int, 4, Kvasir::Atomic::OverflowPolicyIgnore> q{};
     int                                                                 visits = 0;
     q.forEachQueued([&](int&) { ++visits; });
     CHECK(visits == 0);
     int v{};
     q.push(1);
     q.push(2);
-    CHECK(q.pop_into(v) && q.pop_into(v));   // head and tail at 2: the next three wrap
+    CHECK(q.popInto(v) && q.popInto(v));   // head and tail at 2: the next three wrap
     q.push(3);
     q.push(4);
     q.push(5);
@@ -67,7 +67,7 @@ void forEachQueued() {
         x *= 10;
     });
     CHECK(visits == 3 && seen[0] == 3 && seen[1] == 4 && seen[2] == 5);
-    CHECK(q.pop_into(v) && v == 30 && q.pop_into(v) && v == 40 && q.pop_into(v) && v == 50);
+    CHECK(q.popInto(v) && v == 30 && q.popInto(v) && v == 40 && q.popInto(v) && v == 50);
 }
 }   // namespace
 
@@ -75,5 +75,5 @@ int main() {
     inOrderAcrossThreads();
     capacity();
     forEachQueued();
-    return Kvasir::Test::finish();
+    return Kvasir::Test::report();
 }

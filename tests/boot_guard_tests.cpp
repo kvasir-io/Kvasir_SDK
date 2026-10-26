@@ -1,9 +1,9 @@
-// Kvasir::BootGuard::judge (Util/BootGuardRules.hpp): one case per row of the verdict table, and the
+// Kvasir::BootGuard::judge (Runtime/BootGuardRules.hpp): one case per row of the verdict table, and the
 // combinations - a panic and a watchdog reset count once, a planned reset with a panic counts, power-on resets the
 // count and keeps the total, a halt stays halted until power-on, the counters saturate, a bootLoop panic is not
-// counted again, the RP2040 stale-REASON rule, a health starvation (its own kind, only with a watchdog reset). All
-// at compile time, plus the Persistent state round trip.
-#include "kvasir/Util/BootGuardRules.hpp"
+// counted again, the RP2040 stale-REASON rule, a low-power reset (neutral), a health starvation (its own kind, only
+// with a watchdog reset). All at compile time, plus the Persistent state round trip.
+#include "kvasir/Runtime/BootGuardRules.hpp"
 #include "test_harness.hpp"
 
 #include <cstdint>
@@ -122,7 +122,7 @@ static_assert(BG::judge(running(0),
                 .second.lastFailure
               == static_cast<std::uint8_t>(BG::Failure::fault));
 
-// the RaisePanic policy's own panic is not counted again
+// the OnLimit::Panic reaction's own panic is not counted again
 static_assert(BG::judge(running(3),
                         ev(ResetKind::watchdogTimeout,
                            true,
@@ -163,16 +163,12 @@ static_assert(BG::judge(running(0),
                         BG::Rules{.countWatchdogWithoutRecord = false})
                 .first
               == Verdict::neutral);
-// ... and on the RP2040 only if the run was open (a debugger flash leaves REASON as it was)
+// ... whatever the run's flags say: a watchdog timeout is the chip's own verdict (a reset of the cores alone after it
+// reads softwareRequest, the RP chips' resetKind()), the guard does not second-guess it
 static_assert(BG::judge(running(0,
                                 0),
                         ev(ResetKind::watchdogTimeout),
-                        BG::Rules{.rp2040StaleReason = true})
-                .first
-              == Verdict::neutral);
-static_assert(BG::judge(running(0),
-                        ev(ResetKind::watchdogTimeout),
-                        BG::Rules{.rp2040StaleReason = true})
+                        BG::Rules{})
                 .first
               == Verdict::failure);
 
@@ -187,6 +183,33 @@ static_assert(BG::judge(running(2),
                         rules)
                 .second.consecutive
               == 2);
+
+// a low-power entry the option bytes turned into a reset (STM32): like a software request - neutral, the count kept
+// (no power-on reset of it), a panic before it still counts, and a planned one is planned
+static_assert(BG::judge(running(2),
+                        ev(ResetKind::lowPower),
+                        rules)
+                .first
+              == Verdict::neutral);
+static_assert(BG::judge(running(2),
+                        ev(ResetKind::lowPower),
+                        rules)
+                .second.consecutive
+              == 2);
+static_assert(BG::judge(running(2),
+                        ev(ResetKind::lowPower,
+                           true,
+                           false,
+                           assertCause),
+                        rules)
+                .second.consecutive
+              == 3);
+static_assert(BG::judge(running(2,
+                                BG::runOpen | BG::plannedResetPending),
+                        ev(ResetKind::lowPower),
+                        rules)
+                .first
+              == Verdict::planned);
 
 // the reset pin: neutral, or fresh with resetOnExternal
 static_assert(BG::judge(running(2),
@@ -265,7 +288,7 @@ static_assert(BG::judge(running(1),
                         rules)
                 .first
               == Verdict::neutral);
-// RaisePanic: the panic record wins, counted once
+// OnLimit::Panic: the panic record wins, counted once
 static_assert(BG::judge(running(1),
                         starved(ResetKind::watchdogTimeout,
                                 true),
@@ -287,6 +310,70 @@ static_assert(BG::judge(running(1,
               == Verdict::failure);
 static_assert(BG::name(BG::Failure::starvation) == "health check starved");
 
+// a reset through the reset pin: neutral by default; where an external watchdog drives the pin (countExternal) a
+// failure of its own kind, counted like a watchdog hang - a planned reset still wins, and it beats resetOnExternal
+constexpr BG::Rules externalWatchdog{.countExternal = true};
+static_assert(BG::judge(running(1),
+                        ev(ResetKind::external),
+                        rules)
+                .first
+              == Verdict::neutral);
+static_assert(BG::judge(running(1),
+                        ev(ResetKind::external),
+                        externalWatchdog)
+                .first
+              == Verdict::failure);
+static_assert(BG::judge(running(1),
+                        ev(ResetKind::external),
+                        externalWatchdog)
+                .second.consecutive
+              == 2);
+static_assert(BG::judge(running(1),
+                        ev(ResetKind::external),
+                        externalWatchdog)
+                .second.lastFailure
+              == static_cast<std::uint8_t>(BG::Failure::external));
+static_assert(BG::judge(running(1,
+                                BG::plannedResetPending),
+                        ev(ResetKind::external),
+                        externalWatchdog)
+                .first
+              == Verdict::planned);
+static_assert(BG::judge(running(1),
+                        ev(ResetKind::external),
+                        BG::Rules{.resetOnExternal = true,
+                                  .countExternal   = true})
+                .first
+              == Verdict::failure);
+// a panic or fault recorded before the pin was pulled is that failure, not "external"
+static_assert(BG::judge(running(1),
+                        ev(ResetKind::external,
+                           false,
+                           true),
+                        externalWatchdog)
+                .second.lastFailure
+              == static_cast<std::uint8_t>(BG::Failure::fault));
+// other resets are not touched by it
+static_assert(BG::judge(running(1),
+                        ev(ResetKind::softwareRequest),
+                        externalWatchdog)
+                .first
+              == Verdict::neutral);
+static_assert(BG::judge(running(1),
+                        ev(ResetKind::powerOn),
+                        externalWatchdog)
+                .first
+              == Verdict::fresh);
+// three hung runs in a row reach a limit of 3
+static_assert(BG::Report{Verdict::failure,
+                         BG::judge(running(2),
+                                   ev(ResetKind::external),
+                                   externalWatchdog)
+                           .second,
+                         3}
+                .atLimit());
+static_assert(BG::name(BG::Failure::external) == "external reset (reset pin)");
+
 static_assert(BG::Report{Verdict::failure,
                          running(3),
                          3}
@@ -299,11 +386,11 @@ static_assert(!BG::Report{Verdict::failure,
 
 int main() {
     using Kvasir::Test::test;
-    test("the persistent state round trip, and the SafeMode policy's flag");
+    test("the persistent state round trip, and the OnLimit::SafeMode reaction's flag");
     BG::state.clear();
     CHECK(!BG::state.load());
     BG::state.store(running(2));
-    BG::SafeMode{}(BG::Report{Verdict::failure, running(3), 3});
+    BG::OnLimit::SafeMode{}(BG::Report{Verdict::failure, running(3), 3});
     auto const s = BG::state.load();
     CHECK(s && s->consecutive == 2 && (s->flags & BG::safeMode) != 0);
     return Kvasir::Test::report();

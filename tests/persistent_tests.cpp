@@ -1,6 +1,6 @@
-// Kvasir::Persistent<T, Tag>: a value in .noInit trusted only by its header and CRC. Garbage, every
-// single flipped bit, another build's header and a reset in the middle of a store all read as "nothing";
-// store/load/take/clear/update do what they say; the layout and CRC are what the host tools decode.
+// Kvasir::Persistent<T, Tag>: a value in .noInit trusted only by its id and CRC. Garbage, every single
+// flipped bit and a reset in the middle of a store all read as "nothing"; store/load/take/clear/update do
+// what they say; the layout and CRC are what the host tools decode.
 #include "kvasir/Util/Persistent.hpp"
 
 #include "test_harness.hpp"
@@ -21,17 +21,11 @@ struct Counter {
 };
 
 struct CounterTag {
-    static constexpr std::uint32_t id      = Kvasir::persistentId("KBTG");
-    static constexpr std::uint16_t version = 1;
-};
-
-struct OtherVersionTag {
-    static constexpr std::uint32_t id      = Kvasir::persistentId("KBTG");
-    static constexpr std::uint16_t version = 2;
+    static constexpr std::uint32_t id = Kvasir::persistentId("KBTG");
 };
 
 using P = Kvasir::Persistent<Counter, CounterTag>;
-static_assert(P::words == 2 + 3 + 1);
+static_assert(P::words == 1 + 3 + 1);
 static_assert(sizeof(P) == P::words * 4,
               "nothing but the words: host tools read it by its symbol's size");
 static_assert(Kvasir::persistentId("KFLT") == 0x544C'464BU,
@@ -104,19 +98,18 @@ int main() {
     p.store(c);
     auto const r = snapshot(p);
     CHECK_EQ(r[0], CounterTag::id);
-    CHECK_EQ(r[1], 1U | (12U << 16));
-    CHECK_EQ(r[2], 3U);
-    CHECK_EQ(r[3], 7U);
-    CHECK_EQ(r[4], 0x1000'3A5EU);
+    CHECK_EQ(r[1], 3U);
+    CHECK_EQ(r[2], 7U);
+    CHECK_EQ(r[3], 0x1000'3A5EU);
     {
-        // zlib's crc32 over words 0..4 as little-endian bytes
-        std::array<std::byte, 20> bytes{};
-        for(std::size_t i = 0; i != 5; ++i) {
+        // zlib's crc32 over words 0..3 as little-endian bytes
+        std::array<std::byte, 16> bytes{};
+        for(std::size_t i = 0; i != 4; ++i) {
             for(std::size_t b = 0; b != 4; ++b) {
                 bytes[i * 4 + b] = static_cast<std::byte>(r[i] >> (8 * b));
             }
         }
-        CHECK_EQ(r[5], Kvasir::Crc::Crc32::compute(bytes));
+        CHECK_EQ(r[4], Kvasir::Crc::Crc32::compute(bytes));
     }
 
     test("every single flipped bit reads as nothing");
@@ -129,34 +122,16 @@ int main() {
         }
     }
 
-    test("another build's header reads as nothing");
-    {
-        static Kvasir::Persistent<Counter, OtherVersionTag> other;
-        other.store(c);
-        restore(p, [&] {
-            std::array<std::uint32_t, P::words> o{};
-            for(std::size_t i = 0; i != P::words; ++i) {
-                o[i] = reinterpret_cast<std::uint32_t volatile*>(&other)[i];
-            }
-            return o;
-        }());
-        CHECK(!p.load());
-
-        struct Bigger {
-            std::uint32_t a, b, c, d;
-        };
-
-        static Kvasir::Persistent<Bigger, CounterTag> bigger;
-        bigger.store(Bigger{3, 7, 0x1000'3A5EU, 0});
-        restore(p, [&] {
-            std::array<std::uint32_t, P::words> o{};
-            for(std::size_t i = 0; i != P::words; ++i) {
-                o[i] = reinterpret_cast<std::uint32_t volatile*>(&bigger)[i];
-            }
-            return o;
-        }());
-        CHECK(!p.load());
-    }
+    test(
+      "Test::corruptStoredRecord flips one stored bit in place; flipped back, the value is back");
+    restore(p, r);
+    CHECK(p.valid());
+    Kvasir::Test::corruptStoredRecord(p, 3 * 32 + 7);
+    CHECK(!p.load());
+    Kvasir::Test::corruptStoredRecord(p, 3 * 32 + 7);
+    CHECK(p.valid());
+    Kvasir::Test::corruptStoredRecord(p, P::words * 32);   // past the record: nothing
+    CHECK(p.valid());
 
     test("a reset after any number of a store's word writes: the old value or nothing");
     {

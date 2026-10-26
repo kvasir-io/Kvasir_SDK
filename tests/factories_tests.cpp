@@ -5,6 +5,8 @@
 // The existing write/read/rmw/special_access suites drive apply() with single actions; this
 // one focuses on the factories themselves, in particular the variadic overloads that produce
 // lists of actions.
+#include "kvasir/Common/Interrupt.hpp"
+#include "kvasir/Io/Types.hpp"
 #include "test_registers.hpp"
 
 #include <cstdint>
@@ -12,10 +14,6 @@
 
 using namespace Kvasir::Register;
 using namespace Kvasir::Test;
-using W = Recorder::Write;
-using R = Recorder::Read;
-
-namespace mpl = Kvasir::MPL;
 
 // ===========================================================================
 // mask helpers
@@ -66,23 +64,6 @@ static_assert(Detail::maskStartsAt(0x000000FFU) == 0);
 static_assert(Detail::maskStartsAt(0x0000FF00U) == 8);
 static_assert(Detail::maskStartsAt(0x00000FF0U) == 4);
 static_assert(Detail::maskStartsAt(0x80000000U) == 31);
-
-static_assert(Detail::onlyOneBitSet(0x1U));
-static_assert(Detail::onlyOneBitSet(0x80000000U));
-static_assert(!Detail::onlyOneBitSet(0x0U));
-static_assert(!Detail::onlyOneBitSet(0x3U));
-static_assert(!Detail::onlyOneBitSet(0xFFU));
-
-static_assert(Detail::orAllOf() == 0U);
-static_assert(Detail::orAllOf(0x1U) == 0x1U);
-static_assert(Detail::orAllOf(0x1U,
-                              0x2U)
-              == 0x3U);
-static_assert(Detail::orAllOf(0x1U,
-                              0x2U,
-                              0x4U,
-                              0x8U)
-              == 0xFU);
 
 // ===========================================================================
 // FieldLocation traits
@@ -153,56 +134,56 @@ static_assert(Detail::literalFits(0xFFFFFFFFU,
 // ---- two literals in one step must agree where they overlap -----------------------------
 // apply merges literal writes to one register by OR; the merge refuses two that disagree
 // on a shared bit (set + clear of one bit, two values for one field).
-static_assert(Detail::literalsAgree<0x1U,
+static_assert(Detail::literalsAgree(0x1U,
                                     0x1U,
                                     0x1U,
-                                    0x1U>);   // set twice
-static_assert(!Detail::literalsAgree<0x1U,
+                                    0x1U));   // set twice
+static_assert(!Detail::literalsAgree(0x1U,
                                      0x1U,
                                      0x1U,
-                                     0x0U>);   // set + clear
-static_assert(Detail::literalsAgree<0x1U,
+                                     0x0U));   // set + clear
+static_assert(Detail::literalsAgree(0x1U,
                                     0x1U,
                                     0x2U,
-                                    0x0U>);   // set + clear, other bits
-static_assert(Detail::literalsAgree<0xFF0U,
+                                    0x0U));   // set + clear, other bits
+static_assert(Detail::literalsAgree(0xFF0U,
                                     0x030U,
                                     0xFF0U,
-                                    0x030U>);
-static_assert(!Detail::literalsAgree<0xFF0U,
+                                    0x030U));
+static_assert(!Detail::literalsAgree(0xFF0U,
                                      0x030U,
                                      0xFF0U,
-                                     0x010U>);   // 3 and 1 in one field
-static_assert(Detail::literalsAgree<0xFF0U,
+                                     0x010U));   // 3 and 1 in one field
+static_assert(Detail::literalsAgree(0xFF0U,
                                     0x030U,
                                     0x00FU,
-                                    0x005U>);   // disjoint fields
-static_assert(!Detail::literalsAgree<0xFFFU,
+                                    0x005U));   // disjoint fields
+static_assert(!Detail::literalsAgree(0xFFFU,
                                      0x030U,
                                      0x0F0U,
-                                     0x000U>);   // clear inside a write
+                                     0x000U));   // clear inside a write
 // ... except on bits the register ignores a zero on: two pins' writes to a set/clear alias
 // (one whole-register field each) merge into one write by design
-static_assert(Detail::literalsAgree<0xFFFFFFFFU,
+static_assert(Detail::literalsAgree(0xFFFFFFFFU,
                                     0x40U,
                                     0xFFFFFFFFU,
                                     0x80U,
-                                    0xFFFFFFFFU>);
-static_assert(!Detail::literalsAgree<0xFFFFFFFFU,
+                                    0xFFFFFFFFU));
+static_assert(!Detail::literalsAgree(0xFFFFFFFFU,
                                      0x40U,
                                      0xFFFFFFFFU,
                                      0x80U,
-                                     0x0000000FU>);
-static_assert(Detail::literalsAgree<0x1U,
+                                     0x0000000FU));
+static_assert(Detail::literalsAgree(0x1U,
                                     0x1U,
                                     0x1U,
                                     0x0U,
-                                    0x1U>);
-static_assert(!Detail::literalsAgree<0x1U,
+                                    0x1U));
+static_assert(!Detail::literalsAgree(0x1U,
                                      0x1U,
                                      0x1U,
                                      0x0U,
-                                     0x2U>);
+                                     0x2U));
 
 // ---- the register description itself ------------------------------------------------------
 // a mask must be non-empty and inside the register; an address aligned to the register
@@ -243,30 +224,24 @@ static_assert(std::is_same_v<Detail::GetFieldTypeT<std::decay_t<decltype(Complex
 
 // ... and from the action a factory produced
 static_assert(Detail::GetMask<decltype(set(CtrlReg::en))>::value == 0x1U);
-static_assert(Detail::GetAddress<decltype(set(CtrlReg::en))>::value == 0x50U);
-static_assert(Detail::GetAddress<EnField>::value == 0x50U);
-static_assert(Detail::GetAddress<StopField>::value == 0x10U);
+static_assert(RegisterTraits<decltype(set(CtrlReg::en))>::address == 0x50U);
+static_assert(RegisterTraits<EnField>::address == 0x50U);
+static_assert(RegisterTraits<StopField>::address == 0x10U);
 
 // the write-ignored masks come from the Address
-static_assert(Detail::GetAddress<DatField>::writeIgnoredIfZeroMask == 0xFFFFFC00U);
-static_assert(Detail::GetAddress<EnField>::writeIgnoredIfZeroMask == 0x00000000U);
-static_assert(Detail::GetAddress<std::decay_t<decltype(MaskedReg::low)>>::writeIgnoredIfOneMask
+static_assert(RegisterTraits<DatField>::writeIgnoredIfZeroMask == 0xFFFFFC00U);
+static_assert(RegisterTraits<EnField>::writeIgnoredIfZeroMask == 0x00000000U);
+static_assert(RegisterTraits<std::decay_t<decltype(MaskedReg::low)>>::writeIgnoredIfOneMask
               == 0x000000F0U);
-
-// action classification predicates
-static_assert(Detail::IsReadPred<decltype(read(CtrlReg::en))>::value);
-static_assert(!Detail::IsReadPred<decltype(set(CtrlReg::en))>::value);
-static_assert(Detail::IsRuntimeWritePred<decltype(write(CtrlReg::div,
-                                                        std::uint32_t{1}))>::value);
-static_assert(!Detail::IsRuntimeWritePred<decltype(set(CtrlReg::en))>::value);
 
 // ===========================================================================
 // the variadic factory overloads
 // ===========================================================================
 
+namespace {
 // several single bit sets in one call, all in the same register: the result is a list of
 // actions which apply merges into a single write
-static void variadicSet() {
+void variadicSet() {
     test("variadicSet");
 
     apply(set(CtrlReg::en, CtrlReg::irq));
@@ -276,7 +251,7 @@ static void variadicSet() {
     CHECK_EQ(writtenValue(CtrlReg::Addr::value), 0x3U);
 }
 
-static void variadicClear() {
+void variadicClear() {
     test("variadicClear");
 
     recorder.setReadValue(CtrlReg::Addr::value, 0xFFFFFFFF);
@@ -287,7 +262,7 @@ static void variadicClear() {
     CHECK_EQ(writtenValue(CtrlReg::Addr::value), 0xFFFFFFFCU);
 }
 
-static void variadicRead() {
+void variadicRead() {
     test("variadicRead");
 
     recorder.setReadValue(CtrlReg::Addr::value, 0x00000FF3);
@@ -300,7 +275,7 @@ static void variadicRead() {
     CHECK_EQ(get<2>(results), 0xFFU);   // div  = bits 11..4
 }
 
-static void variadicReset() {
+void variadicReset() {
     test("variadicReset");
 
     // reset writes a one to a write-one-to-clear bit
@@ -311,7 +286,7 @@ static void variadicReset() {
 }
 
 // the variadic write overload takes compile time FieldValues
-static void variadicFieldValueWrite() {
+void variadicFieldValueWrite() {
     test("variadicFieldValueWrite");
 
     apply(write(ComplexTestReg::CMDValC::read, ComplexTestReg::STOPValC::enable));
@@ -325,7 +300,7 @@ static void variadicFieldValueWrite() {
 }
 
 // a list produced by a variadic factory can be nested inside another apply
-static void nestedActionLists() {
+void nestedActionLists() {
     test("nestedActionLists");
 
     apply(set(CtrlReg::en, CtrlReg::irq), write(CtrlReg::div, value<std::uint32_t, 0xA>()));
@@ -339,7 +314,7 @@ static void nestedActionLists() {
 // ===========================================================================
 
 // a runtime value must be masked down to the field, bits above the field are dropped
-static void runtimeWriteMasksToField() {
+void runtimeWriteMasksToField() {
     test("runtimeWriteMasksToField");
 
     // dat is bits 7..0, so the 0xF00 part of the value must not escape the field.
@@ -352,7 +327,7 @@ static void runtimeWriteMasksToField() {
     });
 }
 
-static void runtimeWriteShiftsIntoPlace() {
+void runtimeWriteShiftsIntoPlace() {
     test("runtimeWriteShiftsIntoPlace");
 
     // div lives at bits 11..4, so the value has to be shifted up by four
@@ -362,7 +337,7 @@ static void runtimeWriteShiftsIntoPlace() {
     CHECK_EQ(writtenValue(CtrlReg::Addr::value), 0xA50U);
 }
 
-static void runtimeWriteZero() {
+void runtimeWriteZero() {
     test("runtimeWriteZero");
 
     recorder.setReadValue(CtrlReg::Addr::value, 0xFFFFFFFF);
@@ -377,7 +352,7 @@ static void runtimeWriteZero() {
 // compile time writes
 // ===========================================================================
 
-static void compileTimeWriteShiftsIntoPlace() {
+void compileTimeWriteShiftsIntoPlace() {
     test("compileTimeWriteShiftsIntoPlace");
 
     apply(write(CtrlReg::div, value<std::uint32_t, 0xA5>()));
@@ -386,7 +361,7 @@ static void compileTimeWriteShiftsIntoPlace() {
     CHECK_EQ(writtenValue(CtrlReg::Addr::value), 0xA50U);
 }
 
-static void fieldValueWriteSingle() {
+void fieldValueWriteSingle() {
     test("fieldValueWriteSingle");
 
     apply(write(ComplexTestReg::STOPValC::enable));
@@ -399,7 +374,7 @@ static void fieldValueWriteSingle() {
 }
 
 // enum typed fields accept a runtime value of the enum type
-static void runtimeWriteEnumField() {
+void runtimeWriteEnumField() {
     test("runtimeWriteEnumField");
 
     auto const v = static_cast<ComplexTestReg::CMDVal>(runtimeValue(1));
@@ -412,10 +387,120 @@ static void runtimeWriteEnumField() {
 }
 
 // ===========================================================================
+// which write() overload a second argument reaches (the literal or the runtime one)
+// ===========================================================================
+// A compile-time value that the literal overload does not take converts into the runtime overload through an implicit
+// conversion (std::integral_constant's operator value_type, FieldValue's operator DataType): a literal store becomes a
+// load-modify-store with the value in a register. The matrix pins which argument reaches which overload.
+
+namespace overloads {
+    using Kvasir::Register::Detail::GetFieldTypeT;
+
+    using BoolF
+      = Kvasir::Test::Field<CtrlReg::Addr, 0, 0, ReadWriteAccess, bool>;   // a 1-bit bool field
+    using NibF  = Kvasir::Test::Field<CtrlReg::Addr, 15, 12>;              // a 4-bit unsigned field
+    using EnumF = std::remove_cvref_t<decltype(ComplexTestReg::cmd)>;      // an enum field
+    using NibT  = GetFieldTypeT<NibF>;
+    using EnumT = GetFieldTypeT<EnumF>;
+
+    template<typename F, typename A>
+    using WriteOf = decltype(write(F{}, A{}));
+
+    template<typename F, typename A>
+    constexpr bool runtimeWrite = std::is_same_v<WriteOf<F, A>, Action<F, WriteAction>>;
+
+    template<typename F, unsigned V>
+    using Literal = Action<F, WriteLiteralAction<(V << Detail::maskStartsAt(F::mask))>>;
+
+    template<typename F, typename A>
+    concept Writable = requires { write(F{}, A{}); };
+
+    // value<V>() / value<FT, V>(): the literal action
+    static_assert(std::is_same_v<decltype(write(NibF{},
+                                                value<NibT,
+                                                      5>())),
+                                 Literal<NibF,
+                                         5>>);
+    static_assert(std::is_same_v<decltype(write(NibF{},
+                                                value<5>())),
+                                 Literal<NibF,
+                                         5>>);
+    static_assert(std::is_same_v<decltype(write(BoolF{},
+                                                value<bool,
+                                                      true>())),
+                                 Literal<BoolF,
+                                         1>>);
+    static_assert(std::is_same_v<decltype(write(EnumF{},
+                                                value<EnumT,
+                                                      EnumT::read>())),
+                                 Literal<EnumF,
+                                         1>>);
+
+    // std::integral_constant of the field's type: the literal action, the same type as value<FT, V>()
+    static_assert(std::is_same_v<WriteOf<NibF,
+                                         std::integral_constant<NibT,
+                                                                5>>,
+                                 Literal<NibF,
+                                         5>>);
+    static_assert(std::is_same_v<WriteOf<BoolF,
+                                         std::bool_constant<true>>,
+                                 Literal<BoolF,
+                                         1>>);
+    static_assert(std::is_same_v<WriteOf<EnumF,
+                                         std::integral_constant<EnumT,
+                                                                EnumT::read>>,
+                                 Literal<EnumF,
+                                         1>>);
+    // of another type: the literal overload too, whose body refuses it ("type mismatch", diagnostics_must_fail) -
+    // never converted into the runtime write
+    static_assert(!runtimeWrite<NibF,
+                                std::integral_constant<int,
+                                                       1>>);
+    static_assert(!runtimeWrite<BoolF,
+                                std::integral_constant<unsigned,
+                                                       1>>);
+    static_assert(!runtimeWrite<NibF,
+                                std::bool_constant<true>>);
+
+    // a runtime value: the runtime write
+    static_assert(runtimeWrite<NibF,
+                               NibT>);
+    static_assert(runtimeWrite<NibF,
+                               unsigned>);
+    static_assert(runtimeWrite<EnumF,
+                               EnumT>);
+
+    // a tag (an integral constant, no value of the field's type): the literal overload, whose body refuses it ("type
+    // mismatch", diagnostics_must_fail) - never the runtime write (its int conversion is deleted)
+    static_assert(Writable<NibF,
+                           Kvasir::Nvic::Index<3>>
+                  && !runtimeWrite<NibF,
+                                   Kvasir::Nvic::Index<3>>);
+    static_assert(Writable<NibF,
+                           Kvasir::Io::Pin<3>>
+                  && !runtimeWrite<NibF,
+                                   Kvasir::Io::Pin<3>>);
+    static_assert(Writable<NibF,
+                           Kvasir::Io::HwPort<0>>
+                  && !runtimeWrite<NibF,
+                                   Kvasir::Io::HwPort<0>>);
+
+    // the field's own FieldValue: the literal action
+    static_assert(std::is_same_v<decltype(write(ComplexTestReg::CMDValC::read)),
+                                 Literal<EnumF,
+                                         1>>);
+    // another field's FieldValue of the same data type as the second argument: the runtime write through its
+    // conversion (open: a follow-up routes it to the literal overload as a type mismatch)
+    static_assert(runtimeWrite<NibF,
+                               FieldValue<std::remove_cvref_t<decltype(SimpleTestReg::cmd)>,
+                                          1U>>);
+}   // namespace overloads
+
+// ===========================================================================
 // set / clear / reset on individual bits
 // ===========================================================================
 
-static void setInWriteIgnoredRegister() {
+void setInWriteIgnoredRegister() {
     test("setInWriteIgnoredRegister");
 
     // ToggleReg is write-ignored-if-zero across the whole register, so setting a single
@@ -427,7 +512,7 @@ static void setInWriteIgnoredRegister() {
     });
 }
 
-static void setTwoBitsInWriteIgnoredRegister() {
+void setTwoBitsInWriteIgnoredRegister() {
     test("setTwoBitsInWriteIgnoredRegister");
 
     apply(set(ToggleReg::pin5, ToggleReg::pin6));
@@ -441,7 +526,7 @@ static void setTwoBitsInWriteIgnoredRegister() {
 // apply itself
 // ===========================================================================
 
-static void applyWithNoActions() {
+void applyWithNoActions() {
     test("applyWithNoActions");
 
     apply();
@@ -449,7 +534,7 @@ static void applyWithNoActions() {
     checkActions({});
 }
 
-static void applyReturnsReadResults() {
+void applyReturnsReadResults() {
     test("applyReturnsReadResults");
 
     recorder.setReadValue(CtrlReg::Addr::value, 0x00000FF1);
@@ -461,7 +546,7 @@ static void applyReturnsReadResults() {
 }
 
 // reads and writes to the same register in one apply keep their relative order
-static void readThenWriteSameRegister() {
+void readThenWriteSameRegister() {
     test("readThenWriteSameRegister");
 
     // the explicit read and the read-modify-write each read the register, so both need a
@@ -476,7 +561,7 @@ static void readThenWriteSameRegister() {
 }
 
 // toggle on a plain bit: read, the bit inverted, write
-static void togglePlainBit() {
+void togglePlainBit() {
     test("togglePlainBit");
     recorder.setReadValue(CtrlReg::Addr::value, 0xAC);
     apply(toggle(CtrlReg::en));
@@ -494,7 +579,7 @@ static void togglePlainBit() {
 }
 
 // toggle on a one-to-toggle bit: one store of the bit, no read
-static void toggleToggleBit() {
+void toggleToggleBit() {
     test("toggleToggleBit");
     apply(toggle(ToggleReg::pin5));
     checkActions({
@@ -503,7 +588,7 @@ static void toggleToggleBit() {
 }
 
 // two plain bits of one register: one read, one write
-static void toggleMerges() {
+void toggleMerges() {
     test("toggleMerges");
     recorder.setReadValue(CtrlReg::Addr::value, 0x01);
     apply(toggle(CtrlReg::en, CtrlReg::irq));
@@ -512,6 +597,7 @@ static void toggleMerges() {
       W{CtrlReg::Addr::value, 0x02}
     });
 }
+}   // namespace
 
 int main() {
     togglePlainBit();

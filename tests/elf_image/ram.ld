@@ -17,3 +17,6 @@ SECTIONS
     .bss (NOLOAD) : { *(.bss*) } > ram
     /DISCARD/ : { *(.eeprom) *(.ARM.exidx*) *(.ARM.attributes) *(.kvasir_meta) }
 }
+/* as common_ram_only.ld: nothing in flash */
+_LINKER_INTERN_rom_end_ = 0;
+_LINKER_image_end_flash_ = 0;

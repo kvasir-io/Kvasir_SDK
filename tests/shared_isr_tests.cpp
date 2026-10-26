@@ -1,5 +1,6 @@
 // Tests for kvasir/StartUp/SharedIsr.hpp: the dispatcher Startup generates for a vector several
 // sub-interrupts share, and the grouping of a list's SubIsrs by vector.
+#include "kvasir/StartUp/Entry.hpp"
 #include "kvasir/StartUp/SharedIsr.hpp"
 #include "kvasir_test.hpp"
 
@@ -48,8 +49,6 @@ struct MakeAction<Action::SetPriority<P>, Index<I>>
 
 using namespace Kvasir::Register;
 using namespace Kvasir::Test;
-using R = Recorder::Read;
-using W = Recorder::Write;
 
 namespace {
 
@@ -89,11 +88,11 @@ using V9 = Kvasir::Nvic::Index<9>;
 
 std::string trace;
 
-void onA() { trace += "A"; }
+void onA() { trace += 'A'; }
 
-void onB() { trace += "B"; }
+void onB() { trace += 'B'; }
 
-void onC() { trace += "C"; }
+void onC() { trace += 'C'; }
 
 namespace N = Kvasir::Nvic;
 
@@ -150,6 +149,14 @@ static_assert(D::SharedIsrDetail::agreedPriority<P3a,
 
 using AB = D::SharedDispatch<V7, SubA, SubB>;
 using C  = D::SharedDispatch<V9, SubC>;
+
+// A generated dispatcher declares no runtime hook and no phase but the interrupt ones: so a
+// SecondaryCore's init sequence over the list with the dispatchers runs the same non-interrupt
+// phases and hooks as over the user's list (StartUp.hpp InitPhases, SecondaryCore::start).
+static_assert(!D::RuntimeHook::DeclaresAny<AB>::value && !D::RuntimeHook::DeclaresAny<C>::value);
+static_assert(!D::Phase::Early::has<AB> && !D::Phase::PowerClock::has<AB>
+              && !D::Phase::Pins::has<AB> && !D::Phase::Periphery::has<AB>);
+static_assert(D::Phase::Interrupts::has<AB> && D::Phase::Enable::has<AB>);
 
 // the second child pending only: one read of INTS, its handler, then its clear (ClearLast)
 void onlySecondPending() {

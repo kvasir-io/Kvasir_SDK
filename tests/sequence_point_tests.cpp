@@ -6,11 +6,10 @@
 
 using namespace Kvasir::Register;
 using namespace Kvasir::Test;
-using R = Recorder::Read;
-using W = Recorder::Write;
 
+namespace {
 // without the sequence point these two writes would merge into a single write
-static void preventsWriteMerge() {
+void preventsWriteMerge() {
     test("preventsWriteMerge");
 
     recorder.setReadValue(SimpleTestReg::Addr::value, 0x1FF);
@@ -29,7 +28,7 @@ static void preventsWriteMerge() {
     });
 }
 
-static void multipleSequencePoints() {
+void multipleSequencePoints() {
     test("multipleSequencePoints");
 
     recorder.setReadValue(SimpleTestReg::Addr::value, 0x1FF);
@@ -47,12 +46,12 @@ static void multipleSequencePoints() {
       W{SimpleTestReg::Addr::value,    0x111},
       W{    SecondReg::Addr::value,     0x22},
       R{     ThirdReg::Addr::value, 0xAABBCC},
-      W{     ThirdReg::Addr::value,   0xBB33}
+      W{     ThirdReg::Addr::value, 0xAABB33}
     });
 }
 
 // reads from the same register do not merge across a sequence point
-static void readsDoNotMergeAcross() {
+void readsDoNotMergeAcross() {
     test("readsDoNotMergeAcross");
 
     recorder.setReadValue(SimpleTestReg::Addr::value, 0x1AB);
@@ -66,7 +65,7 @@ static void readsDoNotMergeAcross() {
 }
 
 // write before, read after: the RMW pair must complete before the second group's read
-static void preservesOrder() {
+void preservesOrder() {
     test("preservesOrder");
 
     recorder.setReadValue(SimpleTestReg::Addr::value, 0x1FF);
@@ -81,7 +80,7 @@ static void preservesOrder() {
 }
 
 // both groups RMW the same register
-static void rmwInBothGroups() {
+void rmwInBothGroups() {
     test("rmwInBothGroups");
 
     recorder.setReadValue(ThirdReg::Addr::value, 0xAABBCC);
@@ -99,7 +98,7 @@ static void rmwInBothGroups() {
 }
 
 // compile-time write and runtime write separated by a sequence point both RMW
-static void compileTimeThenRuntime() {
+void compileTimeThenRuntime() {
     test("compileTimeThenRuntime");
 
     recorder.setReadValue(SimpleTestReg::Addr::value, 0x1FF);
@@ -117,7 +116,7 @@ static void compileTimeThenRuntime() {
 }
 
 // sequence points at the start and end produce empty groups which are ignored
-static void emptyGroups() {
+void emptyGroups() {
     test("emptyGroups");
 
     recorder.setReadValue(SimpleTestReg::Addr::value, 0x1FF);
@@ -130,13 +129,13 @@ static void emptyGroups() {
     });
 }
 
-// several groups of reads: merging happens within a group, never across groups; the
-// FieldTuple indexing still finds every field
-static void multipleReadGroupsWithIndexing() {
+// several groups of reads: merging happens within a group, never across groups; every read
+// access has its own result, get<I>() finds each (result[field] only for a field read once)
+void multipleReadGroupsWithIndexing() {
     test("multipleReadGroupsWithIndexing");
 
-    recorder.setReadValue(SimpleTestReg::Addr::value, 0x1AB);
-    recorder.setReadValue(SecondReg::Addr::value, 0xCD12);
+    recorder.setReadValues(SimpleTestReg::Addr::value, {0x1AB, 0x1CD});
+    recorder.setReadValues(SecondReg::Addr::value, {0xCD12, 0x3400});
     recorder.setReadValue(ThirdReg::Addr::value, 0x345678);
 
     auto const result = apply(read(SimpleTestReg::dat),
@@ -154,15 +153,19 @@ static void multipleReadGroupsWithIndexing() {
     CHECK(readCount(SecondReg::Addr::value) == 2);
     CHECK(readCount(ThirdReg::Addr::value) == 1);
 
-    // field indexing returns the values of the first read of each register
-    CHECK_EQ(result[SimpleTestReg::dat], 0xABU);
+    // each read gives its own value: SimpleTestReg::dat once per step, SecondReg::status from
+    // the third step's read of SecondReg
+    CHECK_EQ(result.template get<0>(), 0xABU);
+    CHECK_EQ(result.template get<1>(), 0x12U);
+    CHECK_EQ(result.template get<2>(), 0x78U);
+    CHECK_EQ(result.template get<3>(), 0xCDU);
     CHECK_EQ(result[SecondReg::data], 0x12U);
-    CHECK_EQ(result[SecondReg::status], 0xCDU);
+    CHECK_EQ(result[SecondReg::status], 0x34U);
     CHECK_EQ(result[ThirdReg::control], 0x78U);
 }
 
 // the same field read three times returns the injected values in sequence
-static void sameRegisterReadThreeTimes() {
+void sameRegisterReadThreeTimes() {
     test("sameRegisterReadThreeTimes");
 
     recorder.setReadValues(SimpleTestReg::Addr::value, {0x1AA, 0x1BB, 0x1CC});
@@ -182,26 +185,26 @@ static void sameRegisterReadThreeTimes() {
 
 // different fields of the same register separated by a sequence point: two reads, both
 // field values indexable
-static void differentFieldsSameRegister() {
+void differentFieldsSameRegister() {
     test("differentFieldsSameRegister");
 
-    recorder.setReadValue(SecondReg::Addr::value, 0xABCD);
+    recorder.setReadValues(SecondReg::Addr::value, {0xABCD, 0x12EF});
 
     auto const result = apply(read(SecondReg::data), sequencePoint, read(SecondReg::status));
 
     checkActions({
       R{SecondReg::Addr::value, 0xABCD},
-      R{SecondReg::Addr::value,      0}
+      R{SecondReg::Addr::value, 0x12EF}
     });
     CHECK_EQ(result[SecondReg::data], 0xCDU);
-    CHECK_EQ(result[SecondReg::status], 0xABU);
+    CHECK_EQ(result[SecondReg::status], 0x12U);
 }
 
 // numeric get<>() indexing addresses each read individually
-static void numericIndexing() {
+void numericIndexing() {
     test("numericIndexing");
 
-    recorder.setReadValues(SecondReg::Addr::value, {0x11CD, 0x22CD, 0x33CD});
+    recorder.setReadValues(SecondReg::Addr::value, {0x11CD, 0x22EF, 0x3301});
 
     auto const result = apply(read(SecondReg::data),
                               sequencePoint,
@@ -211,15 +214,18 @@ static void numericIndexing() {
 
     checkActions({
       R{SecondReg::Addr::value, 0x11CD},
-      R{SecondReg::Addr::value, 0x22CD},
-      R{SecondReg::Addr::value, 0x33CD}
+      R{SecondReg::Addr::value, 0x22EF},
+      R{SecondReg::Addr::value, 0x3301}
     });
 
+    // result[SecondReg::data] does not compile here (read in three steps):
+    // tests/diagnostics_must_fail, field_read_in_two_steps
     CHECK_EQ(result.template get<0>(), 0xCDU);
-    CHECK_EQ(result.template get<1>(), 0xCDU);
-    CHECK_EQ(result.template get<2>(), 0xCDU);
-    CHECK_EQ(result[SecondReg::data], 0xCDU);
+    CHECK_EQ(result.template get<1>(), 0xEFU);
+    CHECK_EQ(result.template get<2>(), 0x01U);
 }
+
+}   // namespace
 
 int main() {
     preventsWriteMerge();
@@ -234,9 +240,5 @@ int main() {
     differentFieldsSameRegister();
     numericIndexing();
 
-    if(Kvasir::Test::failures != 0) {
-        std::print("{} checks failed\n", Kvasir::Test::failures);
-        return 1;
-    }
-    return 0;
+    return Kvasir::Test::report();
 }

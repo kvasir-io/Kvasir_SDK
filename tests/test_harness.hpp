@@ -4,19 +4,29 @@
 // by the pure host side tests (Util, Mpl, Atomic, ...) as well. Tests that do use the mock
 // include kvasir_test.hpp instead, which installs the hooks below so that a failing check
 // also dumps the recorded register accesses.
+//
+// The one harness of the SDK's host tests, the threaded ones included: `failures` is atomic, so a CHECK in a worker
+// thread is no race (TSan). Every FAIL line goes through failf ("FAIL [test] <text> (file:line)"), every program ends
+// in `return Kvasir::Test::report();`. A test that catches panics adds harness/PanicCatcher.hpp; the time source of a
+// test is support/FakeClock.hpp's FakeClockT<D> unless it must tick on reads (then a clock of its own).
 #pragma once
 
+#include <atomic>
 #include <cstddef>
+#include <format>
 #include <print>
 #include <source_location>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
 
 namespace Kvasir { namespace Test {
 
-    inline int              failures = 0;
-    inline std::string_view currentTest{};
+    // atomic: a CHECK in a worker thread of the multicore tests is no data race on the counter (TSan)
+    inline std::atomic<int> failures{0};
+    // owned: a name built at run time (kvasir_test.hpp's testFor) outlives the call that set it
+    inline std::string currentTest{};
 
     // installed by kvasir_test.hpp to dump the recorded register accesses on a failure
     inline void (*failureContextPrinter)() = nullptr;
@@ -27,14 +37,33 @@ namespace Kvasir { namespace Test {
         if(failureContextPrinter != nullptr) { failureContextPrinter(); }
     }
 
-    inline void fail(std::string_view     msg,
-                     std::source_location loc) {
+    // the one FAIL line: "FAIL [test] <text> (file:line)"; counts the failure, prints no context.
+    // cold + noinline: the std::format FAIL path stays out of every CHECK site. Inlined, it bloated the test functions
+    // until gcc -O3 stopped inlining the code under test (StaticVector::erase) and then warned -Wmaybe-uninitialized
+    // for a pointer into its raw element storage passed to the out-of-line call.
+    template<typename... A>
+    [[gnu::cold,
+      gnu::noinline]] void
+    failf(std::source_location     loc,
+          std::format_string<A...> f,
+          A&&... a) {
         ++failures;
-        std::print("FAIL [{}] {} ({}:{})\n", currentTest, msg, loc.file_name(), loc.line());
+        std::print("FAIL [{}] {} ({}:{})\n",
+                   currentTest,
+                   std::format(f, std::forward<A>(a)...),
+                   loc.file_name(),
+                   loc.line());
+    }
+
+    [[gnu::cold,
+      gnu::noinline]] inline void
+    fail(std::string_view     msg,
+         std::source_location loc = std::source_location::current()) {
+        failf(loc, "{}", msg);
         printFailureContext();
     }
 
-    // begin a new test case: names failure output and resets any registered state
+    // begin a new test case: names failure output and resets any registered state (copies the name)
     inline void test(std::string_view name) {
         currentTest = name;
         if(testResetHook != nullptr) { testResetHook(); }
@@ -51,8 +80,8 @@ namespace Kvasir { namespace Test {
 
     // returns the process exit code and prints a summary
     inline int report() {
-        if(failures != 0) {
-            std::print("{} checks failed\n", failures);
+        if(int const n = failures.load(); n != 0) {
+            std::print("{} checks failed\n", n);
             return 1;
         }
         return 0;
@@ -67,20 +96,17 @@ namespace Kvasir { namespace Test {
         }                                                                        \
     } while(false)
 
-#define CHECK_EQ(a_, b_)                                                 \
-    do {                                                                 \
-        auto const checkEqA_ = ::Kvasir::Test::asUnsigned(a_);           \
-        auto const checkEqB_ = ::Kvasir::Test::asUnsigned(b_);           \
-        if(checkEqA_ != checkEqB_) {                                     \
-            ++::Kvasir::Test::failures;                                  \
-            std::print("FAIL [{}] {} == {}: 0x{:X} != 0x{:X} ({}:{})\n", \
-                       ::Kvasir::Test::currentTest,                      \
-                       #a_,                                              \
-                       #b_,                                              \
-                       checkEqA_,                                        \
-                       checkEqB_,                                        \
-                       std::source_location::current().file_name(),      \
-                       std::source_location::current().line());          \
-            ::Kvasir::Test::printFailureContext();                       \
-        }                                                                \
+#define CHECK_EQ(a_, b_)                                           \
+    do {                                                           \
+        auto const checkEqA_ = ::Kvasir::Test::asUnsigned(a_);     \
+        auto const checkEqB_ = ::Kvasir::Test::asUnsigned(b_);     \
+        if(checkEqA_ != checkEqB_) {                               \
+            ::Kvasir::Test::failf(std::source_location::current(), \
+                                  "{} == {}: 0x{:X} != 0x{:X}",    \
+                                  #a_,                             \
+                                  #b_,                             \
+                                  checkEqA_,                       \
+                                  checkEqB_);                      \
+            ::Kvasir::Test::printFailureContext();                 \
+        }                                                          \
     } while(false)

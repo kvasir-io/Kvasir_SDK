@@ -1,4 +1,5 @@
 #pragma once
+#include "Diagnostic.hpp"   // Register/Diagnostic.hpp: FieldNotRead
 #include "kvasir/Mpl/Algorithm.hpp"
 
 #include <bit>
@@ -12,73 +13,71 @@ namespace Kvasir { namespace Register {
 
     static constexpr SequencePoint sequencePoint{};
 
-    // A register a partial write may read-modify-write.
-    struct NormalMode {
-        static constexpr unsigned mustSupplyMask          = 0;
-        static constexpr bool     readHasSideEffect       = false;
-        static constexpr unsigned writeOnlyNoIdentityMask = 0;
-        static constexpr bool     writeOnlyRegister       = false;
-        using Register = void;   // for compile errors only (Register/Diagnostic.hpp)
+    // A register's write facts, one value per register (svd_converter emits the members that differ from the
+    // default, as designated initialisers in this order):
+    //  - mustSupply: key bits every write names - they read back something other than what must be written (SCB
+    //    AIRCR.VECTKEY reads 0xFA05, needs 0x05FA); an SVD field whose writeConstraint is a range of one value;
+    //  - readSideEffect: a read pops or clears something (I2C IC_DATA_CMD pops the RX FIFO), so only whole-register
+    //    writes; an SVD field with a readAction;
+    //  - writeOnlyNoIdentity: write-only bits that a read cannot give back and that nobody classified
+    //    (svd_converter --write-only-mask): a partial write must name them, like a key;
+    //  - writeOnlyRegister: no readable field (svd_converter --write-only-registers=derived): a partial write never
+    //    reads it - there is nothing to keep - and writes the bits it does not name as 0, as a FULLREGISTER write of
+    //    the same value would; a key in it must still be named (Exec.hpp);
+    //  - writeBackActs: which write-ignored-if-zero bits a read-modify-write must write as 0 - the one-to-* fields,
+    //    whose value read back and written again would act (clear a pending flag, fire a trigger). The rest of that
+    //    mask - reserved and read-only bits - is written back as read, so a field write is one OR or BIC of the
+    //    field's own bits. 0 (the default): nothing acts, every bit goes back as read; a hand-written Address with a
+    //    write-one-to-* bit (or a bit it wants written 0) in its write-ignored-if-zero mask states it here;
+    //  - fromReset, resetValue: never set by svd_converter - Register::fromReset<R>() (Register.hpp) marks the
+    //    Address of its actions: a write is one store, no read, of the named fields over R's reset value
+    //    (resetValue) in every bit it does not name.
+    struct Semantics {
+        unsigned mustSupply          = 0;
+        bool     readSideEffect      = false;
+        unsigned writeOnlyNoIdentity = 0;
+        bool     writeOnlyRegister   = false;
+        unsigned writeBackActs       = 0;
+        bool     fromReset           = false;
+        unsigned resetValue          = 0;
     };
 
-    // A normal register that names itself for compile errors: svd_converter's NAMED_REGISTERS option
-    // (off by default, it lengthens every Address type).
-    template<typename TRegister>
-    struct Named : NormalMode {
-        using Register = TRegister;
+    // An Address's 5th argument: the write facts and, for compile errors only (Register/Diagnostic.hpp), the
+    // generated register struct itself (an incomplete type there, which a template argument may be). Every register
+    // with a key, a read side effect or a write-only register names itself; the others only with svd_converter's
+    // NAMED_REGISTERS option (off by default, it lengthens every Address type).
+    template<Semantics S = Semantics{}, typename TRegister = void>
+    struct Mode {
+        static constexpr Semantics semantics = S;
+        using Register                       = TRegister;
     };
 
-    // A register a read-modify-write would corrupt:
-    // MustSupply - bits that read back something other than what must be written (a key: SCB
-    // AIRCR.VECTKEY reads 0xFA05, needs 0x05FA), so every write names them; ReadSideEffect - a read
-    // pops or clears something (I2C IC_DATA_CMD pops the RX FIFO), so only whole-register writes.
-    // The generator emits it from the SVD: a field whose writeConstraint is a range of one value is
-    // a key, a field with a readAction makes the register's read a side effect.
-    // TRegister: the generated register struct itself (an incomplete type there, which a template argument may be),
-    // read only when a compile error names the register and its fields.
-    // WriteOnlyNoIdentity: write-only bits that a read cannot give back and that nobody classified (svd_converter
-    // --write-only-mask): a partial write must name them, like a key.
-    template<unsigned MustSupply,
-             bool     ReadSideEffect,
-             typename TRegister           = void,
-             unsigned WriteOnlyNoIdentity = 0>
-    struct RmwHazard {
-        static constexpr unsigned mustSupplyMask          = MustSupply;
-        static constexpr bool     readHasSideEffect       = ReadSideEffect;
-        static constexpr unsigned writeOnlyNoIdentityMask = WriteOnlyNoIdentity;
-        static constexpr bool     writeOnlyRegister       = false;
-        using Register                                    = TRegister;
-    };
+    namespace Detail {
+        // The Address/FieldLocation sanity checks as predicates: the static_asserts below call them, the tests test
+        // them.
+        constexpr bool maskFitsRegister(unsigned    mask,
+                                        std::size_t registerBytes) {
+            return mask != 0 && static_cast<std::size_t>(std::bit_width(mask)) <= registerBytes * 8;
+        }
 
-    // A register with no readable field (svd_converter --write-only-registers=derived): a partial write never reads it
-    // - there is nothing to keep - and writes the bits it does not name as 0, as a FULLREGISTER write of the same
-    // value would.
-    template<typename TRegister = void>
-    struct WriteOnlyRegister : NormalMode {
-        static constexpr bool writeOnlyRegister = true;
-        using Register                          = TRegister;
-    };
-
-    // Which bits of a write-ignored-if-zero register bit a read-modify-write must write as 0: the one-to-* fields,
-    // whose value read back and written again would act (clear a pending flag, fire a trigger). The rest of that
-    // mask - reserved and read-only bits - is written back as read, so the field write is one OR or BIC of the
-    // field's own bits, no wider mask (svd_converter emits it; without it every such bit is written 0).
-    template<unsigned WriteBackActsMask, typename TBase = NormalMode>
-    struct WriteBackActs : TBase {
-        static constexpr unsigned writeBackActsMask = WriteBackActsMask;
-    };
+        constexpr bool addressAligned(unsigned    address,
+                                      std::size_t registerBytes) {
+            return address % registerBytes == 0;
+        }
+    }   // namespace Detail
 
     template<unsigned A,
              unsigned WriteIgnoredIfZeroMask = 0,
              unsigned WriteIgnoredIfOneMask  = 0,
              typename TRegType               = unsigned,
-             typename TMode                  = NormalMode>
+             typename TMode                  = Mode<>>
     struct Address {
         using type    = Address<A, WriteIgnoredIfZeroMask, WriteIgnoredIfOneMask, TRegType, TMode>;
         using RegType = TRegType;
         using Mode    = TMode;
         static constexpr unsigned value = A;
-        static_assert(A % sizeof(TRegType) == 0,
+        static_assert(Detail::addressAligned(A,
+                                             sizeof(TRegType)),
                       "register address is not aligned to the register's width");
     };
 
@@ -88,16 +87,17 @@ namespace Kvasir { namespace Register {
         static constexpr unsigned value = I;
     };
 
-    // write a compile time and runtime time known value
-    template<unsigned I>
+    // write a compile time and runtime time known value: a literal merged with runtime writes of
+    // the same register (Apply.hpp's merge table); RuntimeMask the bits the runtime values cover
+    template<unsigned I, unsigned RuntimeMask>
     struct WriteRuntimeAndLiteralAction {
         static constexpr unsigned value = I;
         unsigned                  value_;
     };
 
     // A literal write that must not lose a concurrent update of another field of the register
-    // (Register::atomic, AtomicFactories.hpp). How is the chip's business (ExecuteSeam: the RP
-    // set/clear/xor aliases); the default masks interrupts around the read-modify-write.
+    // (Register::atomic, AtomicFactories.hpp). How is the chip's business (the ExecuteSeam hook,
+    // Exec.hpp: the RP set/clear/xor aliases); the default masks interrupts around the read-modify-write.
     template<unsigned I>
     struct AtomicWriteLiteralAction {
         static constexpr unsigned value = I;
@@ -122,9 +122,7 @@ namespace Kvasir { namespace Register {
         static constexpr bool isAction = true;
 
         template<typename... Ts>
-        [[gnu::always_inline]] constexpr Action(
-          Ts... args)   //NOLINT(hicpp-explicit-constructor, hicpp-explicit-conversions)
-          : TAction{args...} {}
+        [[gnu::always_inline]] constexpr Action(Ts... args) : TAction{args...} {}
 
         using type = Action<TLocation, TAction>;
 
@@ -167,42 +165,24 @@ namespace Kvasir { namespace Register {
         using type                 = FieldLocation<TAddress, TMask, TAccess, TFieldType>;
         using DataType             = TFieldType;
         using Access               = TAccess;
-        static constexpr auto Mask = TMask;
+        static constexpr auto mask = TMask;
         static_assert(TMask != 0,
                       "a FieldLocation needs at least one bit");
-        static_assert(static_cast<std::size_t>(std::bit_width(TMask))
-                        <= sizeof(typename TAddress::RegType) * 8,
+        static_assert(Detail::maskFitsRegister(TMask,
+                                               sizeof(typename TAddress::RegType)),
                       "the field's mask has bits beyond the register's width");
     };
 
     namespace Detail {
-        using namespace MPL;
-
-        constexpr unsigned positionOfFirstSetBit(unsigned in) {
-            return unsigned(std::countr_zero(in));
-        }
-
-        // The two FieldLocation/Address sanity checks as predicates, for the tests.
-        constexpr bool maskFitsRegister(unsigned    mask,
-                                        std::size_t registerBytes) {
-            return mask != 0 && static_cast<std::size_t>(std::bit_width(mask)) <= registerBytes * 8;
-        }
-
-        constexpr bool addressAligned(unsigned    address,
-                                      std::size_t registerBytes) {
-            return address % registerBytes == 0;
-        }
+        // the first bit of a field's mask: the shift between the field's value and the register word
+        constexpr unsigned maskStartsAt(unsigned mask) { return unsigned(std::countr_zero(mask)); }
     }   // namespace Detail
 
     template<typename TFieldLocation, typename TFieldLocation::DataType Value>
     struct FieldValue {
         using type = FieldValue<TFieldLocation, Value>;
 
-        operator typename TFieldLocation::
-          DataType()   //NOLINT(hicpp-explicit-constructor, hicpp-explicit-conversions)
-          const {
-            return Value;
-        }
+        operator typename TFieldLocation::DataType() const { return Value; }
     };
     template<typename TAddresses, typename TFieldLocation>
     struct FieldTuple;   // see below for implementation in specialization
@@ -215,10 +195,10 @@ namespace Kvasir { namespace Register {
         struct GetFieldLocationIndex<FieldTuple<TA, TLocations>, TFieldLocation>
           : MPL::Find<TLocations, TFieldLocation> {};
 
-        template<typename Object, typename TFieldLocation>
-        using GetFieldLocationIndexT = typename GetFieldLocationIndex<Object, TFieldLocation>::type;
     }   // namespace Detail
 
+    // The result of an apply() with reads: Is is the slot of each read field (in argument order),
+    // one slot per read access - fields of one register read in one step share it.
     template<uint32_t... Is,
              typename... TAs,
              unsigned... Masks,
@@ -226,40 +206,63 @@ namespace Kvasir { namespace Register {
              typename... TRs>
     struct FieldTuple<brigand::list<brigand::uint32_t<Is>...>,
                       brigand::list<FieldLocation<TAs, Masks, TAccesss, TRs>...>> {
+        static constexpr unsigned numSlots = [] {
+            unsigned n = 0;
+            ((n = Is + 1 > n ? Is + 1 : n), ...);
+            return n;
+        }();
+
         // a built-in array, not std::array: std::array's operator[] is not always_inline, and with less inlining
         // (clang -Oz with UBSan) it stays out of line in flash, called from a RAM function's register read
         // (check_ram_funcs). Every index below is a compile-time constant. Test: tests/ram_funcs, CASE 8.
-        unsigned value_[sizeof...(Is)];   // NOLINT(*-avoid-c-arrays)
+        unsigned value_[numSlots];
+
+        // result[field] names the field's read: refused for a field read in two steps
+        template<typename T>
+        static constexpr bool readInOneStep() {
+            constexpr bool same[]
+              = {std::is_same_v<T, FieldLocation<TAs, Masks, TAccesss, TRs>>...};
+            constexpr uint32_t slots[] = {Is...};
+            bool               found   = false;
+            uint32_t           slot    = 0;
+            for(std::size_t i = 0; i < sizeof...(Is); ++i) {
+                if(!same[i]) { continue; }
+                if(found && slots[i] != slot) { return false; }
+                found = true;
+                slot  = slots[i];
+            }
+            return true;
+        }
 
         template<std::size_t Index>
-        [[gnu::always_inline]] brigand::at_c<brigand::list<TRs...>,
+        [[nodiscard,
+          gnu::always_inline]] brigand::at_c<brigand::list<TRs...>,
                                              Index>
         get() const {
-            using namespace MPL;
-            using Address = brigand::uint32_t<brigand::at_c<brigand::list<TAs...>, Index>::value>;
             static constexpr unsigned index
-              = sizeof...(Is)
-              - brigand::size<brigand::find<brigand::list<brigand::uint32_t<Is>...>,
-                                            std::is_same<Address, brigand::_1>>>::value;
+              = brigand::at_c<brigand::list<brigand::uint32_t<Is>...>, Index>::value;
             using ResultType = brigand::at_c<brigand::list<TRs...>, Index>;
             static constexpr unsigned mask
               = brigand::at_c<brigand::list<brigand::uint32_t<Masks>...>, Index>::value;
-            static constexpr unsigned shift = Detail::positionOfFirstSetBit(mask);
+            static constexpr unsigned shift = Detail::maskStartsAt(mask);
             unsigned                  r     = (value_[index] & mask) >> shift;
             return ResultType(r);
         }
 
+        // A field this apply() did not read is a named compile error (Diagnostic::FieldNotRead), not an overload
+        // failure; the else branch only keeps that one error from cascading.
         template<typename T>
-        [[gnu::always_inline]] auto operator[](T) const
-          -> decltype(get<Detail::GetFieldLocationIndex<FieldTuple,
-                                                        T>::value>()) {
-            return get<Detail::GetFieldLocationIndex<FieldTuple, T>::value>();
-        }
-
-        template<typename... T>
-        static constexpr unsigned getFirst(unsigned i,
-                                           T...) {
-            return i;
+        [[gnu::always_inline]] auto operator[](T) const {
+            static constexpr int index = Detail::GetFieldLocationIndex<FieldTuple, T>::value;
+            KVASIR_STATIC_ASSERT(index >= 0, (Diagnostic::FieldNotRead<T>));
+            static_assert(readInOneStep<T>(),
+                          "this field is read in more than one step of the apply(): result[field] "
+                          "cannot say which read is meant - use get<I>() with the read's position");
+            if constexpr(index >= 0) {
+                return get<static_cast<std::size_t>(index)>();
+            } else {
+                return typename T::DataType{};
+            }
         }
 
         struct DoNotUse {
@@ -268,13 +271,17 @@ namespace Kvasir { namespace Register {
         };
 
         // implicitly convertible to the field type only if there is just one field
-        using ConvertableTo = typename std::conditional<(sizeof...(TRs) == 1),
-                                                        brigand::at_c<brigand::list<TRs...>, 0>,
-                                                        DoNotUse>::type;
+        using ConvertableTo = std::
+          conditional_t<(sizeof...(TRs) == 1), brigand::at_c<brigand::list<TRs...>, 0>, DoNotUse>;
 
-        [[gnu::always_inline]] operator ConvertableTo() {   //NOLINT(hicpp-explicit-conversions)
-            static constexpr unsigned mask  = getFirst(Masks...);
-            static constexpr unsigned shift = Detail::positionOfFirstSetBit(mask);
+        // const: it only reads value_
+        [[gnu::always_inline]]
+        operator ConvertableTo() const {
+            // brigand::at_c, not `Masks...[0]`: the clang 23 static analyzer (clang-tidy's clang-analyzer-*) crashes
+            // on an NTTP pack index used as a value
+            static constexpr unsigned mask
+              = brigand::at_c<brigand::list<brigand::uint32_t<Masks>...>, 0>::value;
+            static constexpr unsigned shift = Detail::maskStartsAt(mask);
             return ConvertableTo((value_[0] & mask) >> shift);
         }
     };
@@ -288,13 +295,15 @@ namespace Kvasir { namespace Register {
         return o.template get<I>();
     }
 
+    // only for FieldTuples, so it never joins an unrelated two-argument get() overload set; a field not read is
+    // operator[]'s named error
     template<typename T,
-             typename TFieldTuple>
-    [[gnu::always_inline]] inline auto get(T,
-                                           TFieldTuple o)
-      -> decltype(o.template get<Detail::GetFieldLocationIndex<TFieldTuple,
-                                                               T>::value>()) {
-        return o.template get<Detail::GetFieldLocationIndex<TFieldTuple, T>::value>();
+             typename TA,
+             typename TL>
+    [[gnu::always_inline]] inline auto get(T              t,
+                                           FieldTuple<TA,
+                                                      TL> o) {
+        return o[t];
     }
 
     template<typename TFieldTuple,

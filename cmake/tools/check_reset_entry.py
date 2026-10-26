@@ -13,7 +13,8 @@ A compiler, flag or refactor that puts a prologue back fails the link here.
 
     check_reset_entry.py <elf> [--delete-on-failure]
 
-Exit code: 0 ok, 1 the entry is not as required, 2 bad input (no ResetISR, not an ELF).
+Exit code: 0 ok, 1 the entry is not as required, 2 bad input (no ResetISR, not an ELF). --delete-on-failure removes the
+ELF on 1 and 2.
 """
 
 import argparse
@@ -21,39 +22,14 @@ import struct
 import sys
 from pathlib import Path
 
-SHT_SYMTAB = 2
-SHT_NOBITS = 8
+sys.dont_write_bytecode = True      # no __pycache__ in cmake/tools
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from kvasir_elf import Elf  # noqa: E402
 
-# MSR <spec_reg>, Rn (T1): 0xF380 | Rn, 0x8800 | SYSm (DDI0553B.y C2.4.111; DDI0419E A6.7.40). SYSm: MSP 8,
-# MSPLIM 10, PSPLIM 11, CONTROL 20 (DDI0553B.y B5.2.3; DDI0419E B5.2.3 for MSP and CONTROL).
+# MSR <spec_reg>, Rn (T1): 0xF380 | Rn, 0x8800 | SYSm (DDI0553B.y C2.4.126 MSR (register), md l.36970; DDI0419E
+# B4.2.3 MSR (register), md l.10103). SYSm: MSP 8, MSPLIM 10, PSPLIM 11, CONTROL 20 (DDI0553B.y C2.4.126, md
+# l.37027, l.37029-37030, l.37045; DDI0419E B4.1.1 Table B4-1 for MSP and CONTROL, md l.9957, l.9960).
 MSR_ALLOWED = {8: 'msp', 10: 'msplim', 11: 'psplim', 20: 'control'}
-
-
-def symbols(data):
-    (shoff,) = struct.unpack_from('<I', data, 0x20)
-    shentsize, shnum, _shstrndx = struct.unpack_from('<HHH', data, 0x2E)
-    sections = [struct.unpack_from(
-        '<IIIIIIIIII', data, shoff + i * shentsize) for i in range(shnum)]
-    for (_name, type_, _flags, _addr, offset, size, link, _info, _align, entsize) in sections:
-        if type_ != SHT_SYMTAB:
-            continue
-        stroff = sections[link][4]
-        for i in range(size // entsize):
-            name, value, _size, _info2, _other, _shndx = struct.unpack_from(
-                '<IIIBBH', data, offset + i * entsize)
-            end = data.index(b'\0', stroff + name)
-            yield data[stroff + name:end].decode(errors='replace'), value
-
-
-def bytes_at(data, address, count):
-    (shoff,) = struct.unpack_from('<I', data, 0x20)
-    shentsize, shnum, _shstrndx = struct.unpack_from('<HHH', data, 0x2E)
-    for i in range(shnum):
-        (_name, type_, flags, addr, offset, size, *_rest) = struct.unpack_from('<IIIIIIIIII', data,
-                                                                               shoff + i * shentsize)
-        if flags & 0x2 and type_ != SHT_NOBITS and addr <= address and address + count <= addr + size:
-            return data[offset + address - addr:offset + address - addr + count]
-    return None
 
 
 def check(code):
@@ -90,23 +66,14 @@ def check(code):
     return ['no bl into the body within the first 16 instructions']
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('elf')
-    parser.add_argument('--delete-on-failure', action='store_true')
-    args = parser.parse_args()
-    path = Path(args.elf)
-    data = path.read_bytes()
-    if data[:4] != b'\x7fELF' or data[4] != 1 or data[5] != 1:
-        print(f'{path}: not a 32-bit little-endian ELF', file=sys.stderr)
-        return 2
-    entry = next((value for name, value in symbols(
-        data) if name == 'ResetISR'), None)
-    if entry is None:
+def run(elf, path):
+    """The check on an Elf already read from `path`: 0, 1 (a problem) or 2 (no ResetISR to check), messages printed."""
+    found = elf.symbol('ResetISR')
+    if found is None:
         print(f'{path}: no symbol ResetISR', file=sys.stderr)
         return 2
-    code = bytes_at(data, entry & ~1, 64)
+    entry = found[0]
+    code = elf.bytes_at(entry & ~1, 64)
     if code is None:
         print(
             f'{path}: ResetISR at 0x{entry:08x} lies in no loaded section', file=sys.stderr)
@@ -116,9 +83,24 @@ def main():
         return 0
     for p in problems:
         print(f'{path}: ResetISR at 0x{entry & ~1:08x}: {p}', file=sys.stderr)
-    if args.delete_on_failure:
-        path.unlink(missing_ok=True)
     return 1
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('elf')
+    parser.add_argument('--delete-on-failure', action='store_true')
+    args = parser.parse_args()
+    path = Path(args.elf)
+    try:
+        code = run(Elf.from_path(path), path)
+    except ValueError:
+        print(f'{path}: not a 32-bit little-endian ELF', file=sys.stderr)
+        code = 2
+    if code and args.delete_on_failure:
+        path.unlink(missing_ok=True)
+    return code
 
 
 if __name__ == '__main__':

@@ -1,4 +1,4 @@
-// The injection idiom: a policy specialised AFTER the header and after a function that calls
+// The late hook: a policy specialised AFTER the header and after a function that calls
 // criticalSection is the one that runs (conc's "injected custom policy is used before definition").
 #include "test_harness.hpp"
 
@@ -33,10 +33,12 @@ int useBefore() {
 }   // namespace
 
 template<>
-inline constexpr auto Kvasir::Atomic::injectedCriticalSection<> = CountingPolicy{};
+struct Kvasir::Atomic::CriticalSectionPolicy<Kvasir::Tag::User> {
+    using type = CountingPolicy;
+};
 
 int main() {
-    Kvasir::Test::test("injected policy is used before its definition");
+    Kvasir::Test::test("the hook's policy is used before its definition");
     CHECK(useBefore() == 3);
     CHECK(Kvasir::criticalSection([] { return 4; }, [] { return true; }) == 4);
     CHECK(runs == 2);

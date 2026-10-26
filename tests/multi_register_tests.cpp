@@ -6,18 +6,11 @@
 
 using namespace Kvasir::Register;
 using namespace Kvasir::Test;
-using R = Recorder::Read;
-using W = Recorder::Write;
 
-template<typename T,
-         unsigned V>
-constexpr auto ctv() {
-    return Kvasir::Register::value<T, static_cast<T>(V)>();
-}
-
+namespace {
 // SecondReg needs no RMW (its upper bits are write-ignored), SimpleTestReg does; the
 // plain write is scheduled first
-static void writesToTwoRegisters() {
+void writesToTwoRegisters() {
     test("writesToTwoRegisters");
 
     auto const v1 = runtimeValue(0x12);
@@ -32,17 +25,17 @@ static void writesToTwoRegisters() {
     });
 }
 
-static void mixedReadsAndWritesTwoRegisters() {
+void mixedReadsAndWritesTwoRegisters() {
     test("mixedReadsAndWritesTwoRegisters");
 
-    using stopT = typename decltype(SimpleTestReg::stop)::DataType;
+    using StopT = typename decltype(SimpleTestReg::stop)::DataType;
 
     auto const v1 = runtimeValue(0x21);
     auto const v2 = runtimeValue(0x43);
 
     apply(read(SimpleTestReg::dat),
           write(SimpleTestReg::dat, v1),
-          write(SimpleTestReg::stop, ctv<stopT, 1>()),
+          write(SimpleTestReg::stop, ctv<StopT, 1>()),
           write(SecondReg::data, v2),
           write(SecondReg::status, runtimeValue(0xFF)));
 
@@ -57,10 +50,10 @@ static void mixedReadsAndWritesTwoRegisters() {
 }
 
 // reads and writes over three registers in one apply
-static void threeRegisterMixedReadWrite() {
+void threeRegisterMixedReadWrite() {
     test("threeRegisterMixedReadWrite");
 
-    using cmdT = typename decltype(SimpleTestReg::cmd)::DataType;
+    using CmdT = typename decltype(SimpleTestReg::cmd)::DataType;
 
     recorder.setReadValue(SimpleTestReg::Addr::value, 0x1FF);
     recorder.setReadValue(SecondReg::Addr::value, 0xABCD);
@@ -70,7 +63,7 @@ static void threeRegisterMixedReadWrite() {
                               read(SecondReg::data),
                               write(ThirdReg::control, runtimeValue(0x77)),
                               read(ThirdReg::config),
-                              write(SimpleTestReg::cmd, ctv<cmdT, 1>()),
+                              write(SimpleTestReg::cmd, ctv<CmdT, 1>()),
                               read(SecondReg::status));
 
     CHECK(recorder.actions.size() == 7);
@@ -85,10 +78,10 @@ static void threeRegisterMixedReadWrite() {
 }
 
 // order variant 1: read, compile-time write, runtime write, read, compile-time write
-static void mixedWriteTypesOrder1() {
+void mixedWriteTypesOrder1() {
     test("mixedWriteTypesOrder1");
 
-    using cmdT = typename decltype(SimpleTestReg::cmd)::DataType;
+    using CmdT = typename decltype(SimpleTestReg::cmd)::DataType;
 
     auto const v = runtimeValue(0x66);
 
@@ -101,7 +94,7 @@ static void mixedWriteTypesOrder1() {
               write(SecondReg::data, Kvasir::Register::value<std::uint32_t, 0x42>()),
               write(ThirdReg::control, v),
               read(SecondReg::status),
-              write(SimpleTestReg::cmd, ctv<cmdT, 1>()));
+              write(SimpleTestReg::cmd, ctv<CmdT, 1>()));
 
     CHECK(recorder.actions.size() == 7);
     CHECK_EQ(result[SimpleTestReg::dat], 0xABU);
@@ -113,7 +106,7 @@ static void mixedWriteTypesOrder1() {
 }
 
 // order variant 2: runtime write, read, read, compile-time write, runtime write
-static void mixedWriteTypesOrder2() {
+void mixedWriteTypesOrder2() {
     test("mixedWriteTypesOrder2");
 
     auto const v = runtimeValue(0x55);
@@ -138,10 +131,10 @@ static void mixedWriteTypesOrder2() {
 }
 
 // order variant 3: compile-time, read, runtime, read, compile-time, runtime, read
-static void mixedWriteTypesOrder3() {
+void mixedWriteTypesOrder3() {
     test("mixedWriteTypesOrder3");
 
-    using cmdT = typename decltype(SimpleTestReg::cmd)::DataType;
+    using CmdT = typename decltype(SimpleTestReg::cmd)::DataType;
 
     auto const v1 = runtimeValue(0x2A);
     auto const v2 = runtimeValue(0x51);
@@ -150,7 +143,7 @@ static void mixedWriteTypesOrder3() {
     recorder.setReadValue(SecondReg::Addr::value, 0x1234);
     recorder.setReadValue(ThirdReg::Addr::value, 0xABCDEF);
 
-    auto const result = apply(write(SimpleTestReg::cmd, ctv<cmdT, 1>()),
+    auto const result = apply(write(SimpleTestReg::cmd, ctv<CmdT, 1>()),
                               read(ThirdReg::control),
                               write(SecondReg::data, v1),
                               read(SimpleTestReg::dat),
@@ -170,7 +163,7 @@ static void mixedWriteTypesOrder3() {
     CHECK(writeCount(SimpleTestReg::Addr::value) == 1);
 }
 
-static void allRuntimeWritesWithReads() {
+void allRuntimeWritesWithReads() {
     test("allRuntimeWritesWithReads");
 
     auto const v1 = runtimeValue(0x13);
@@ -197,11 +190,11 @@ static void allRuntimeWritesWithReads() {
     CHECK_EQ(writtenValue(ThirdReg::Addr::value) & 0xFFU, v1);
 }
 
-static void allCompileTimeWritesWithReads() {
+void allCompileTimeWritesWithReads() {
     test("allCompileTimeWritesWithReads");
 
-    using cmdT  = typename decltype(SimpleTestReg::cmd)::DataType;
-    using stopT = typename decltype(SimpleTestReg::stop)::DataType;
+    using CmdT  = typename decltype(SimpleTestReg::cmd)::DataType;
+    using StopT = typename decltype(SimpleTestReg::stop)::DataType;
 
     // enough values for the explicit reads and the RMW reads
     recorder.setReadValues(SimpleTestReg::Addr::value, {0xAB, 0xAB});
@@ -209,13 +202,13 @@ static void allCompileTimeWritesWithReads() {
     recorder.setReadValues(ThirdReg::Addr::value, {0x9ABCDE, 0x9ABCDE});
 
     auto const result
-      = apply(write(SimpleTestReg::cmd, ctv<cmdT, 1>()),
+      = apply(write(SimpleTestReg::cmd, ctv<CmdT, 1>()),
               read(ThirdReg::mode),
               write(SecondReg::data, Kvasir::Register::value<std::uint32_t, 0x11>()),
               read(SimpleTestReg::dat),
               write(ThirdReg::config, Kvasir::Register::value<std::uint32_t, 0x22>()),
               read(SecondReg::status),
-              write(SimpleTestReg::stop, ctv<stopT, 1>()));
+              write(SimpleTestReg::stop, ctv<StopT, 1>()));
 
     CHECK_EQ(result[ThirdReg::mode], 0x9AU);
     CHECK_EQ(result[SimpleTestReg::dat], 0xABU);
@@ -226,7 +219,7 @@ static void allCompileTimeWritesWithReads() {
     checkActions({
       R{     ThirdReg::Addr::value, 0x9ABCDE},
       R{     ThirdReg::Addr::value, 0x9ABCDE},
-      W{     ThirdReg::Addr::value,   0x22DE},
+      W{     ThirdReg::Addr::value, 0x9A22DE},
       R{    SecondReg::Addr::value,   0x5678},
       W{    SecondReg::Addr::value,     0x11},
       R{SimpleTestReg::Addr::value,     0xAB},
@@ -234,6 +227,7 @@ static void allCompileTimeWritesWithReads() {
       W{SimpleTestReg::Addr::value,    0x3AB}
     });
 }
+}   // namespace
 
 int main() {
     writesToTwoRegisters();
@@ -245,9 +239,5 @@ int main() {
     allRuntimeWritesWithReads();
     allCompileTimeWritesWithReads();
 
-    if(Kvasir::Test::failures != 0) {
-        std::print("{} checks failed\n", Kvasir::Test::failures);
-        return 1;
-    }
-    return 0;
+    return Kvasir::Test::report();
 }

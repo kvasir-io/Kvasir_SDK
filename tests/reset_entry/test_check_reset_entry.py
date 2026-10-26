@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""cmake/tools/check_reset_entry.py's instruction rules, on hand-assembled Thumb code (no toolchain needed)."""
+"""cmake/tools/check_reset_entry.py's instruction rules, on hand-assembled Thumb code (no toolchain needed), and
+--delete-on-failure on bad input (exit 2)."""
 
 import struct
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(
@@ -46,4 +49,19 @@ for name, blob, ok in cases:
         failed += 1
     else:
         print(f'ok   {name}{": " + problems[0] if problems else ""}')
+
+# bad input (exit 2) fails the link like a bad entry: the ELF goes with --delete-on-failure, and stays without
+with tempfile.TemporaryDirectory() as tmp:
+    for flag, kept in (([], True), (['--delete-on-failure'], False)):
+        bogus = Path(tmp) / 'not_an.elf'
+        bogus.write_bytes(b'not an ELF file')
+        rc = subprocess.run([sys.executable, '-B', check_reset_entry.__file__, str(bogus), *flag],
+                            capture_output=True).returncode
+        if rc != 2 or bogus.exists() != kept:
+            print(
+                f'FAIL bad input {flag}: exit {rc}, file {"kept" if bogus.exists() else "removed"}')
+            failed += 1
+        else:
+            print(
+                f'ok   bad input {flag}: exit 2, file {"kept" if kept else "removed"}')
 sys.exit(1 if failed else 0)

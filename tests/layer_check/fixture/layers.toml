@@ -1,0 +1,43 @@
+# Fixture table for test_layer_check.py: two ranked layers, a log layer, an app layer.
+order = ["low", "high", "app"]
+
+[layer.low]
+log = false
+has_include = false
+[layer.high]
+[layer.app]
+[layer.log]
+kind = "log"
+
+[repo.lib_low]
+paths = { "src/**" = "low" }
+
+[repo.lib_high]
+paths = { "src/**" = "high" }
+
+[repo.lib_log]     # nested inside lib_high, found by its path (no .git in the fixture)
+parent = "lib_high"
+subdir = "log"
+paths = { "src/**" = "log" }
+
+[[spelling]]
+prefix = "low/"
+repo = "lib_low"
+path = "src/low/"
+[[spelling]]
+prefix = "high/"
+repo = "lib_high"
+path = "src/high/"
+[[spelling]]
+prefix = "logl/"
+layer = "log"
+
+[rules]
+guarded_has_include = ["LOW_LOG"]
+
+[keep.include]
+"lib_low/src/low/c.hpp -> high/c.hpp" = "kept upward include"
+"lib_low/src/low/a.hpp -> high/gone.hpp" = "an include that is no longer there (stale)"
+
+[keep.detail]
+"lib_high -> lib_low: low::detail::Nested" = "kept: a nested detail namespace used from another repository"

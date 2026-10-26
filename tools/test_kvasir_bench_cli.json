@@ -1,0 +1,1919 @@
+{
+  "": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "dest": "cmd",
+      "required": true,
+      "subcommands": [
+        "chip",
+        "coverage",
+        "crash",
+        "flash",
+        "log",
+        "messages",
+        "metrics",
+        "panic",
+        "peek",
+        "poke",
+        "printer",
+        "profile",
+        "reset",
+        "snapshot",
+        "stack",
+        "status",
+        "trace",
+        "ub",
+        "wait-for"
+      ]
+    }
+  ],
+  "chip": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "rest",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": "...",
+      "option_strings": [],
+      "required": false,
+      "type": null
+    }
+  ],
+  "coverage": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": [],
+      "dest": "merge",
+      "help": ".profdata to merge the result with (several runs, both boards)",
+      "kind": "_AppendAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--merge"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "stale_ok",
+      "help": "read symbols even if the board runs another build",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--stale-ok"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "llvm_cov",
+      "help": "llvm-cov report arguments after --",
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": "...",
+      "option_strings": [],
+      "required": false,
+      "type": null
+    }
+  ],
+  "crash": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "stale_ok",
+      "help": "read symbols even if the board runs another build",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--stale-ok"
+      ],
+      "required": false,
+      "type": null
+    }
+  ],
+  "flash": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "no_build",
+      "help": null,
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--no-build"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "confirm",
+      "help": "the repo's .kvasir_bench.json says this does something physical",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--confirm"
+      ],
+      "required": false,
+      "type": null
+    }
+  ],
+  "log": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": 40,
+      "dest": "last",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--last"
+      ],
+      "required": false,
+      "type": "int"
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "grep",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--grep"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": [
+        "trace",
+        "debug",
+        "info",
+        "warn",
+        "error",
+        "crit"
+      ],
+      "const": null,
+      "default": null,
+      "dest": "level",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--level"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "since_ms",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--since-ms"
+      ],
+      "required": false,
+      "type": "float"
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "since_mark",
+      "help": "only what came after this tool's last flash or reset",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--since-mark"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": 200,
+      "dest": "width",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--width"
+      ],
+      "required": false,
+      "type": "int"
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "module",
+      "help": "only lines of this log module and those under it (i2c: i2c.bus too); repeatable",
+      "kind": "_AppendAction",
+      "metavar": "NAME",
+      "nargs": null,
+      "option_strings": [
+        "--module"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "not_module",
+      "help": "leave out lines of this log module and those under it; repeatable",
+      "kind": "_AppendAction",
+      "metavar": "NAME",
+      "nargs": null,
+      "option_strings": [
+        "--not-module"
+      ],
+      "required": false,
+      "type": null
+    }
+  ],
+  "messages": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": 50,
+      "dest": "last",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--last"
+      ],
+      "required": false,
+      "type": "int"
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "errors",
+      "help": "errors only",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--errors"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "grep",
+      "help": "lines matching this regex",
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--grep"
+      ],
+      "required": false,
+      "type": null
+    }
+  ],
+  "metrics": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": 3,
+      "dest": "seconds",
+      "help": "how long to listen (the timeout of --until)",
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--seconds"
+      ],
+      "required": false,
+      "type": "float"
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "name",
+      "help": "regex on scope::name",
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--name"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "raw",
+      "help": "every sample, not the summary",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--raw"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "until",
+      "help": "'NAME OP NUMBER': stop when a sample satisfies it",
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--until"
+      ],
+      "required": false,
+      "type": null
+    }
+  ],
+  "panic": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": "user",
+      "dest": "cause",
+      "help": "the Kvasir::Panic::Cause raise() is called with: a cause name with dashes for spaces (check-failed; KVASIR_PANIC is user) - the printer's error lists them",
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--cause"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "confirm",
+      "help": "the repo's .kvasir_bench.json says a reset does something physical",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--confirm"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "stale_ok",
+      "help": "raise even if the board runs another build than the tree's",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--stale-ok"
+      ],
+      "required": false,
+      "type": null
+    }
+  ],
+  "peek": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "symbol",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": "+",
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": 1,
+      "dest": "watch",
+      "help": "read this many times",
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--watch"
+      ],
+      "required": false,
+      "type": "int"
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": 200,
+      "dest": "interval_ms",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--interval-ms"
+      ],
+      "required": false,
+      "type": "int"
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "until",
+      "help": "'changed', '== N', '!= N', '< N', '> N': the printer watches",
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--until"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": 10,
+      "dest": "timeout",
+      "help": "seconds, for --until",
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--timeout"
+      ],
+      "required": false,
+      "type": "float"
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "typed",
+      "help": "decode with the ELF's debug info (enums, structs, atomics)",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--typed"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "stale_ok",
+      "help": "read symbols even if the board runs another build",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--stale-ok"
+      ],
+      "required": false,
+      "type": null
+    }
+  ],
+  "poke": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "where",
+      "help": "an address (0x..., _ allowed) or a SYMBOL regex",
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "value",
+      "help": "the 32-bit word, 0x... or decimal",
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "confirm",
+      "help": null,
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--confirm"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "stale_ok",
+      "help": "write to a symbol even if the board runs another build",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--stale-ok"
+      ],
+      "required": false,
+      "type": null
+    }
+  ],
+  "printer": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "dest": "action",
+      "required": true,
+      "subcommands": [
+        "start",
+        "status",
+        "stop"
+      ]
+    }
+  ],
+  "printer start": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    }
+  ],
+  "printer status": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": "?",
+      "option_strings": [],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": "?",
+      "option_strings": [],
+      "required": false,
+      "type": null
+    }
+  ],
+  "printer stop": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "confirm",
+      "help": "stop a printer that has a window (somebody's `just log`) too",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--confirm"
+      ],
+      "required": false,
+      "type": null
+    }
+  ],
+  "profile": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": 10,
+      "dest": "seconds",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--seconds"
+      ],
+      "required": false,
+      "type": "float"
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": 30,
+      "dest": "top",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--top"
+      ],
+      "required": false,
+      "type": "int"
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "inclusive",
+      "help": "also rank by inclusive time over the inline stack",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--inclusive"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": 0,
+      "dest": "addresses",
+      "help": "also list the N hottest PCs, each with its ELF symbol and debug-info frame",
+      "kind": "_StoreAction",
+      "metavar": "N",
+      "nargs": null,
+      "option_strings": [
+        "--addresses"
+      ],
+      "required": false,
+      "type": "int"
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "stale_ok",
+      "help": "read symbols even if the board runs another build",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--stale-ok"
+      ],
+      "required": false,
+      "type": null
+    }
+  ],
+  "reset": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "line",
+      "help": "through the probe's reset pin (nRESET on RUN): a chip-level reset",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--line"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "confirm",
+      "help": "the repo's .kvasir_bench.json says this does something physical",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--confirm"
+      ],
+      "required": false,
+      "type": null
+    }
+  ],
+  "snapshot": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": [],
+      "dest": "var",
+      "help": null,
+      "kind": "_AppendAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--var"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": 10,
+      "dest": "frames",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--frames"
+      ],
+      "required": false,
+      "type": "int"
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "stale_ok",
+      "help": "read symbols even if the board runs another build",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--stale-ok"
+      ],
+      "required": false,
+      "type": null
+    }
+  ],
+  "stack": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "stale_ok",
+      "help": "read symbols even if the board runs another build",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--stale-ok"
+      ],
+      "required": false,
+      "type": null
+    }
+  ],
+  "status": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": "?",
+      "option_strings": [],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": "?",
+      "option_strings": [],
+      "required": false,
+      "type": null
+    }
+  ],
+  "trace": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "name",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": "?",
+      "option_strings": [],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": 0,
+      "dest": "last",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--last"
+      ],
+      "required": false,
+      "type": "int"
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "hex",
+      "help": null,
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--hex"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "delta",
+      "help": "the first field's step from row to row",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--delta"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "stale_ok",
+      "help": "read symbols even if the board runs another build",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--stale-ok"
+      ],
+      "required": false,
+      "type": null
+    }
+  ],
+  "ub": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "stale_ok",
+      "help": "read symbols even if the board runs another build",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--stale-ok"
+      ],
+      "required": false,
+      "type": null
+    }
+  ],
+  "wait-for": [
+    {
+      "choices": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "help": "show this help message and exit",
+      "kind": "_HelpAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "build",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "target",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "regex",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [],
+      "required": true,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": 10,
+      "dest": "timeout",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--timeout"
+      ],
+      "required": false,
+      "type": "float"
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "from_now",
+      "help": "ignore what is already in the log",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--from-now"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": true,
+      "default": false,
+      "dest": "from_start",
+      "help": "search the whole file first",
+      "kind": "_StoreTrueAction",
+      "metavar": null,
+      "nargs": 0,
+      "option_strings": [
+        "--from-start"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": 15,
+      "dest": "last",
+      "help": "lines shown on a timeout",
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--last"
+      ],
+      "required": false,
+      "type": "int"
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": 200,
+      "dest": "width",
+      "help": null,
+      "kind": "_StoreAction",
+      "metavar": null,
+      "nargs": null,
+      "option_strings": [
+        "--width"
+      ],
+      "required": false,
+      "type": "int"
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "module",
+      "help": "only lines of this log module and those under it (i2c: i2c.bus too); repeatable",
+      "kind": "_AppendAction",
+      "metavar": "NAME",
+      "nargs": null,
+      "option_strings": [
+        "--module"
+      ],
+      "required": false,
+      "type": null
+    },
+    {
+      "choices": null,
+      "const": null,
+      "default": null,
+      "dest": "not_module",
+      "help": "leave out lines of this log module and those under it; repeatable",
+      "kind": "_AppendAction",
+      "metavar": "NAME",
+      "nargs": null,
+      "option_strings": [
+        "--not-module"
+      ],
+      "required": false,
+      "type": null
+    }
+  ]
+}

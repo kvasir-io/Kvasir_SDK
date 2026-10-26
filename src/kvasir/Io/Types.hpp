@@ -1,13 +1,12 @@
 #pragma once
-#include "kvasir/Mpl/Types.hpp"
-#include "kvasir/StartUp/Resources.hpp"
 
-namespace Kvasir {
-namespace Io {
-    enum class PullConfiguration { PullNone, PullUp, PullDown };
-    enum class OutputType { PushPull, OpenDrain };
-    enum class OutputInit { Low, High };
-    enum class OutputSpeed { Low, Medium, High, VeryHigh };
+#include <type_traits>
+
+namespace Kvasir { namespace Io {
+    enum class PullConfiguration { pullNone, pullUp, pullDown };
+    enum class OutputType { pushPull, openDrain };
+    enum class OutputInit { low, high };
+    enum class OutputSpeed { low, medium, high, veryHigh };
 
     namespace Action {
         template<PullConfiguration PC>
@@ -27,72 +26,40 @@ namespace Io {
         struct Analog {};
 
         template<int               I,
-                 OutputType        OT = OutputType::PushPull,
-                 OutputSpeed       OS = OutputSpeed::Low,
-                 OutputInit        OI = OutputInit::Low,
-                 PullConfiguration PC = PullConfiguration::PullNone>
+                 OutputType        OT = OutputType::pushPull,
+                 OutputSpeed       OS = OutputSpeed::low,
+                 OutputInit        OI = OutputInit::low,
+                 PullConfiguration PC = PullConfiguration::pullNone>
         struct PinFunction {
             static constexpr int value = I;
         };
 
-        static constexpr Input<PullConfiguration::PullNone>                              input{};
-        static constexpr Input<PullConfiguration::PullNone>                              inputPN{};
-        static constexpr Input<PullConfiguration::PullUp>                                inputPU{};
-        static constexpr Input<PullConfiguration::PullDown>                              inputPD{};
-        static constexpr Output<OutputType::PushPull, OutputSpeed::Low, OutputInit::Low> output{};
-        static constexpr Output<OutputType::PushPull, OutputSpeed::Low, OutputInit::Low> outputPP{};
-        static constexpr Output<OutputType::OpenDrain, OutputSpeed::Low, OutputInit::Low>
-                                outputOD{};
-        static constexpr Set    set{};
-        static constexpr Clear  clear{};
-        static constexpr Toggle toggle{};
+        static constexpr Input<PullConfiguration::pullNone> inputPN{};
+        static constexpr Input<PullConfiguration::pullUp>   inputPU{};
+        static constexpr Input<PullConfiguration::pullDown> inputPD{};
     }   // namespace Action
 
+    // A port and a pin number as types (the constants port0.., pin0.. of Io.hpp): MPL::IntegralConstants with their
+    // int conversion deleted, so neither passes as a runtime int, and `type` is the tag itself, not the base.
     template<int I>
-    struct HwPort {
-        static constexpr int value = I;
-        using type                 = HwPort<I>;
+    struct HwPort : std::integral_constant<int, I> {
+        using type = HwPort<I>;
+
+        operator int() const = delete;
     };
 
     template<int I>
-    struct Pin {
-        static constexpr int value = I;
-        using type                 = Pin<I>;
-    };
+    struct Pin : std::integral_constant<int, I> {
+        using type = Pin<I>;
 
-    enum class PortAccess {
-        defaultMode,
-        setClear,
-        toggle,
-        exclusiveMask,
-        sharedMask,
-        readModifyWrite
+        operator int() const = delete;
     };
-
-    template<PortAccess Access, typename... Ts>
-    struct Port {
-        using type = Port<Access, Ts...>;
-    };
-
-    namespace Access {
-        static constexpr MPL::Value<PortAccess, PortAccess::defaultMode>
-          defaultMode{};   // this will try to select the
-                           // best mode for the chip used
-        static constexpr MPL::Value<PortAccess, PortAccess::setClear>        setClear{};
-        static constexpr MPL::Value<PortAccess, PortAccess::toggle>          toggle{};
-        static constexpr MPL::Value<PortAccess, PortAccess::exclusiveMask>   exclusiveMask{};
-        static constexpr MPL::Value<PortAccess, PortAccess::sharedMask>      sharedMask{};
-        static constexpr MPL::Value<PortAccess, PortAccess::readModifyWrite> readModifyWrite{};
-    }   // namespace Access
 
     // Io Pin which is not used
     template<typename = void>
     struct NotUsed {};
 
-}   // namespace Io
-
-// Pin location needs to live in Register in order for the factory functions to be found by ADL
-namespace Register {
+    // A pin as a type; the pin factories (PinFactories.hpp) are found through it by argument-dependent lookup.
     template<int Port, int Pin>
     struct PinLocation {
         using type = PinLocation<Port, Pin>;
@@ -100,56 +67,13 @@ namespace Register {
         static constexpr int port = Port;
         static constexpr int pin  = Pin;
     };
-}   // namespace Register
 
-namespace Io {
     /// The GPIO number a PinLocation names, as a value: for a log line or a static_assert
     /// about a board's pin choice (`pinNumber(HW::Pin::led{})`).
     template<int Port,
              int Pin>
-    constexpr int pinNumber(Register::PinLocation<Port,
-                                                  Pin>) {
+    constexpr int pinNumber(PinLocation<Port,
+                                        Pin>) {
         return Pin;
     }
-
-    template<int Port,
-             int Pin>
-    constexpr int portNumber(Register::PinLocation<Port,
-                                                   Pin>) {
-        return Port;
-    }
-
-    // A GPIO as a Startup resource (kvasir/StartUp/Resources.hpp). Provided by whoever
-    // configures the pad, which the chip layer derives from the peripheral's
-    // initStepPinConfig, so nothing declares it; claimed by a driver that drives or reads a
-    // pin it does not configure (a reset line, a chip select, an interrupt input), which is
-    // how "the pin is not in HW::PinConfig" becomes a build error. Several drivers may claim
-    // one pin (an interrupt and a poll of the same input), and the pad is chip-wide, so the
-    // provider may sit in either core's list.
-    struct PinTag {
-        static constexpr char const* describeAs  = "Io pin";   // "Io pin 0.25" in a compile error
-        static constexpr bool        sharedClaim = true;
-        static constexpr bool        coreLocal   = false;
-        static constexpr unsigned    keyArity    = 2;
-    };
-
-    template<int Port, int Pin>
-    using PinResource = Startup::Resource<PinTag, Port, Pin>;
-
-    namespace Detail {
-        template<typename T>
-        struct PinClaimOf {
-            using type = brigand::list<>;   // NotUsed<>, or any other non-pin: nothing
-        };
-
-        template<int Port, int Pin>
-        struct PinClaimOf<Register::PinLocation<Port, Pin>> {
-            using type = brigand::list<PinResource<Port, Pin>>;
-        };
-    }   // namespace Detail
-
-    // `using Claims = Kvasir::Io::PinClaims<CsPin, RstPin>;` in a driver that is handed pins.
-    template<typename... Pins>
-    using PinClaims = brigand::flatten<brigand::list<typename Detail::PinClaimOf<Pins>::type...>>;
-}   // namespace Io
-}   // namespace Kvasir
+}}   // namespace Kvasir::Io

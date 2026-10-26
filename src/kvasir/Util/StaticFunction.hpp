@@ -23,7 +23,7 @@ namespace Detail {
     struct IsStaticFunction<StaticFunction<Signature, Size>> : std::true_type {};
 
     template<typename T>
-    constexpr bool IsStaticFunctionV = IsStaticFunction<std::remove_cvref_t<T>>::value;
+    constexpr bool isStaticFunctionV = IsStaticFunction<std::remove_cvref_t<T>>::value;
 }   // namespace Detail
 
 template<typename R, typename... Args, std::size_t Size>
@@ -43,10 +43,10 @@ struct StaticFunction<R(Args...), Size> {
     constexpr ~StaticFunction() = default;
 
     template<typename F>
-        requires(!Detail::IsStaticFunctionV<F>)
+        requires(!Detail::isStaticFunctionV<F>)
     constexpr StaticFunction(F&& f)
-      : invoke_ptr{[](std::byte const* s,
-                      Args... args) -> R {
+      : invokePtr{[](std::byte const* s,
+                     Args... args) -> R {
           // Calls a copy of the function object - its own size, not the slot's: a function that
           // replaces itself (or is replaced by a nested interrupt) while it runs keeps its own
           // captures to the end. Via void*: storage is aligned for F (static_assert below), gcc
@@ -68,7 +68,7 @@ struct StaticFunction<R(Args...), Size> {
 
     // publish(), so a slot an interrupt calls can be assigned while that interrupt is live
     template<typename F>
-        requires(!Detail::IsStaticFunctionV<F>)
+        requires(!Detail::isStaticFunctionV<F>)
     constexpr StaticFunction& operator=(F&& f) {
         publish(std::forward<F>(f));
         return *this;
@@ -77,7 +77,7 @@ struct StaticFunction<R(Args...), Size> {
     template<std::size_t OtherSize>
     constexpr StaticFunction(StaticFunction<R(Args...),
                                             OtherSize> const& other)
-      : invoke_ptr{other.invoke_ptr} {
+      : invokePtr{other.invokePtr} {
         static_assert(Size >= OtherSize, "other function too big to store");
         std::memcpy(storage.data(), other.storage.data(), OtherSize);
     }
@@ -104,22 +104,22 @@ struct StaticFunction<R(Args...), Size> {
     constexpr void publish(F&& f) {
         StaticFunction const tmp{std::forward<F>(f)};
         if consteval {
-            storage    = tmp.storage;
-            invoke_ptr = tmp.invoke_ptr;
+            storage   = tmp.storage;
+            invokePtr = tmp.invokePtr;
         } else {
             storeInvoker(nullptr);
             std::atomic_signal_fence(std::memory_order_seq_cst);
             storage = tmp.storage;
             std::atomic_signal_fence(std::memory_order_seq_cst);
-            storeInvoker(tmp.invoke_ptr);
+            storeInvoker(tmp.invokePtr);
         }
     }
 
-    constexpr operator bool() const { return loadInvoker() != nullptr; }
+    constexpr explicit operator bool() const { return loadInvoker() != nullptr; }   // if(cb), !cb
 
     constexpr void reset() {
         if consteval {
-            invoke_ptr = nullptr;
+            invokePtr = nullptr;
         } else {
             storeInvoker(nullptr);
         }
@@ -134,7 +134,7 @@ struct StaticFunction<R(Args...), Size> {
     template<typename... AArgs>
     constexpr R operator()(AArgs&&... args) const {
         if consteval {
-            return std::invoke(invoke_ptr, storage.data(), std::forward<AArgs>(args)...);
+            return std::invoke(invokePtr, storage.data(), std::forward<AArgs>(args)...);
         } else {
             auto const fn = loadInvoker();
             assert(fn != nullptr);
@@ -157,21 +157,21 @@ private:
     // the load goes through a non-const reference and only reads.
     static_assert(std::atomic_ref<Invoke_ptr_t>::required_alignment <= alignof(Invoke_ptr_t));
 
-    constexpr Invoke_ptr_t loadInvoker() const {
+    [[nodiscard]] constexpr Invoke_ptr_t loadInvoker() const {
         if consteval {
-            return invoke_ptr;
+            return invokePtr;
         } else {
-            return std::atomic_ref<Invoke_ptr_t>{const_cast<Invoke_ptr_t&>(invoke_ptr)}.load(
+            return std::atomic_ref<Invoke_ptr_t>{const_cast<Invoke_ptr_t&>(invokePtr)}.load(
               std::memory_order_relaxed);
         }
     }
 
     void storeInvoker(Invoke_ptr_t p) {
-        std::atomic_ref<Invoke_ptr_t>{invoke_ptr}.store(p, std::memory_order_relaxed);
+        std::atomic_ref<Invoke_ptr_t>{invokePtr}.store(p, std::memory_order_relaxed);
     }
 
     Storage_t    storage{};
-    Invoke_ptr_t invoke_ptr{};
+    Invoke_ptr_t invokePtr{};
 };
 
 }   // namespace Kvasir

@@ -1,0 +1,221 @@
+name: Containers
+
+# The image half of the SDK's CI: kvasirio/build_environment (when its files changed), kvasirio/kvasir, then every chip
+# image (dispatch-chip-images.yml). It runs after a GREEN CI run of a push or the monthly schedule on master
+# (workflow_run), or by its own dispatch; a pull request's CI run never builds or pushes an image.
+#
+# A workflow_run run uses this file as it is on master, and its github.sha is master's tip, not the tested commit:
+# every checkout and the commit status use needs.plan.outputs.sha (the CI run's head_sha).
+#
+# "Did the build environment change" is the range from the last commit this workflow built successfully (the newest
+# first-parent ancestor with a successful 'Docker Build' status) to the tested commit, so a push of several commits,
+# or one after a failed or cancelled image run, is judged whole. No such commit, the schedule or the
+# rebuild_build_env input: the build environment is rebuilt.
+
+on:
+    workflow_run:
+        workflows: [CI]
+        types: [completed]
+    workflow_dispatch:
+        inputs:
+            rebuild_build_env:
+                description: 'Force rebuild build environment'
+                required: false
+                type: boolean
+                default: false
+
+permissions:
+    contents: read
+    statuses: write
+
+# two image runs never push :latest at the same time; a queued one waits
+concurrency:
+    group: containers
+    cancel-in-progress: false
+
+jobs:
+    plan:
+        if: >-
+            github.event_name == 'workflow_dispatch' ||
+            (github.event.workflow_run.conclusion == 'success' &&
+             github.event.workflow_run.head_branch == 'master' &&
+             github.event.workflow_run.head_repository.full_name == github.repository &&
+             contains(fromJSON('["push", "schedule", "workflow_dispatch"]'), github.event.workflow_run.event))
+        runs-on: ubuntu-latest
+        outputs:
+            sha: ${{ steps.plan.outputs.sha }}
+            build-date: ${{ steps.plan.outputs.build-date }}
+            env-changed: ${{ steps.plan.outputs.env-changed }}
+        steps:
+            - name: Checkout the tested commit
+              uses: actions/checkout@v6
+              with:
+                ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+                fetch-depth: 0
+
+            - name: Did the build environment change
+              id: plan
+              env:
+                GH_TOKEN: ${{ github.token }}
+                REPO: ${{ github.repository }}
+                SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+                SCHEDULED: ${{ github.event.workflow_run.event == 'schedule' }}
+                FORCED: ${{ inputs.rebuild_build_env == true }}
+              run: |
+                echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+                echo "build-date=$(date +%Y.%m.%d)" >> "$GITHUB_OUTPUT"
+                # the newest first-parent ancestor (the tested commit included) this workflow built successfully
+                base=""
+                for c in $(git rev-list --first-parent --max-count=200 "$SHA"); do
+                    state=$(gh api "repos/$REPO/commits/$c/statuses" \
+                        --jq '[.[] | select(.context == "Docker Build")][0].state // empty')
+                    if [ "$state" = success ]; then base=$c; break; fi
+                done
+                if [ "$SCHEDULED" = true ] || [ "$FORCED" = true ]; then
+                    changed=true; why="monthly refresh or rebuild_build_env"
+                elif [ -z "$base" ]; then
+                    changed=true; why="no earlier successful image build in the last 200 commits"
+                elif git diff --name-only "$base" "$SHA" |
+                        grep -qE '^(scripts/Dockerfile\.build-env|scripts/entrypoint\.sh|\.github/workflows/containers\.yml)$'; then
+                    changed=true; why="build environment files changed in $base..$SHA"
+                else
+                    changed=false; why="build environment files unchanged in $base..$SHA"
+                fi
+                echo "env-changed=$changed" >> "$GITHUB_OUTPUT"
+                echo "env-changed=$changed: $why"
+
+    build-env:
+        needs: plan
+        if: needs.plan.outputs.env-changed == 'true'
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout the tested commit
+              uses: actions/checkout@v6
+              with:
+                ref: ${{ needs.plan.outputs.sha }}
+                submodules: recursive
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v4
+
+            - name: Log in to DockerHub
+              uses: docker/login-action@v4
+              with:
+                username: ${{ secrets.DOCKERHUB_USERNAME }}
+                password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+            - name: Build and push the build environment image
+              uses: docker/build-push-action@v7
+              with:
+                context: scripts
+                file: scripts/Dockerfile.build-env
+                push: true
+                platforms: linux/amd64
+                tags: |
+                    kvasirio/build_environment:latest
+                    kvasirio/build_environment:${{ needs.plan.outputs.build-date }}
+                cache-from: type=gha
+                cache-to: type=gha,mode=max
+
+    kvasir:
+        needs: [plan, build-env]
+        # build-env is skipped when its files did not change; a failed build-env stops here
+        if: always() && needs.plan.result == 'success' && (needs.build-env.result == 'success' || needs.build-env.result == 'skipped')
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout the tested commit
+              uses: actions/checkout@v6
+              with:
+                ref: ${{ needs.plan.outputs.sha }}
+                submodules: recursive
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v4
+
+            - name: Log in to DockerHub
+              uses: docker/login-action@v4
+              with:
+                username: ${{ secrets.DOCKERHUB_USERNAME }}
+                password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+            - name: Build and push the Kvasir image
+              uses: docker/build-push-action@v7
+              with:
+                context: .
+                file: scripts/Dockerfile.kvasir
+                push: true
+                platforms: linux/amd64
+                tags: |
+                    kvasirio/kvasir:latest
+                    kvasirio/kvasir:${{ needs.plan.outputs.build-date }}
+                cache-from: type=gha
+                cache-to: type=gha,mode=max
+
+    # every chip image is built FROM kvasirio/kvasir: the one chip list is dispatch-chip-images.yml
+    chip-images:
+        needs: [kvasir]
+        uses: ./.github/workflows/dispatch-chip-images.yml
+        secrets:
+            CROSS_REPO_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+
+    status:
+        runs-on: ubuntu-latest
+        needs: [plan, build-env, kvasir]
+        # not when plan was skipped (a pull request, a red CI run, another branch)
+        if: always() && needs.plan.result == 'success'
+        steps:
+            - name: Set build status
+              env:
+                ENV_CHANGED: ${{ needs.plan.outputs.env-changed }}
+                ENV_RESULT: ${{ needs.build-env.result }}
+                KVASIR_RESULT: ${{ needs.kvasir.result }}
+              run: |
+                if [ "$KVASIR_RESULT" = success ] && [ "$ENV_CHANGED" = true ]; then
+                  state=success; message="Both images pushed: kvasirio/build_environment and kvasirio/kvasir"
+                elif [ "$KVASIR_RESULT" = success ]; then
+                  state=success; message="kvasirio/kvasir pushed (build environment unchanged)"
+                elif [ "$ENV_RESULT" = cancelled ] || [ "$KVASIR_RESULT" = cancelled ]; then
+                  state=error; message="Image build cancelled"
+                elif [ "$ENV_RESULT" = failure ]; then
+                  state=failure; message="Build environment image failed - kvasirio/kvasir not built"
+                else
+                  state=failure; message="kvasirio/kvasir image failed"
+                fi
+                echo "BUILD_STATE=$state" >> "$GITHUB_ENV"
+                echo "BUILD_MESSAGE=$message" >> "$GITHUB_ENV"
+
+            - name: Update commit status
+              uses: actions/github-script@v8
+              env:
+                SHA: ${{ needs.plan.outputs.sha }}
+              with:
+                script: |
+                    await github.rest.repos.createCommitStatus({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      sha: process.env.SHA,
+                      state: process.env.BUILD_STATE,
+                      target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                      description: process.env.BUILD_MESSAGE,
+                      context: 'Docker Build'
+                    });
+
+            - name: Create summary
+              env:
+                SHA: ${{ needs.plan.outputs.sha }}
+                DATE: ${{ needs.plan.outputs.build-date }}
+                ENV_RESULT: ${{ needs.build-env.result }}
+                KVASIR_RESULT: ${{ needs.kvasir.result }}
+              run: |-
+                {
+                  echo "## Docker Build Status"
+                  echo ""
+                  echo "$BUILD_MESSAGE (commit \`$SHA\`)"
+                  echo ""
+                  if [ "$ENV_RESULT" = success ]; then
+                    echo "- \`kvasirio/build_environment:latest\`, \`kvasirio/build_environment:$DATE\`"
+                  fi
+                  if [ "$KVASIR_RESULT" = success ]; then
+                    echo "- \`kvasirio/kvasir:latest\`, \`kvasirio/kvasir:$DATE\`"
+                  fi
+                } >> "$GITHUB_STEP_SUMMARY"

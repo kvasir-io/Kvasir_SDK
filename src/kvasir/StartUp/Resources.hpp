@@ -18,7 +18,8 @@
 // with no declaration anywhere.
 //
 // `Startup` collects all of it from its own list and from every `SecondaryCore` in it and
-// refuses to build unless:
+// refuses to build unless (each rule is an offender list in Diagnostics below; Checks.hpp's
+// ImageChecks asserts them, one report per offender):
 //
 //   1. no resource is claimed by two peripherals (`noDoubleClaim`): two drivers on one DMA
 //      channel overwrite each other's callback and registers;
@@ -47,6 +48,10 @@
 //                                                           // this tag at all (default false)
 //         static constexpr unsigned keyArity     = 2;       // leading ids that name the hardware
 //                                                           // (default 1)
+//         static constexpr char const* describeAs = "DMA channel";  // the name an error uses
+//                                                           // (default: the tag's type name)
+//         static constexpr bool describeHex      = true;    // the error prints the first id as
+//                                                           // an address (default false: decimal)
 //     };
 //
 // A resource's identity is its whole type, `Resource<Tag, Ids...>`; its *key* is the tag
@@ -63,8 +68,11 @@
 // This header is pure type computation and compiles on the host; the checks are unit
 // tested in tests/resources_tests.cpp.
 
+#include "kvasir/Mpl/List.hpp"
 #include "kvasir/Mpl/Types.hpp"
+#include "kvasir/StartUp/Entry.hpp"
 #include "kvasir/StartUp/InterruptNames.hpp"
+#include "kvasir/Util/Config.hpp"
 #include "kvasir/Util/Diagnostic.hpp"
 
 #include <array>
@@ -90,6 +98,25 @@ namespace Kvasir { namespace Startup {
     // `auto` parameter would otherwise make the literal's type part of the identity.
     template<typename Tag, auto... Ids>
     using Resource = Detail::ResourceT<Tag, static_cast<unsigned long long>(Ids)...>;
+
+    // A resource's tag and ids, read without naming Detail::ResourceT (chip and HAL code use
+    // this; only the SDK's own rules match the Detail type). `ResourceIds<R>` of anything that
+    // is not a Resource is incomplete, so a wrong argument is a compile error.
+    template<typename R>
+    struct ResourceIds;
+
+    template<typename Tag, unsigned long long... Ids>
+    struct ResourceIds<Detail::ResourceT<Tag, Ids...>> {
+        using tag = Tag;
+        static constexpr std::array<unsigned long long, sizeof...(Ids)> ids{Ids...};
+    };
+
+    // true when R is a Resource whose tag is Tag: `isResourceOf<Clk<ClkPeri, 1>, ClkPeri>`.
+    template<typename R, typename Tag>
+    inline constexpr bool isResourceOf = false;
+
+    template<typename Tag, unsigned long long... Ids>
+    inline constexpr bool isResourceOf<Detail::ResourceT<Tag, Ids...>, Tag> = true;
 
     // What an init-step action provides. The chip layer specialises this for the register
     // writes that mean ownership (a GPIO's function select, for one); everything else
@@ -141,13 +168,13 @@ namespace Kvasir { namespace Startup {
     };
 
     // The clock a core runs on, named here because the chip-agnostic core layer (SysTick)
-    // claims it; the chip's clock settings provide it next to their own clocks. Optional,
-    // so an application that does not declare its clocks stays unchecked rather than
-    // broken.
+    // claims it; the chip's clock settings provide it next to their own clocks (RP
+    // DefaultProvides, the SAM ClockTree, the STM32 Rcc::ClockTree, or a hand-written
+    // ClockSettings' `Startup::ProcessorClock<Hz>`). Mandatory like every clock: an image with
+    // a SysTick and clock settings that do not state the processor clock does not build.
     struct ProcessorClockTag {
-        static constexpr bool sharedClaim      = true;
-        static constexpr bool coreLocal        = false;
-        static constexpr bool optionalProvider = true;
+        static constexpr bool sharedClaim = true;
+        static constexpr bool coreLocal   = false;
     };
 
     template<auto Hz>
@@ -200,50 +227,23 @@ namespace Kvasir { namespace Startup {
     namespace Detail {
         // ---- tag policies, with their defaults ------------------------------------------
         template<typename Tag>
-        constexpr bool sharedClaim = [] {
-            if constexpr(requires { Tag::sharedClaim; }) {
-                return static_cast<bool>(Tag::sharedClaim);
-            } else {
-                return false;
-            }
-        }();
+        constexpr bool sharedClaim = static_cast<bool>(KVASIR_CONFIG_OR(Tag, sharedClaim, false));
 
         template<typename Tag>
-        constexpr bool coreLocal = [] {
-            if constexpr(requires { Tag::coreLocal; }) {
-                return static_cast<bool>(Tag::coreLocal);
-            } else {
-                return true;
-            }
-        }();
+        constexpr bool coreLocal = static_cast<bool>(KVASIR_CONFIG_OR(Tag, coreLocal, true));
 
         template<typename Tag>
-        constexpr bool mergeIdentical = [] {
-            if constexpr(requires { Tag::mergeIdentical; }) {
-                return static_cast<bool>(Tag::mergeIdentical);
-            } else {
-                return false;
-            }
-        }();
+        constexpr bool mergeIdentical
+          = static_cast<bool>(KVASIR_CONFIG_OR(Tag, mergeIdentical, false));
 
         // How many leading ids form the key. One by default; a GPIO is (port, pin).
         template<typename Tag>
-        constexpr std::size_t keyArity = [] {
-            if constexpr(requires { Tag::keyArity; }) {
-                return static_cast<std::size_t>(Tag::keyArity);
-            } else {
-                return std::size_t{1};
-            }
-        }();
+        constexpr std::size_t keyArity
+          = static_cast<std::size_t>(KVASIR_CONFIG_OR(Tag, keyArity, std::size_t{1}));
 
         template<typename Tag>
-        constexpr bool optionalProvider = [] {
-            if constexpr(requires { Tag::optionalProvider; }) {
-                return static_cast<bool>(Tag::optionalProvider);
-            } else {
-                return false;
-            }
-        }();
+        constexpr bool optionalProvider
+          = static_cast<bool>(KVASIR_CONFIG_OR(Tag, optionalProvider, false));
 
         // ---- keys ----------------------------------------------------------------------
         // Same tag and same first id (or both without one): the same piece of hardware,
@@ -255,11 +255,12 @@ namespace Kvasir { namespace Startup {
                                               NA> const& a,
                                    std::array<unsigned long long,
                                               NB> const& b) {
-            for(std::size_t i = 0; i < K; ++i) {
-                if(i >= NA || i >= NB) { return i >= NA && i >= NB; }
+            constexpr std::size_t shorter = NA < NB ? NA : NB;
+            for(std::size_t i = 0; i < (K < shorter ? K : shorter); ++i) {
                 if(a[i] != b[i]) { return false; }
             }
-            return true;
+            // a key that ends before K: the same only if the other ends there too
+            return K <= shorter || NA == NB;
         }
 
         template<typename A, typename B>
@@ -301,18 +302,8 @@ namespace Kvasir { namespace Startup {
         };
 
         // ---- what a peripheral does ----------------------------------------------------
-        // initStepPinConfig is one action or a list of actions and lists; the same shapes
-        // StartUp.hpp's Listify accepts.
-        template<typename T>
-        struct AsList {
-            using type = brigand::list<T>;
-        };
-
-        template<typename... Ts>
-        struct AsList<brigand::list<Ts...>> {
-            using type = brigand::list<Ts...>;
-        };
-
+        // Its phase members, through Entry.hpp's PhaseActionsOf (one action or a list of
+        // actions and lists, flattened).
         template<typename List>
         struct ResourcesOfActions;
 
@@ -321,60 +312,12 @@ namespace Kvasir { namespace Startup {
             using type = brigand::flatten<brigand::list<typename ResourceOfAction<As>::type...>>;
         };
 
-        // The actions of one named init phase, flattened; empty when the peripheral has none.
-        template<typename T, typename Get>
-        struct PhaseActions {
-            using type = brigand::list<>;
-        };
-
-        template<typename T, typename Get>
-            requires requires { Get::template get<T>(); }
-        struct PhaseActions<T, Get> {
-            using type = brigand::flatten<
-              typename AsList<std::remove_cvref_t<decltype(Get::template get<T>())>>::type>;
-        };
-
-        struct GetPowerClockEnable {
-            template<typename T>
-            static constexpr auto get() -> decltype(T::powerClockEnable) {
-                return T::powerClockEnable;
-            }
-        };
-
-        struct GetPinConfig {
-            template<typename T>
-            static constexpr auto get() -> decltype(T::initStepPinConfig) {
-                return T::initStepPinConfig;
-            }
-        };
-
-        struct GetPeripheryConfig {
-            template<typename T>
-            static constexpr auto get() -> decltype(T::initStepPeripheryConfig) {
-                return T::initStepPeripheryConfig;
-            }
-        };
-
-        struct GetInterruptConfig {
-            template<typename T>
-            static constexpr auto get() -> decltype(T::initStepInterruptConfig) {
-                return T::initStepInterruptConfig;
-            }
-        };
-
-        struct GetPeripheryEnable {
-            template<typename T>
-            static constexpr auto get() -> decltype(T::initStepPeripheryEnable) {
-                return T::initStepPeripheryEnable;
-            }
-        };
-
         // Provided by doing: pins from initStepPinConfig, reset releases from
         // powerClockEnable (both through ResourceOfAction).
         template<typename T>
         struct DerivedProvides {
-            using Actions = brigand::append<typename PhaseActions<T, GetPowerClockEnable>::type,
-                                            typename PhaseActions<T, GetPinConfig>::type>;
+            using Actions = brigand::append<typename PhaseActionsOf<T, Phase::PowerClock>::type,
+                                            typename PhaseActionsOf<T, Phase::Pins>::type>;
             using type    = typename ResourcesOfActions<Actions>::type;
         };
 
@@ -390,20 +333,14 @@ namespace Kvasir { namespace Startup {
         // ClaimOfAction (a write into a block that has to be out of reset by then).
         template<typename T>
         struct DerivedClaims {
-            using Actions = brigand::append<typename PhaseActions<T, GetPinConfig>::type,
-                                            typename PhaseActions<T, GetPeripheryConfig>::type,
-                                            typename PhaseActions<T, GetInterruptConfig>::type,
-                                            typename PhaseActions<T, GetPeripheryEnable>::type>;
+            using Actions = brigand::append<typename PhaseActionsOf<T, Phase::Pins>::type,
+                                            typename PhaseActionsOf<T, Phase::Periphery>::type,
+                                            typename PhaseActionsOf<T, Phase::Interrupts>::type,
+                                            typename PhaseActionsOf<T, Phase::Enable>::type>;
             using type    = typename ClaimsOfActions<Actions>::type;
         };
 
         // ---- list helpers --------------------------------------------------------------
-        template<typename R,
-                 typename... Ts>
-        constexpr std::size_t countIn(brigand::list<Ts...>) {
-            return (std::size_t{0} + ... + std::size_t{std::is_same_v<R, Ts>});
-        }
-
         template<typename R,
                  typename... Ts>
         constexpr std::size_t countKeyIn(brigand::list<Ts...>) {
@@ -423,34 +360,12 @@ namespace Kvasir { namespace Startup {
             return ((!SameKey<R, Ts>::value || std::is_same_v<R, Ts>) && ...);
         }
 
-        // The list without repeats, first occurrence kept. A peripheral that writes one
-        // pin's registers several times in its own init list provides that pin once.
-        template<typename Out, typename In>
-        struct UniqueImpl;
-
-        template<typename... Os>
-        struct UniqueImpl<brigand::list<Os...>, brigand::list<>> {
-            using type = brigand::list<Os...>;
-        };
-
-        template<typename... Os, typename T, typename... Ts>
-        struct UniqueImpl<brigand::list<Os...>, brigand::list<T, Ts...>>
-          : UniqueImpl<std::conditional_t<(std::is_same_v<T, Os> || ...),
-                                          brigand::list<Os...>,
-                                          brigand::list<Os..., T>>,
-                       brigand::list<Ts...>> {};
-
-        template<typename T, typename... Ts>
-        struct UniqueImpl<brigand::list<>, brigand::list<T, Ts...>>
-          : UniqueImpl<brigand::list<T>, brigand::list<Ts...>> {};
-
-        template<typename List>
-        using Unique = typename UniqueImpl<brigand::list<>, List>::type;
-
+        // MPL::Dedup: the list without repeats, first occurrence kept. A peripheral that writes one pin's
+        // registers several times in its own init list provides that pin once.
         template<typename T>
         struct ProvidesOf {
-            using type = Unique<brigand::append<typename ExplicitProvides<T>::type,
-                                                typename DerivedProvides<T>::type>>;
+            using type = MPL::Dedup<brigand::append<typename ExplicitProvides<T>::type,
+                                                    typename DerivedProvides<T>::type>>;
         };
 
         // A peripheral's claims: what it says, as said, plus what its init steps imply (a
@@ -458,69 +373,13 @@ namespace Kvasir { namespace Startup {
         template<typename T>
         struct AllClaimsOf {
             using type = brigand::append<typename ClaimsOf<T>::type,
-                                         Unique<typename DerivedClaims<T>::type>>;
+                                         MPL::Dedup<typename DerivedClaims<T>::type>>;
         };
 
-        // ---- the rules -----------------------------------------------------------------
-        template<typename Claims>
-        struct NoDoubleClaim;
-
-        template<typename... Rs>
-        struct NoDoubleClaim<brigand::list<Rs...>>
-          : std::bool_constant<(
-              (sharedClaim<typename Rs::tag> || countIn<Rs>(brigand::list<Rs...>{}) == 1) && ...)> {
-        };
-
-        template<typename Provides>
-        struct NoDoubleProvide;
-
-        template<typename... Rs>
-        struct NoDoubleProvide<brigand::list<Rs...>>
-          : std::bool_constant<((mergeIdentical<typename Rs::tag>
-                                   ? keyAgrees<Rs>(brigand::list<Rs...>{})
-                                   : countKeyIn<Rs>(brigand::list<Rs...>{}) == 1)
-                                && ...)> {};
-
-        // Every claim appears among the provides, exactly (payload included). A claim of an
-        // optionalProvider tag is only held to that once anything provides the tag.
-        template<typename Claims, typename Provides>
-        struct ClaimsProvided;
-
-        template<typename... Rs, typename Provides>
-        struct ClaimsProvided<brigand::list<Rs...>, Provides>
-          : std::bool_constant<(
-              (countIn<Rs>(Provides{}) >= 1
-               || (optionalProvider<typename Rs::tag> && countTagIn<Rs>(Provides{}) == 0))
-              && ...)> {};
-
-        // Every core-local claim whose provider exists anywhere has one on this core. A claim
-        // with no provider at all is ClaimsProvided's business, not this one's.
-        template<typename Claims, typename Here, typename Anywhere>
-        struct ClaimsLocal;
-
-        template<typename... Rs, typename Here, typename Anywhere>
-        struct ClaimsLocal<brigand::list<Rs...>, Here, Anywhere>
-          : std::bool_constant<((!coreLocal<typename Rs::tag> || countIn<Rs>(Here{}) >= 1
-                                 || countIn<Rs>(Anywhere{}) == 0)
-                                && ...)> {};
-
+        // ---- what the rules read -------------------------------------------------------
         // A peripheral with `static constexpr unsigned startupCore = N;` belongs in list N.
         template<typename T>
-        constexpr int startupCoreOf = [] {
-            if constexpr(requires { T::startupCore; }) {
-                return static_cast<int>(T::startupCore);
-            } else {
-                return -1;
-            }
-        }();
-
-        template<std::size_t Core, typename List>
-        struct AffinityHonoured;
-
-        template<std::size_t Core, typename... Ps>
-        struct AffinityHonoured<Core, brigand::list<Ps...>>
-          : std::bool_constant<(
-              (startupCoreOf<Ps> < 0 || startupCoreOf<Ps> == static_cast<int>(Core)) && ...)> {};
+        constexpr int startupCoreOf = static_cast<int>(KVASIR_CONFIG_OR(T, startupCore, -1));
 
         template<typename List>
         struct ProvidesIn;
@@ -565,41 +424,16 @@ namespace Kvasir { namespace Startup {
         template<typename T, unsigned long long... Ids>
         struct IsListedClaim<ResourceT<ListedHereTag<T>, Ids...>> : std::true_type {};
 
-        template<bool Keep, typename Out, typename In>
-        struct SplitListedImpl;
-
-        template<bool Keep, typename... Os>
-        struct SplitListedImpl<Keep, brigand::list<Os...>, brigand::list<>> {
-            using type = brigand::list<Os...>;
-        };
-
-        template<bool Keep, typename... Os, typename T, typename... Ts>
-        struct SplitListedImpl<Keep, brigand::list<Os...>, brigand::list<T, Ts...>>
-          : SplitListedImpl<Keep,
-                            std::conditional_t<(IsListedClaim<T>::value == Keep),
-                                               brigand::list<Os..., T>,
-                                               brigand::list<Os...>>,
-                            brigand::list<Ts...>> {};
-
-        // The Listed* resources of a list, and the list without them.
+        // The list without its Listed* resources.
         template<typename List>
-        using KeepListed = typename SplitListedImpl<true, brigand::list<>, List>::type;
+        using DropListed = MPL::Filter<MPL::NotP<MPL::Holds<IsListedClaim>>, List>;
 
-        template<typename List>
-        using DropListed = typename SplitListedImpl<false, brigand::list<>, List>::type;
-
-        template<typename Lists, typename Seq>
-        struct AffinityOverLists;
-
-        template<typename... Lists, std::size_t... Is>
-        struct AffinityOverLists<brigand::list<Lists...>, std::index_sequence<Is...>>
-          : std::bool_constant<(AffinityHonoured<Is, Lists>::value && ...)> {};
-
+        // The sets every rule reads, over one image's lists (core 0 first).
         template<typename Seq, typename... CoreLists>
-        struct ResourceCheckImpl;
+        struct ResourceSets;
 
         template<std::size_t... Is, typename... CoreLists>
-        struct ResourceCheckImpl<std::index_sequence<Is...>, CoreLists...> {
+        struct ResourceSets<std::index_sequence<Is...>, CoreLists...> {
             using Lists = brigand::list<CoreLists...>;
             using AllProvides
               = brigand::flatten<brigand::list<typename ProvidesInAt<Is, CoreLists>::type...>>;
@@ -608,39 +442,8 @@ namespace Kvasir { namespace Startup {
 
             template<std::size_t N>
             using ProvidesAt = typename ProvidesInAt<N, brigand::at_c<Lists, N>>::type;
-
-            static constexpr bool noDoubleClaim   = NoDoubleClaim<AllClaims>::value;
-            static constexpr bool noDoubleProvide = NoDoubleProvide<AllProvides>::value;
-            static constexpr bool claimsProvided  = ClaimsProvided<AllClaims, AllProvides>::value;
-            static constexpr bool claimsLocal
-              = (ClaimsLocal<typename ClaimsIn<CoreLists>::type,
-                             typename ProvidesInAt<Is, CoreLists>::type,
-                             AllProvides>::value
-                 && ...);
-            static constexpr bool coreAffinityHonoured
-              = AffinityOverLists<brigand::list<CoreLists...>, std::index_sequence<Is...>>::value;
-
-            // Rules 3 and 4 restricted to the Listed* claims: a subset of the above, so the
-            // failure can be reported in those terms (a peripheral needs another one
-            // listed) before the generic message would have to guess.
-            static constexpr bool dependenciesListed
-              = ClaimsProvided<KeepListed<AllClaims>, AllProvides>::value
-             && (ClaimsLocal<KeepListed<typename ClaimsIn<CoreLists>::type>,
-                             typename ProvidesInAt<Is, CoreLists>::type,
-                             AllProvides>::value
-                 && ...);
-
-            static constexpr bool value = noDoubleClaim && noDoubleProvide && claimsProvided
-                                       && claimsLocal && coreAffinityHonoured;
         };
     }   // namespace Detail
-
-    // The rules over one image: one peripheral list per core, core 0 first. Each rule is
-    // its own constant so Startup can name the one that failed and a test can check each
-    // way.
-    template<typename... CoreLists>
-    struct ResourceCheck
-      : Detail::ResourceCheckImpl<std::make_index_sequence<sizeof...(CoreLists)>, CoreLists...> {};
 
     // ---- diagnostics ---------------------------------------------------------------------
     // A rule that fails is reported through a Report<Rule, Peripheral, Resource> whose
@@ -653,14 +456,13 @@ namespace Kvasir { namespace Startup {
         template<typename Peripheral, typename Resource>
         struct Pair {};
 
+        // A rule holds when its offender list is empty.
+        template<typename Offenders>
+        inline constexpr bool none = brigand::size<Offenders>::value == 0;
+
         template<typename Tag>
-        constexpr std::string_view tagMessage = [] {
-            if constexpr(requires { Tag::message; }) {
-                return std::string_view{Tag::message};
-            } else {
-                return std::string_view{};
-            }
-        }();
+        constexpr std::string_view tagMessage
+          = std::string_view{KVASIR_CONFIG_OR(Tag, message, std::string_view{})};
 
         template<typename R>
         struct TagOf {
@@ -672,44 +474,12 @@ namespace Kvasir { namespace Startup {
             using type = Tag;
         };
 
-        // The rule's text, then the tag's own if it has one: what static_assert prints.
-        template<typename Rule, typename Resource>
-        struct Message {
-            static constexpr std::string_view rule = Rule::message;
-            static constexpr std::string_view tag  = tagMessage<typename TagOf<Resource>::type>;
-            static constexpr std::size_t size_   = rule.size() + (tag.empty() ? 0 : 2 + tag.size());
-            static constexpr auto        storage = [] {
-                std::array<char, size_ + 1> out{};
-                std::size_t                 i = 0;
-                for(char const c : rule) { out[i++] = c; }
-                if(!tag.empty()) {
-                    out[i++] = ':';
-                    out[i++] = ' ';
-                    for(char const c : tag) { out[i++] = c; }
-                }
-                return out;
-            }();
-
-            constexpr std::size_t size() const { return size_; }
-
-            constexpr char const* data() const { return storage.data(); }
-        };
-
-        template<typename>
-        struct AlwaysFalse : std::false_type {};
-
         // What a rule's number is (Extra = std::integral_constant<int, N>): a rule says so with
         // `static constexpr NumberKind kind`.
         enum class NumberKind : std::uint8_t { plain, interrupt, core };
 
         template<typename Rule>
-        constexpr NumberKind numberKindOf = [] {
-            if constexpr(requires { Rule::kind; }) {
-                return Rule::kind;
-            } else {
-                return NumberKind::plain;
-            }
-        }();
+        constexpr NumberKind numberKindOf = KVASIR_CONFIG_OR(Rule, kind, NumberKind::plain);
 
         // ": Io pin 0.25", ": interrupt 37 (I2C1_IRQ)", ": core 1"
         template<typename Rule, typename Extra>
@@ -738,7 +508,12 @@ namespace Kvasir { namespace Startup {
                     Kvasir::Diagnostic::appendType<Tag>(t);
                 }
                 t << " ";
-                t.dec(First);
+                // describeHex: the first id is an address ("peripheral block at 0x42000800")
+                if constexpr(KVASIR_CONFIG_OR(Tag, describeHex, false)) {
+                    t.hex(static_cast<std::uint32_t>(First));
+                } else {
+                    t.dec(First);
+                }
                 (appendId(t, Ids), ...);
             }
         };
@@ -752,13 +527,13 @@ namespace Kvasir { namespace Startup {
                                                     : ": ");
                 t.sdec(static_cast<std::int64_t>(N));
                 if constexpr(kind == NumberKind::interrupt) {
-                    constexpr std::string_view name = interruptName(static_cast<int>(N));
+                    constexpr std::string_view name = interruptName<Rule>(static_cast<int>(N));
                     if constexpr(!name.empty()) { t << " (" << name << ")"; }
                 }
             }
         };
 
-        // The report's text, built only when it fires (Kvasir::Diagnostic::lazy): the rule, what
+        // The report's text, built only when it fires (Kvasir::Diagnostic::Check): the rule, what
         // it is about, the peripheral, and the tag's own note.
         template<typename Rule, typename Peripheral, typename Extra>
         struct ReportText {
@@ -781,13 +556,11 @@ namespace Kvasir { namespace Startup {
         // peripherals provide is two errors, one per provider.
         template<typename Rule, typename Peripheral, typename Extra = void>
         struct Report {
-            static constexpr bool fires = AlwaysFalse<Report>::value;
+            static constexpr bool fires = MPL::AlwaysFalse<Report>::value;
             KVASIR_STATIC_ASSERT(fires,
                                  (ReportText<Rule,
                                              Peripheral,
-                                             Extra>),
-                                 (Message<Rule,
-                                          Extra>{}));
+                                             Extra>));
         };
 
         template<typename Rule, typename Offenders>
@@ -816,19 +589,32 @@ namespace Kvasir { namespace Startup {
                                                    brigand::list<>>...>>;
             };
 
-            template<typename Pred, template<typename> class Of, std::size_t N, typename List>
+            // Of<N, P>::type: what entry P of list N is checked for (its claims, its provides).
+            template<typename Pred,
+                     template<std::size_t, typename> class Of,
+                     std::size_t N,
+                     typename List>
             struct OffendersInList;
 
-            template<typename Pred, template<typename> class Of, std::size_t N, typename... Ps>
+            template<typename Pred,
+                     template<std::size_t, typename> class Of,
+                     std::size_t N,
+                     typename... Ps>
             struct OffendersInList<Pred, Of, N, brigand::list<Ps...>> {
                 using type = brigand::flatten<
-                  brigand::list<typename PairsIf<Pred, N, Ps, typename Of<Ps>::type>::type...>>;
+                  brigand::list<typename PairsIf<Pred, N, Ps, typename Of<N, Ps>::type>::type...>>;
             };
 
-            template<typename Pred, template<typename> class Of, typename Lists, typename Seq>
+            template<typename Pred,
+                     template<std::size_t, typename> class Of,
+                     typename Lists,
+                     typename Seq>
             struct OffendersImpl;
 
-            template<typename Pred, template<typename> class Of, typename... Ls, std::size_t... Is>
+            template<typename Pred,
+                     template<std::size_t, typename> class Of,
+                     typename... Ls,
+                     std::size_t... Is>
             struct OffendersImpl<Pred, Of, brigand::list<Ls...>, std::index_sequence<Is...>> {
                 using type = brigand::flatten<
                   brigand::list<typename OffendersInList<Pred, Of, Is, Ls>::type...>>;
@@ -838,7 +624,7 @@ namespace Kvasir { namespace Startup {
             struct DoubleClaimPred {
                 template<std::size_t N, typename P, typename R>
                 static constexpr bool value
-                  = !sharedClaim<typename R::tag> && countIn<R>(typename Check::AllClaims{}) > 1;
+                  = !sharedClaim<typename R::tag> && MPL::count<R, typename Check::AllClaims> > 1;
             };
 
             template<typename Check>
@@ -854,7 +640,7 @@ namespace Kvasir { namespace Startup {
                 template<std::size_t N, typename P, typename R>
                 static constexpr bool value
                   = IsListedClaim<R>::value == Listed
-                 && countIn<R>(typename Check::AllProvides{}) == 0
+                 && MPL::count<R, typename Check::AllProvides> == 0
                  && !(optionalProvider<typename R::tag>
                       && countTagIn<R>(typename Check::AllProvides{}) == 0);
             };
@@ -864,8 +650,8 @@ namespace Kvasir { namespace Startup {
                 template<std::size_t N, typename P, typename R>
                 static constexpr bool value
                   = IsListedClaim<R>::value == Listed && coreLocal<typename R::tag>
-                 && countIn<R>(typename Check::template ProvidesAt<N>{}) == 0
-                 && countIn<R>(typename Check::AllProvides{}) > 0;
+                 && MPL::count<R, typename Check::template ProvidesAt<N>> == 0
+                 && MPL::count<R, typename Check::AllProvides> > 0;
             };
 
             // Affinity: the "resource" is the core the peripheral says it belongs to.
@@ -874,13 +660,28 @@ namespace Kvasir { namespace Startup {
                 using type = brigand::list<std::integral_constant<int, startupCoreOf<P>>>;
             };
 
+            template<std::size_t N, typename P>
+            using CoreOfAt = CoreOf<P>;
+
+            template<std::size_t N, typename P>
+            using ClaimsAt = AllClaimsOf<P>;
+
+            // What P provides in list N: its own provides and the implicit Listed* ones, so the
+            // double-provide walk covers every provide the sets hold.
+            template<std::size_t N, typename P>
+            struct ProvidesWithListedAt {
+                using type
+                  = brigand::append<typename ProvidesOf<P>::type,
+                                    brigand::list<Listed<P>, ListedOn<P, N>, ListedHere<P>>>;
+            };
+
             struct AffinityPred {
                 template<std::size_t N, typename P, typename C>
                 static constexpr bool value = C::value >= 0 && C::value != static_cast<int>(N);
             };
         }   // namespace Detail
 
-        template<typename Check, typename Pred, template<typename> class Of>
+        template<typename Check, typename Pred, template<std::size_t, typename> class Of>
         using Offenders = typename Detail::OffendersImpl<
           Pred,
           Of,
@@ -923,31 +724,28 @@ namespace Kvasir { namespace Startup {
         };
 
         template<typename Check>
-        using DoubleClaimOffenders = Offenders<Check,
-                                               Detail::DoubleClaimPred<Check>,
-                                               ::Kvasir::Startup::Detail::AllClaimsOf>;
+        using DoubleClaimOffenders
+          = Offenders<Check, Detail::DoubleClaimPred<Check>, Detail::ClaimsAt>;
         template<typename Check>
-        using DoubleProvideOffenders = Offenders<Check,
-                                                 Detail::DoubleProvidePred<Check>,
-                                                 ::Kvasir::Startup::Detail::ProvidesOf>;
+        using DoubleProvideOffenders
+          = Offenders<Check, Detail::DoubleProvidePred<Check>, Detail::ProvidesWithListedAt>;
         template<typename Check>
-        using UnprovidedOffenders = Offenders<Check,
-                                              Detail::UnprovidedPred<Check, false>,
-                                              ::Kvasir::Startup::Detail::AllClaimsOf>;
+        using UnprovidedOffenders
+          = Offenders<Check, Detail::UnprovidedPred<Check, false>, Detail::ClaimsAt>;
         template<typename Check>
-        using RemoteOffenders = Offenders<Check,
-                                          Detail::RemotePred<Check, false>,
-                                          ::Kvasir::Startup::Detail::AllClaimsOf>;
+        using RemoteOffenders
+          = Offenders<Check, Detail::RemotePred<Check, false>, Detail::ClaimsAt>;
+        template<typename Check>
+        using UnlistedOffenders
+          = Offenders<Check, Detail::UnprovidedPred<Check, true>, Detail::ClaimsAt>;
+        template<typename Check>
+        using RemoteListedOffenders
+          = Offenders<Check, Detail::RemotePred<Check, true>, Detail::ClaimsAt>;
         template<typename Check>
         using DependencyOffenders
-          = brigand::append<Offenders<Check,
-                                      Detail::UnprovidedPred<Check, true>,
-                                      ::Kvasir::Startup::Detail::AllClaimsOf>,
-                            Offenders<Check,
-                                      Detail::RemotePred<Check, true>,
-                                      ::Kvasir::Startup::Detail::AllClaimsOf>>;
+          = brigand::append<UnlistedOffenders<Check>, RemoteListedOffenders<Check>>;
         template<typename Check>
-        using AffinityOffenders = Offenders<Check, Detail::AffinityPred, Detail::CoreOf>;
+        using AffinityOffenders = Offenders<Check, Detail::AffinityPred, Detail::CoreOfAt>;
 
         // Every report for a ResourceCheck; true when none fired.
         template<typename Check>
@@ -961,6 +759,37 @@ namespace Kvasir { namespace Startup {
              && ReportAll<Affinity, AffinityOffenders<Check>>::value;
         };
     }   // namespace Diagnostics
+
+    // The rules over one image: one peripheral list per core, core 0 first. Each rule is its
+    // offender list (Diagnostics above); a rule holds when the list is empty, so a rule and
+    // its report cannot disagree. One constant per rule, so a test can check each way.
+    template<typename... CoreLists>
+    struct ResourceCheck
+      : Detail::ResourceSets<std::make_index_sequence<sizeof...(CoreLists)>, CoreLists...> {
+        using Sets
+          = Detail::ResourceSets<std::make_index_sequence<sizeof...(CoreLists)>, CoreLists...>;
+
+        static constexpr bool noDoubleClaim
+          = Diagnostics::none<Diagnostics::DoubleClaimOffenders<Sets>>;
+        static constexpr bool noDoubleProvide
+          = Diagnostics::none<Diagnostics::DoubleProvideOffenders<Sets>>;
+        // every claim provided somewhere: the plain claims and the Listed* ones
+        static constexpr bool claimsProvided
+          = Diagnostics::none<Diagnostics::UnprovidedOffenders<Sets>>
+         && Diagnostics::none<Diagnostics::UnlistedOffenders<Sets>>;
+        // every core-local claim provided on its own core, the Listed* ones included
+        static constexpr bool claimsLocal
+          = Diagnostics::none<Diagnostics::RemoteOffenders<Sets>>
+         && Diagnostics::none<Diagnostics::RemoteListedOffenders<Sets>>;
+        static constexpr bool coreAffinityHonoured
+          = Diagnostics::none<Diagnostics::AffinityOffenders<Sets>>;
+        // rules 3 and 4 restricted to the Listed* claims: a peripheral needs another one listed
+        static constexpr bool dependenciesListed
+          = Diagnostics::none<Diagnostics::DependencyOffenders<Sets>>;
+
+        static constexpr bool value = noDoubleClaim && noDoubleProvide && claimsProvided
+                                   && claimsLocal && coreAffinityHonoured;
+    };
 
     // A Startup entry for objects that live in main(): the union of the named types' Claims
     // and nothing else, so a driver constructed in main still has its pins (and whatever

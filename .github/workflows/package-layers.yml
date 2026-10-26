@@ -1,0 +1,69 @@
+name: Package layers
+
+# Reusable: the include layering of a library repository (a core, a chip, a common package, kvasir_devices) against
+# this repository's layer table: tools/layer_check.py --repo <name>=<checkout>. Any NEW finding or STALE keep
+# entry fails (there is no allow-list: fix the finding). The table and the tool come from SDK master, so a header
+# move in the caller changes tools/layers.toml here first. Only the caller is scanned: a detail name it uses from
+# another repository is found by the workspace-wide check, not here.
+# The fatal-path rules (tools/check_fatal_sites.py, from SDK master too) over the caller's own sources: every fatal path
+# calls Panic::beginFatal() before its log line, only a path that ends calls it, a crit line only on a fatal path
+# (Runtime/Check.hpp's error classes are the packages' too). src/ where the caller has one, else the whole checkout (a
+# common package keeps its headers at the top). A finding fails.
+# The compat check (tools/compat_check.py and its keep table tools/compat_keep.toml, from SDK master too) over the
+# caller's checkout: the shapes the no-compat rule forbids (the tool's docstring lists them). A NEW finding or a STALE
+# keep entry fails; a deliberate one gets a keep entry in the SDK's table first.
+# Callers: the core, chip and kvasir_devices repositories' workflows, job `layers`.
+
+on:
+    workflow_call:
+        inputs:
+            repo-name:
+                description: 'the [repo.<name>] key in tools/layers.toml; empty: the caller repository name'
+                required: false
+                type: string
+                default: ''
+
+jobs:
+    layers:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v6
+              with:
+                path: repo
+
+            - name: Kvasir_SDK layer table and tool
+              uses: actions/checkout@v6
+              with:
+                repository: kvasir-io/Kvasir_SDK
+                path: kvasir_sdk
+                sparse-checkout: |
+                  tools/layer_check.py
+                  tools/layers.toml
+                  tools/check_fatal_sites.py
+                  tools/compat_check.py
+                  tools/compat_keep.toml
+                sparse-checkout-cone-mode: false
+
+            - name: Layer check
+              run: >
+                python3 -B kvasir_sdk/tools/layer_check.py
+                --repo "${{ inputs.repo-name || github.event.repository.name }}=repo"
+
+            # also after a layer finding: the two checks are independent
+            - name: Fatal sites
+              if: ${{ !cancelled() }}
+              run: |
+                dir=repo/src
+                [ -d "$dir" ] || dir=repo
+                n=$(find "$dir" -name '*.hpp' | wc -l)
+                echo "fatal-site rules over $n headers in $dir"
+                [ "$n" -gt 0 ] || { echo "no header to scan in $dir" >&2; exit 1; }
+                python3 -B kvasir_sdk/tools/check_fatal_sites.py "$dir"
+
+            # also after a finding above: independent of the two checks before it
+            - name: Compat check
+              if: ${{ !cancelled() }}
+              run: >
+                python3 -B kvasir_sdk/tools/compat_check.py --quiet
+                --repo "${{ inputs.repo-name || github.event.repository.name }}=repo"

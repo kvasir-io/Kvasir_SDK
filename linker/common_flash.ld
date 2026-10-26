@@ -30,6 +30,11 @@ SECTIONS {
         __stop___llvm_prf_names = .;
     } > flash
 
+    /* .data's load image starts 8-aligned: initMemory copies it with clang's __aeabi_memcpy8 (the symbols are words),
+       whose word loads fault on an unaligned source on the Cortex-M0+ ("ARMv6-M always generates a fault when an
+       unaligned access occurs", Armv6-M ARM DDI0419E A3.2: a HardFault). __llvm_prf_names above has byte alignment
+       and any size. */
+    . = ALIGN(8);
     _LINKER_INTERN_data_start_flash_ = .;
 }
 

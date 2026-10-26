@@ -1,17 +1,17 @@
 #pragma once
 
+#include <cstddef>
 #include <iterator>
 #include <ranges>
 
 namespace Kvasir {
 
 template<typename T, std::size_t N>
-concept type_size = requires { requires sizeof(T) == N; };
+concept TypeSize = sizeof(T) == N;
 
 template<typename R>
-concept contiguous_byte_range
-  = std::ranges::contiguous_range<R> && type_size<std::ranges::range_value_t<R>, 1>;
+concept ContiguousByteRange
+  = std::ranges::contiguous_range<R> && TypeSize<std::ranges::range_value_t<R>, 1>;
 template<typename I>
-concept contiguous_byte_iterator
-  = std::contiguous_iterator<I> && type_size<std::iter_value_t<I>, 1>;
+concept ContiguousByteIterator = std::contiguous_iterator<I> && TypeSize<std::iter_value_t<I>, 1>;
 }   // namespace Kvasir

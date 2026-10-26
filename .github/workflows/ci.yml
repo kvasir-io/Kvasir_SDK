@@ -10,19 +10,18 @@ on:
     pull_request:
         branches:
             - master
+    # the images are containers.yml (it runs after a green CI on master, or by its own dispatch); the LLVM port's drift
+    # check is llvm-port.yml
     workflow_dispatch:
-        inputs:
-            rebuild_build_env:
-                description: 'Force rebuild build environment'
-                required: false
-                type: boolean
-                default: false
 
 jobs:
     build-and-test:
         runs-on: ubuntu-latest
         container:
             image: archlinux:latest
+        # the tool groups this job installs (tests/tooling/armtc.py): a tool test that would skip for one of them fails
+        env:
+            KVASIR_TEST_REQUIRE: ${{ matrix.compiler.cc == 'clang' && 'arm-gcc,clang,llvm,host-cxx' || 'arm-gcc,host-cxx' }}
         strategy:
             fail-fast: false
             matrix:
@@ -33,13 +32,15 @@ jobs:
                     - {cc: clang, cxx: clang++}
                     - {cc: clang, cxx: clang++, stdlib: libc++, stdlib_debug: true, sanitizer: address}
                     - {cc: clang, cxx: clang++, stdlib: libc++, sanitizer: undefined}
+                    # the threaded tests' memory ordering (and every other test) under TSan: the justfile's tsan config
+                    - {cc: clang, cxx: clang++, stdlib: libc++, sanitizer: thread}
 
         steps:
             - name: Set up C++ environment
               run: |
                 pacman -Syu --noconfirm
-                # arm-none-eabi-gcc/newlib: the ARM toolchain tests (ram_funcs, runtime_lib_flags) skip without them
-                pacman -S --noconfirm git cmake base-devel arm-none-eabi-gcc arm-none-eabi-newlib ${{ matrix.compiler.cc == 'clang' && 'clang llvm lld' || '' }} ${{ matrix.compiler.stdlib == 'libc++' && 'libc++ lld' || '' }}
+                # arm-none-eabi-gcc/newlib: the ARM toolchain tests; KVASIR_TEST_REQUIRE makes a skip of an installed group a failure
+                pacman -S --noconfirm git cmake base-devel python arm-none-eabi-gcc arm-none-eabi-newlib ${{ matrix.compiler.cc == 'clang' && 'clang llvm lld' || '' }} ${{ matrix.compiler.stdlib == 'libc++' && 'libc++ lld' || '' }}
 
             - name: Checkout repository
               uses: actions/checkout@v6
@@ -49,9 +50,9 @@ jobs:
             - name: Configure CMake
               run: >
                 cmake -S tests -B build
-                ${{ matrix.compiler.sanitizer && format('-DUSE_SANITIZER={0}', matrix.compiler.sanitizer) || '' }}
-                ${{ matrix.compiler.stdlib && format('-DUSE_STD_LIB={0}', matrix.compiler.stdlib) || '' }}
-                ${{ matrix.compiler.stdlib_debug && '-DUSE_STDLIB_DEBUG=true' || '' }}
+                ${{ matrix.compiler.sanitizer && format('-DKVASIR_TEST_SANITIZER={0}', matrix.compiler.sanitizer) || '' }}
+                ${{ matrix.compiler.stdlib && format('-DKVASIR_TEST_STD_LIB={0}', matrix.compiler.stdlib) || '' }}
+                ${{ matrix.compiler.stdlib_debug && '-DKVASIR_TEST_STDLIB_DEBUG=true' || '' }}
               env:
                 CC: ${{ matrix.compiler.cc }}
                 CXX: ${{ matrix.compiler.cxx }}
@@ -59,338 +60,67 @@ jobs:
             - name: Build tests
               run: cmake --build build -j"$(nproc)"
 
+            # the sanitizer jobs leave out the tool tests: none of them runs code of this tree's sanitizer (they compile
+            # for ARM or run Python), so the plain gcc and clang jobs cover them
             - name: Run tests
-              run: cd build && ctest --output-on-failure
+              run: cd build && ctest --output-on-failure ${{ matrix.compiler.sanitizer && '-LE tool' || '' }}
 
-    # lib/{libc,libcxx,compiler-rt} against what tools/llvm_port says they are: upstream at lib/*/UPSTREAM's tag +
-    # Kvasir's patches + its owned files. A finding is an edit the next LLVM port would lose. Monthly and on demand
-    # (a sparse clone of the tag, then a headers-only libc build); the selftest seeds drift into a scratch copy.
-    port-check:
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+            # clang-tidy (tools/tidy.py with .clang-tidy of this checkout) over this tree: the tests, the self-contained
+            # headers on the volatile path, uc_log and svd_converter as the tests compile them; the nested checkouts
+            # count as this repository. A pull request tidies the units its change reaches.
+            - name: clang-tidy
+              if: matrix.compiler.cc == 'clang' && !matrix.compiler.sanitizer
+              uses: ./.github/actions/tidy
+              timeout-minutes: 45
+              with:
+                trees: build
+                sdk: .
+                nested: 'true'
+                mode: ${{ github.event_name == 'pull_request' && 'changed' || 'full' }}
+
+    # The SDK's headers in ARM context: the host tree above never sees the Arm-only branches, and a chip's or core's
+    # own CI counts SDK findings as foreign. The conformance trees of an M0+ and an M33 core (their paired chips and
+    # kvasir_devices from master), configured against THIS checkout and tidied with --repo . (findings in this
+    # repository and its nested checkouts fail; the core's and chip's are foreign).
+    tidy-arm:
+        name: tidy-arm ${{ matrix.core }}
         runs-on: ubuntu-latest
         container:
             image: archlinux:latest
+        strategy:
+            fail-fast: false
+            matrix:
+                core: [core_cortex_m0plus, core_cortex_m33]
+
         steps:
-            - name: Set up the tools
+            - name: Set up the toolchain
               run: |
-                pacman -Syu --noconfirm
-                pacman -S --noconfirm git cmake base-devel clang python python-yaml rsync patch diffutils
+                pacman -Syu --noconfirm --disable-download-timeout
+                pacman -S --noconfirm --disable-download-timeout git cmake ninja base-devel python clang llvm lld
 
             - name: Checkout repository
               uses: actions/checkout@v6
               with:
                 submodules: recursive
 
-            - name: llvm-project at the ported tag
-              run: echo "LLVM=$(tools/llvm_port/fetch-llvm)" >> "$GITHUB_ENV"
+            - name: Configure git safe directory
+              run: git config --global --add safe.directory '*'
 
-            - name: Drift check
-              run: NO_COLOR=1 tools/llvm_port/libcport --check "$LLVM" .
+            # a run step, not a second actions/checkout: act's containers have no node for it
+            - name: Clone the core
+              run: git clone --quiet --depth 1 --recurse-submodules --shallow-submodules
+                https://github.com/kvasir-io/${{ matrix.core }}.git "$RUNNER_TEMP/${{ matrix.core }}"
 
-            - name: Drift check selftest
-              run: tools/llvm_port/tests/check_selftest.sh "$LLVM" .
-
-    # everything below only runs when the whole build-and-test matrix succeeded;
-    # pull requests never build or push containers
-    check-build-needed:
-        needs: build-and-test
-        if: github.event_name != 'pull_request'
-        runs-on: ubuntu-latest
-        outputs:
-            should-build: ${{ steps.check-build.outputs.should-build }}
-            build-date: ${{ steps.check-build.outputs.build-date }}
-            env-files-changed: ${{ steps.check-env-changes.outputs.env-files-changed }}
-        steps:
-            - name: Checkout repository
-              uses: actions/checkout@v6
-              with:
-                submodules: recursive
-                fetch-depth: 2
-
-            - name: Check if build environment files changed
-              id: check-env-changes
+            - name: Configure and build the conformance tree
               run: |
-                # Check if build environment related files changed
-                if [ "${{ github.event_name }}" = "push" ]; then
-                  # Get changed files in the push
-                  CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD || echo "")
-                  echo "Changed files: $CHANGED_FILES"
+                cmake -S "$RUNNER_TEMP/${{ matrix.core }}/tests/conformance" -B build/conformance -G Ninja \
+                    -DCOMPILE_TARGET=arm_clang -DKVASIR_ROOT="$GITHUB_WORKSPACE"
+                cmake --build build/conformance -j"$(nproc)"
 
-                  # Check if build environment files changed
-                  if echo "$CHANGED_FILES" | grep -E "(scripts/Dockerfile\.build-env|\.github/workflows/ci\.yml)" > /dev/null; then
-                    echo "env-files-changed=true" >> $GITHUB_OUTPUT
-                    echo "Build environment files changed"
-                  else
-                    echo "env-files-changed=false" >> $GITHUB_OUTPUT
-                    echo "No build environment files changed"
-                  fi
-                else
-                  # For schedule or manual triggers with input, check build environment
-                  if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.rebuild_build_env }}" = "true" ]; then
-                    echo "env-files-changed=true" >> $GITHUB_OUTPUT
-                    echo "Non-push trigger - checking build environment"
-                  else
-                    echo "env-files-changed=false" >> $GITHUB_OUTPUT
-                    echo "Manual/external trigger - skipping build environment"
-                  fi
-                fi
-
-            - name: Check if build is needed
-              id: check-build
-              run: |
-                # Get current date in YYYY.MM.DD format (Arch ISO style)
-                BUILD_DATE=$(date +%Y.%m.%d)
-                echo "build-date=$BUILD_DATE" >> $GITHUB_OUTPUT
-
-                # For push events, only check file changes (not image age)
-                if [ "${{ github.event_name }}" = "push" ]; then
-                  # For push events, should-build is determined by env-files-changed
-                  # This will be evaluated in the job condition
-                  echo "should-build=true" >> $GITHUB_OUTPUT
-                  echo "Push event detected - will build if files changed"
-                  exit 0
-                fi
-
-                # For schedule/manual events, check if image is old or forced
-                IMAGE_EXISTS=$(curl -s -o /dev/null -w "%{http_code}" \
-                  "https://hub.docker.com/v2/repositories/kvasirio/build_environment/tags/latest/")
-
-                if [ "$IMAGE_EXISTS" = "200" ]; then
-                  # Get image creation date from DockerHub API
-                  IMAGE_DATE=$(curl -s \
-                    "https://hub.docker.com/v2/repositories/kvasirio/build_environment/tags/latest/" | \
-                    jq -r '.last_updated' | cut -d'T' -f1)
-
-                  # Convert to epoch for comparison (with error handling)
-                  IMAGE_EPOCH=$(date -d "$IMAGE_DATE" +%s 2>/dev/null || echo "0")
-                  CURRENT_EPOCH=$(date +%s)
-
-                  if [ "$IMAGE_EPOCH" -gt 0 ]; then
-                    DAYS_OLD=$(( (CURRENT_EPOCH - IMAGE_EPOCH) / 86400 ))
-                    echo "Image is $DAYS_OLD days old"
-                  else
-                    echo "Could not parse image date, treating as old"
-                    DAYS_OLD=999
-                  fi
-
-                  # Build if image is >30 days old, or if manually triggered
-                  if [ $DAYS_OLD -gt 30 ] || \
-                     [ "${{ github.event_name }}" = "workflow_dispatch" ] || \
-                     [ "${{ github.event_name }}" = "schedule" ]; then
-                    echo "should-build=true" >> $GITHUB_OUTPUT
-                    echo "Build needed: Image is $DAYS_OLD days old, triggered by ${{ github.event_name }}"
-                  else
-                    echo "should-build=false" >> $GITHUB_OUTPUT
-                    echo "Build not needed: Image is recent and no trigger conditions met"
-                  fi
-                else
-                  echo "should-build=true" >> $GITHUB_OUTPUT
-                  echo "Build needed: Image does not exist"
-                fi
-
-    docker-build-push:
-        needs: check-build-needed
-        if: needs.check-build-needed.outputs.should-build == 'true' && needs.check-build-needed.outputs.env-files-changed == 'true'
-        runs-on: ubuntu-latest
-        steps:
-            - name: Checkout repository
-              uses: actions/checkout@v6
+            - name: clang-tidy
+              uses: ./.github/actions/tidy
+              timeout-minutes: 45
               with:
-                submodules: recursive
-
-            - name: Set up Docker Buildx
-              uses: docker/setup-buildx-action@v4
-
-            - name: Log in to DockerHub
-              uses: docker/login-action@v4
-              with:
-                username: ${{ secrets.DOCKERHUB_USERNAME }}
-                password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-            - name: Build and push Docker image
-              uses: docker/build-push-action@v7
-              with:
-                context: scripts
-                file: scripts/Dockerfile.build-env
-                push: true
-                platforms: linux/amd64
-                tags: |
-                    kvasirio/build_environment:latest
-                    kvasirio/build_environment:${{ needs.check-build-needed.outputs.build-date }}
-                cache-from: type=gha
-                cache-to: type=gha,mode=max
-
-    kvasir-build-push:
-        needs: [check-build-needed, docker-build-push]
-        # check-build-needed must have run and succeeded (its needs already require the
-        # whole test matrix to be green; skipped on pull requests); docker-build-push
-        # only matters when the build environment actually changed
-        if: always() && needs.check-build-needed.result == 'success' && (needs.docker-build-push.result == 'success' || (needs.check-build-needed.outputs.env-files-changed == 'false' && github.event_name == 'push') || (github.event_name != 'push'))
-        runs-on: ubuntu-latest
-        steps:
-            - name: Checkout repository
-              uses: actions/checkout@v6
-              with:
-                submodules: recursive
-
-            - name: Set up Docker Buildx
-              uses: docker/setup-buildx-action@v4
-
-            - name: Log in to DockerHub
-              uses: docker/login-action@v4
-              with:
-                username: ${{ secrets.DOCKERHUB_USERNAME }}
-                password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-            - name: Build and push Kvasir Docker image
-              uses: docker/build-push-action@v7
-              with:
-                context: .
-                file: scripts/Dockerfile.kvasir
-                push: true
-                platforms: linux/amd64
-                tags: |
-                    kvasirio/kvasir:latest
-                    kvasirio/kvasir:${{ needs.check-build-needed.outputs.build-date }}
-                cache-from: type=gha
-                cache-to: type=gha,mode=max
-
-            - name: Trigger chip container rebuilds
-              uses: actions/github-script@v8
-              with:
-                github-token: ${{ secrets.CROSS_REPO_TOKEN }}
-                script: |
-                    // Array of chip repositories to trigger
-                    const chipRepos = [
-                        {
-                            repo: 'chip_rp2350',
-                            workflow: 'rp2350-docker-build.yml',
-                            name: 'RP2350'
-                        },
-                        {
-                             repo: 'chip_rp2040',
-                             workflow: 'rp2040-docker-build.yml',
-                             name: 'RP2040'
-                        },
-                        {
-                             repo: 'chip_atsamd21',
-                             workflow: 'atsamd21-docker-build.yml',
-                             name: 'ATSAMD21'
-                        }
-                    ];
-
-                    // Trigger each chip repository
-                    const results = [];
-                    for (const chip of chipRepos) {
-                        try {
-                            await github.rest.actions.createWorkflowDispatch({
-                                owner: context.repo.owner,
-                                repo: chip.repo,
-                                workflow_id: chip.workflow,
-                                ref: 'master'
-                            });
-                            console.log(`✅ Successfully triggered ${chip.name} container rebuild (${chip.repo})`);
-                            results.push(`✅ ${chip.name}: Success`);
-                        } catch (error) {
-                            console.log(`❌ Could not trigger ${chip.name} container rebuild: ${error.message}`);
-                            results.push(`❌ ${chip.name}: ${error.message}`);
-                            // Continue with other repos even if one fails
-                        }
-                    }
-
-                    // Summary
-                    console.log('\n=== Chip Container Trigger Summary ===');
-                    results.forEach(result => console.log(result));
-
-                    // Set output for use in notifications
-                    core.setOutput('trigger-results', results.join('; '));
-
-    notify-status:
-        runs-on: ubuntu-latest
-        needs: [check-build-needed, docker-build-push, kvasir-build-push]
-        # not on pull requests and not when the tests already failed (the CI failure
-        # itself is visible on the commit in that case)
-        if: always() && needs.check-build-needed.result == 'success'
-        steps:
-            - name: Set build status
-              run: |
-                ENV_CHANGED="${{ needs.check-build-needed.outputs.env-files-changed }}"
-                ENV_RESULT="${{ needs.docker-build-push.result }}"
-                KVASIR_RESULT="${{ needs.kvasir-build-push.result }}"
-
-                if [ "${{ needs.check-build-needed.outputs.should-build }}" = "false" ]; then
-                  echo "BUILD_STATUS=skipped" >> $GITHUB_ENV
-                  echo "BUILD_MESSAGE=⏭️ Docker build skipped - image is recent and no relevant files changed" >> $GITHUB_ENV
-                elif [ "$ENV_CHANGED" = "true" ] && [ "$ENV_RESULT" = "success" ] && [ "$KVASIR_RESULT" = "success" ]; then
-                  echo "BUILD_STATUS=success" >> $GITHUB_ENV
-                  echo "BUILD_MESSAGE=✅ Both containers built and pushed: kvasirio/build_environment:latest and kvasirio/kvasir:latest" >> $GITHUB_ENV
-                elif [ "$ENV_CHANGED" = "false" ] && [ "$KVASIR_RESULT" = "success" ]; then
-                  echo "BUILD_STATUS=success" >> $GITHUB_ENV
-                  echo "BUILD_MESSAGE=✅ Kvasir container built and pushed: kvasirio/kvasir:latest (build environment unchanged)" >> $GITHUB_ENV
-                elif [ "$ENV_CHANGED" = "true" ] && [ "$ENV_RESULT" = "success" ] && [ "$KVASIR_RESULT" != "success" ]; then
-                  echo "BUILD_STATUS=partial" >> $GITHUB_ENV
-                  echo "BUILD_MESSAGE=⚠️ Build environment succeeded but kvasir container failed" >> $GITHUB_ENV
-                elif [ "${{ needs.docker-build-push.result }}" = "failure" ]; then
-                  echo "BUILD_STATUS=failure" >> $GITHUB_ENV
-                  echo "BUILD_MESSAGE=❌ Docker build failed - check workflow logs" >> $GITHUB_ENV
-                else
-                  echo "BUILD_STATUS=cancelled" >> $GITHUB_ENV
-                  echo "BUILD_MESSAGE=🚫 Docker build was cancelled" >> $GITHUB_ENV
-                fi
-
-            - name: Update commit status
-              uses: actions/github-script@v8
-              with:
-                script: |
-                    const status = process.env.BUILD_STATUS;
-                    const message = process.env.BUILD_MESSAGE;
-
-                    let state;
-                    if (status === 'success') state = 'success';
-                    else if (status === 'failure') state = 'failure';
-                    else if (status === 'skipped') state = 'success';
-                    else if (status === 'partial') state = 'failure';
-                    else state = 'error';
-
-                    await github.rest.repos.createCommitStatus({
-                      owner: context.repo.owner,
-                      repo: context.repo.repo,
-                      sha: context.sha,
-                      state: state,
-                      target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-                      description: message,
-                      context: 'Docker Build'
-                    });
-
-            - name: Create summary
-              run: |-
-                echo "## Docker Build Status" >> $GITHUB_STEP_SUMMARY
-                echo "" >> $GITHUB_STEP_SUMMARY
-                echo "${{ env.BUILD_MESSAGE }}" >> $GITHUB_STEP_SUMMARY
-
-                echo "" >> $GITHUB_STEP_SUMMARY
-                echo "**Image Tags:**" >> $GITHUB_STEP_SUMMARY
-
-                # Show build environment tags if it was built
-                if [ "${{ needs.check-build-needed.outputs.env-files-changed }}" = "true" ] && \
-                   [ "${{ needs.docker-build-push.result }}" = "success" ]; then
-                  echo "- \`kvasirio/build_environment:latest\`" >> $GITHUB_STEP_SUMMARY
-                  echo "- \`kvasirio/build_environment:${{ needs.check-build-needed.outputs.build-date }}\`" >> $GITHUB_STEP_SUMMARY
-                fi
-
-                # Show kvasir tags if it was built
-                if [ "${{ needs.kvasir-build-push.result }}" = "success" ]; then
-                  echo "- \`kvasirio/kvasir:latest\`" >> $GITHUB_STEP_SUMMARY
-                  echo "- \`kvasirio/kvasir:${{ needs.check-build-needed.outputs.build-date }}\`" >> $GITHUB_STEP_SUMMARY
-                fi
-
-                echo "" >> $GITHUB_STEP_SUMMARY
-
-                # Show links for built containers
-                if [ "${{ needs.docker-build-push.result }}" = "success" ]; then
-                  echo "[View Build Environment on DockerHub](https://hub.docker.com/r/kvasirio/build_environment)" >> $GITHUB_STEP_SUMMARY
-                fi
-
-                if [ "${{ needs.kvasir-build-push.result }}" = "success" ]; then
-                  echo "[View Kvasir on DockerHub](https://hub.docker.com/r/kvasirio/kvasir)" >> $GITHUB_STEP_SUMMARY
-                fi
+                trees: build/conformance
+                sdk: .
+                nested: 'true'

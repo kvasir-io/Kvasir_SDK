@@ -7,7 +7,7 @@
 #include <span>
 #include <vector>
 
-/// NOR flash in RAM with power cuts, in the shape Kvasir::Flash::NorRegion takes (static functions; one flash per
+/// NOR flash in RAM with power cuts, in the shape Kvasir::Hal::NorRegion takes (static functions; one flash per
 /// Tag): erase sets a sector to 0xFF, program can only clear bits (a 0 -> 1 it is asked for is counted as an
 /// overprogram, a store bug, and not done). cutAfter(n): the operation after n completed ones does a random part of
 /// its work - a prefix of a program with a noisy last byte, a part of an erase with noise at its edge - and every
@@ -20,18 +20,23 @@ namespace Kvasir::Test {
 
 template<typename Tag, std::uint32_t SectorBytesV, std::uint32_t PageBytesV, std::uint32_t SectorsV>
 struct FakeNorFlash {
-    static constexpr std::uint32_t SectorBytes = SectorBytesV;
-    static constexpr std::uint32_t PageBytes   = PageBytesV;
-    static constexpr std::uint32_t Bytes       = SectorBytesV * SectorsV;
-    static constexpr std::uint32_t Pages       = Bytes / PageBytesV;
+    static constexpr std::uint32_t sectorBytes = SectorBytesV;
+    static constexpr std::uint32_t pageBytes   = PageBytesV;
+    static constexpr std::uint32_t bytes       = SectorBytesV * SectorsV;
+    static constexpr std::uint32_t pages       = bytes / PageBytesV;
 
     static constexpr std::uint32_t sectorCount() { return SectorsV; }
 
-    static inline std::array<std::byte, Bytes> mem = [] {
-        std::array<std::byte, Bytes> m{};
+    /// The content of an erased flash.
+    static constexpr std::array<std::byte,
+                                bytes>
+    erased() noexcept {
+        std::array<std::byte, bytes> m{};
         m.fill(std::byte{0xFF});
         return m;
-    }();
+    }
+
+    static inline std::array<std::byte, bytes> mem = erased();
 
     static inline std::uint64_t                    ops{};   // completed program/erase operations
     static inline std::uint64_t                    cutAt{~0ULL};   // the operation that is cut
@@ -39,7 +44,7 @@ struct FakeNorFlash {
     static inline std::uint32_t                    seed{0x1234'5678U};
     static inline std::uint64_t                    overprograms{};
     static inline std::uint64_t                    pageCrossings{};
-    static inline std::array<std::uint32_t, Pages> pagePrograms{};   // since the page's last erase
+    static inline std::array<std::uint32_t, pages> pagePrograms{};   // since the page's last erase
     static inline std::array<std::uint32_t, SectorsV> erases{};
     static inline std::uint64_t                       reads{};
     static inline std::uint64_t                       lockedSectors{};   // bit s: sector s refuses
@@ -59,6 +64,13 @@ struct FakeNorFlash {
 
     static void lockSectors(std::uint64_t mask) { lockedSectors = mask; }
 
+    /// failIn/dropIn: 0 is off; else one step closer, true on the step that reaches 0.
+    static bool countDown(std::uint32_t& in) {
+        if(in == 0) { return false; }
+        --in;
+        return in == 0;
+    }
+
     static void failNext(std::uint32_t n) { failIn = n; }
 
     static void dropNext(std::uint32_t n) { dropIn = n; }
@@ -77,7 +89,7 @@ struct FakeNorFlash {
 
     static bool read(std::uint32_t        addr,
                      std::span<std::byte> out) {
-        if(!powered || std::uint64_t{addr} + out.size() > Bytes) { return false; }
+        if(!powered || std::uint64_t{addr} + out.size() > bytes) { return false; }
         ++reads;
         std::copy_n(mem.begin() + addr, out.size(), out.begin());
         return true;
@@ -85,14 +97,15 @@ struct FakeNorFlash {
 
     static bool program(std::uint32_t              addr,
                         std::span<std::byte const> in) {
-        if(!powered || std::uint64_t{addr} + in.size() > Bytes || in.empty()) { return false; }
-        if(sectorLocked(addr / SectorBytes)) { return false; }
-        if(failIn != 0 && --failIn == 0) { return false; }
-        if(dropIn != 0 && --dropIn == 0) { return true; }
-        if(addr / PageBytes != (addr + static_cast<std::uint32_t>(in.size()) - 1) / PageBytes) {
+        if(!powered || std::uint64_t{addr} + in.size() > bytes) { return false; }
+        if(in.empty()) { return true; }   // nothing to write: done (Hal/Flash.hpp)
+        if(sectorLocked(addr / sectorBytes)) { return false; }
+        if(countDown(failIn)) { return false; }
+        if(countDown(dropIn)) { return true; }
+        if(addr / pageBytes != (addr + static_cast<std::uint32_t>(in.size()) - 1) / pageBytes) {
             ++pageCrossings;
         }
-        for(std::uint32_t p = addr / PageBytes; p <= (addr + in.size() - 1) / PageBytes; ++p) {
+        for(std::uint32_t p = addr / pageBytes; p <= (addr + in.size() - 1) / pageBytes; ++p) {
             ++pagePrograms[p];
         }
         std::size_t n   = in.size();
@@ -112,13 +125,13 @@ struct FakeNorFlash {
 
     static bool erase(std::uint32_t sector) {
         if(!powered || sector >= SectorsV || sectorLocked(sector)) { return false; }
-        auto const begin = mem.begin() + sector * SectorBytes;
+        auto const begin = mem.begin() + sector * sectorBytes;
         if(ops == cutAt) {
             // a part erased, noise at its edge, the rest as it was
-            auto const n = random() % (SectorBytes + 1);
+            auto const n = random() % (sectorBytes + 1);
             std::fill_n(begin, n, std::byte{0xFF});
             for(std::uint32_t i = static_cast<std::uint32_t>(n);
-                i < std::min<std::uint32_t>(SectorBytes, n + 8);
+                i < std::min<std::uint32_t>(sectorBytes, n + 8);
                 ++i)
             {
                 begin[i] = static_cast<std::byte>(random());
@@ -126,9 +139,9 @@ struct FakeNorFlash {
             powered = false;
             return false;
         }
-        std::fill_n(begin, SectorBytes, std::byte{0xFF});
-        std::fill_n(pagePrograms.begin() + sector * (SectorBytes / PageBytes),
-                    SectorBytes / PageBytes,
+        std::fill_n(begin, sectorBytes, std::byte{0xFF});
+        std::fill_n(pagePrograms.begin() + sector * (sectorBytes / pageBytes),
+                    sectorBytes / pageBytes,
                     0U);
         ++erases[sector];
         ++ops;

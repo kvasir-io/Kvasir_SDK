@@ -16,11 +16,14 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent.parent / 'tests' / 'tooling'))
+import armtc  # noqa: E402  when a missing tool is a skip or a failure
 
 # the programs each toolchain file needs to configure; arm_clang asks arm-none-eabi-gcc for newlib (arm_clang.cmake)
 TOOLCHAINS = {
@@ -44,9 +47,7 @@ class RuntimeLibFlags(unittest.TestCase):
         cls.tmp.cleanup()
 
     def build(self, toolchain, clib):
-        for exe in TOOLCHAINS[toolchain, clib]:
-            if shutil.which(exe) is None:
-                self.skipTest(f'{exe} not found')
+        armtc.need(self, *TOOLCHAINS[toolchain, clib])
         tree = Path(self.tmp.name) / f'{toolchain}_{clib}'
         generator = ['-G', 'Ninja'] if shutil.which('ninja') else []
         configure = subprocess.run(['cmake', '-S', str(HERE), '-B', str(tree), *generator,

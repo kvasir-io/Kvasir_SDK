@@ -1,7 +1,7 @@
 // Tests for Kvasir::StaticVector.
 //
-// StaticVector picks one of three storage backends depending on T (zero_sized for
-// Capacity 0, trivial for trivially destructible T and non_trivial otherwise), and the
+// StaticVector picks one of two storage backends depending on T (trivial for trivially
+// destructible T and non_trivial otherwise; a capacity of 0 does not compile), and the
 // non_trivial one manages object lifetimes by hand. The tests therefore run the same
 // scenarios over a trivial element type and over a type that counts its own constructions
 // and destructions, so that a missed destructor call shows up as a leak.
@@ -10,7 +10,9 @@
 
 #include <algorithm>
 #include <array>
+#include <compare>
 #include <cstddef>
+#include <cstdint>
 #include <iterator>
 #include <numeric>
 #include <type_traits>
@@ -102,8 +104,6 @@ T make(int v) {
     }
 }
 
-}   // namespace
-
 // ---------------------------------------------------------------------------
 // compile time properties
 static_assert(StaticVector<int,
@@ -112,9 +112,6 @@ static_assert(StaticVector<int,
 static_assert(StaticVector<int,
                            8>::max_size()
               == 8);
-static_assert(StaticVector<int,
-                           0>::capacity()
-              == 0);
 static_assert(std::is_same_v<StaticVector<int,
                                           8>::value_type,
                              int>);
@@ -135,7 +132,7 @@ static_assert([] {
 }());
 
 static_assert([] {
-    StaticVector<int, 4> v(3u, 7);
+    StaticVector<int, 4> v(3U, 7);
     v.resize(1);
     v.resize(4, 5);
     return v.size() == 4 && v[0] == 7 && v[1] == 5 && v[2] == 5 && v[3] == 5;
@@ -143,7 +140,7 @@ static_assert([] {
 
 // ---------------------------------------------------------------------------
 template<typename T>
-static void emptyState(char const* name) {
+void emptyState(char const* name) {
     Kvasir::Test::test(name);
 
     StaticVector<T, 4> v;
@@ -157,7 +154,7 @@ static void emptyState(char const* name) {
 }
 
 template<typename T>
-static void pushPopBack(char const* name) {
+void pushPopBack(char const* name) {
     Kvasir::Test::test(name);
 
     StaticVector<T, 4> v;
@@ -187,7 +184,7 @@ static void pushPopBack(char const* name) {
 }
 
 template<typename T>
-static void elementAccess(char const* name) {
+void elementAccess(char const* name) {
     Kvasir::Test::test(name);
 
     StaticVector<T, 4> v;
@@ -199,7 +196,7 @@ static void elementAccess(char const* name) {
     CHECK(v[2] == make<T>(30));
     CHECK(v.front() == make<T>(10));
     CHECK(v.back() == make<T>(30));
-    CHECK(v.data() == &v[0]);
+    CHECK(v.data() == &v.front());
 
     auto const& cv = v;
     CHECK(cv[1] == make<T>(20));
@@ -216,7 +213,7 @@ static void elementAccess(char const* name) {
 }
 
 template<typename T>
-static void iterators(char const* name) {
+void iterators(char const* name) {
     Kvasir::Test::test(name);
 
     StaticVector<T, 5> v;
@@ -243,7 +240,7 @@ static void iterators(char const* name) {
 }
 
 template<typename T>
-static void insertSingle(char const* name) {
+void insertSingle(char const* name) {
     Kvasir::Test::test(name);
 
     StaticVector<T, 8> v;
@@ -266,7 +263,7 @@ static void insertSingle(char const* name) {
 }
 
 template<typename T>
-static void insertCountAndRange(char const* name) {
+void insertCountAndRange(char const* name) {
     Kvasir::Test::test(name);
 
     {
@@ -300,7 +297,7 @@ static void insertCountAndRange(char const* name) {
 }
 
 template<typename T>
-static void emplaceAndEmplaceBack(char const* name) {
+void emplaceAndEmplaceBack(char const* name) {
     Kvasir::Test::test(name);
 
     StaticVector<T, 8> v;
@@ -320,7 +317,7 @@ static void emplaceAndEmplaceBack(char const* name) {
 }
 
 template<typename T>
-static void eraseSingleAndRange(char const* name) {
+void eraseSingleAndRange(char const* name) {
     Kvasir::Test::test(name);
 
     StaticVector<T, 8> v;
@@ -353,7 +350,7 @@ static void eraseSingleAndRange(char const* name) {
 }
 
 template<typename T>
-static void clearAndResize(char const* name) {
+void clearAndResize(char const* name) {
     Kvasir::Test::test(name);
 
     StaticVector<T, 8> v;
@@ -385,7 +382,7 @@ static void clearAndResize(char const* name) {
 }
 
 template<typename T>
-static void copyAndMove(char const* name) {
+void copyAndMove(char const* name) {
     Kvasir::Test::test(name);
 
     StaticVector<T, 8> a;
@@ -405,7 +402,7 @@ static void copyAndMove(char const* name) {
     CHECK(contents(c) == (std::vector<int>{0, 1, 2, 3}));
 
     // move construction
-    StaticVector<T, 8> d{std::move(b)};
+    StaticVector<T, 8> const d{std::move(b)};
     CHECK(contents(d) == (std::vector<int>{0, 1, 2, 3}));
 
     // move assignment over a non-empty target
@@ -416,14 +413,14 @@ static void copyAndMove(char const* name) {
 
     // self assignment must not corrupt the vector; the reference keeps the compiler from
     // diagnosing it as an obviously redundant self-assign
-    auto& selfRef = a;
-    a             = selfRef;
+    auto const& selfRef = a;
+    a                   = selfRef;
     CHECK_EQ(a.size(), 4U);
     CHECK(contents(a) == (std::vector<int>{0, 1, 2, 3}));
 }
 
 template<typename T>
-static void swapping(char const* name) {
+void swapping(char const* name) {
     Kvasir::Test::test(name);
 
     StaticVector<T, 8> a;
@@ -447,32 +444,32 @@ static void swapping(char const* name) {
 }
 
 template<typename T>
-static void constructorsAndAssign(char const* name) {
+void constructorsAndAssign(char const* name) {
     Kvasir::Test::test(name);
 
     // n default constructed elements
     {
-        StaticVector<T, 8> v(3u);
+        StaticVector<T, 8> const v(3U);
         CHECK_EQ(v.size(), 3U);
         CHECK(contents(v) == (std::vector<int>{0, 0, 0}));
     }
 
     // n copies of a value
     {
-        StaticVector<T, 8> v(3u, make<T>(5));
+        StaticVector<T, 8> const v(3U, make<T>(5));
         CHECK(contents(v) == (std::vector<int>{5, 5, 5}));
     }
 
     // from an iterator range
     {
-        std::array<T, 3> const source{make<T>(1), make<T>(2), make<T>(3)};
-        StaticVector<T, 8>     v(source.begin(), source.end());
+        std::array<T, 3> const   source{make<T>(1), make<T>(2), make<T>(3)};
+        StaticVector<T, 8> const v(source.begin(), source.end());
         CHECK(contents(v) == (std::vector<int>{1, 2, 3}));
     }
 
     // assign from a range, over an existing payload
     {
-        StaticVector<T, 8>     v(5u, make<T>(9));
+        StaticVector<T, 8>     v(5U, make<T>(9));
         std::array<T, 2> const source{make<T>(1), make<T>(2)};
         v.assign(source.begin(), source.end());
         CHECK(contents(v) == (std::vector<int>{1, 2}));
@@ -480,14 +477,14 @@ static void constructorsAndAssign(char const* name) {
 
     // assign n copies
     {
-        StaticVector<T, 8> v(2u, make<T>(9));
+        StaticVector<T, 8> v(2U, make<T>(9));
         v.assign(size_t{4}, make<T>(3));
         CHECK(contents(v) == (std::vector<int>{3, 3, 3, 3}));
     }
 
     // assign an empty range clears the vector
     {
-        StaticVector<T, 8>     v(3u, make<T>(9));
+        StaticVector<T, 8>     v(3U, make<T>(9));
         std::array<T, 1> const source{make<T>(1)};
         v.assign(source.begin(), source.begin());
         CHECK(v.empty());
@@ -495,7 +492,7 @@ static void constructorsAndAssign(char const* name) {
 }
 
 template<typename T>
-static void comparisons(char const* name) {
+void comparisons(char const* name) {
     Kvasir::Test::test(name);
 
     StaticVector<T, 8> a;
@@ -513,7 +510,7 @@ static void comparisons(char const* name) {
     StaticVector<T, 8> shorter;
     shorter.push_back(make<T>(1));
 
-    StaticVector<T, 8> empty;
+    StaticVector<T, 8> const empty;
 
     CHECK(a == b);
     CHECK(!(a != b));
@@ -556,8 +553,8 @@ static void comparisons(char const* name) {
 // ---------------------------------------------------------------------------
 // lifetime accounting: after every scenario every constructed element must have been
 // destroyed exactly once
-static void noLeaks(char const* name,
-                    void (*scenario)(char const*)) {
+void noLeaks(char const* name,
+             void (*scenario)(char const*)) {
     Tracked::reset();
     scenario(name);
     if(Tracked::alive() != 0) {
@@ -571,7 +568,7 @@ static void noLeaks(char const* name,
 }
 
 // A one-byte T grows by memset rather than element by element; the values have to be the same.
-static void byteResize() {
+void byteResize() {
     Kvasir::Test::test("byteResize");
 
     StaticVector<std::byte, 16> v;
@@ -593,7 +590,7 @@ static void byteResize() {
 }
 
 // resize_and_overwrite hands out the whole room, keeps what op says, and fills nothing.
-static void resizeAndOverwrite() {
+void resizeAndOverwrite() {
     Kvasir::Test::test("resizeAndOverwrite");
 
     StaticVector<std::byte, 16> v;
@@ -620,7 +617,7 @@ static void resizeAndOverwrite() {
 
 // std::pair is not trivially copyable (its assignments are user provided), so it lives in the
 // non_trivial storage -- which copies and moves it as bytes, since its constructors are trivial.
-static void pairCopiesAsBytes() {
+void pairCopiesAsBytes() {
     Kvasir::Test::test("pairCopiesAsBytes");
     using P = std::pair<int, short>;
     static_assert(!std::is_trivially_copyable_v<P>);
@@ -648,7 +645,7 @@ static void pairCopiesAsBytes() {
     c = a;
     CHECK(pairs(c) == want);
 
-    StaticVector<P, 8> d{std::move(b)};
+    StaticVector<P, 8> const d{std::move(b)};
     CHECK(pairs(d) == want);
 
     StaticVector<P, 8> e;
@@ -659,13 +656,13 @@ static void pairCopiesAsBytes() {
     e = std::move(c);
     CHECK(pairs(e) == want);
 
-    StaticVector<P, 8> empty;
+    StaticVector<P, 8> const empty;
     e = empty;
     CHECK(e.empty());
 }
 
 // destroying a vector must destroy exactly the elements it holds, no more and no fewer
-static void destructorDestroysElements() {
+void destructorDestroysElements() {
     Kvasir::Test::test("destructorDestroysElements");
     Tracked::reset();
 
@@ -725,33 +722,54 @@ static void destructorDestroysElements() {
 }
 
 // ---------------------------------------------------------------------------
-// the zero_sized storage backend
-static void zeroCapacity() {
-    Kvasir::Test::test("zeroCapacity");
+// copy and move are the implicit ones of the storage: trivial for a trivial T (what the request queues and aglio's
+// byte buffers rely on), and still there for a non-trivial one
+static_assert(std::is_trivially_copyable_v<StaticVector<std::byte,
+                                                        8>>);
+static_assert(std::is_trivially_copyable_v<StaticVector<int,
+                                                        3>>);
+static_assert(std::is_copy_constructible_v<StaticVector<std::pair<int,
+                                                                  short>,
+                                                        3>>
+              && std::is_move_constructible_v<StaticVector<std::pair<int,
+                                                                     short>,
+                                                           3>>
+              && std::is_copy_assignable_v<StaticVector<std::pair<int,
+                                                                  short>,
+                                                        3>>);
+static_assert(std::is_trivially_copyable_v<StaticVector<std::uint32_t,
+                                                        300>>);
+static_assert(std::is_trivially_destructible_v<StaticVector<std::pair<int,
+                                                                      short>,
+                                                            4>>);
+static_assert(!std::is_trivially_copyable_v<StaticVector<Tracked,
+                                                         4>>);
+static_assert(!std::is_trivially_destructible_v<StaticVector<Tracked,
+                                                             4>>);
+static_assert(std::is_copy_constructible_v<StaticVector<Tracked,
+                                                        4>>);
 
-    StaticVector<int, 0> v;
-    CHECK(v.empty());
-    CHECK(v.full());   // a zero capacity vector is always both empty and full
-    CHECK_EQ(v.size(), 0U);
-    CHECK_EQ(v.capacity(), 0U);
-    CHECK(v.begin() == v.end());
-    CHECK(v.data() == nullptr);
+// layout: the size member is the smallest unsigned type that holds [0, Capacity]
+static_assert(sizeof(StaticVector<std::byte,
+                                  8>)
+              == 9);
+static_assert(sizeof(StaticVector<std::byte,
+                                  254>)
+              == 255);
+static_assert(sizeof(StaticVector<std::byte,
+                                  255>)
+              == 258);
 
-    StaticVector<int, 0> other;
-    CHECK(v == other);
-    CHECK(!(v < other));
-
-    // copy and move of an always empty vector
-    StaticVector<int, 0> copy{v};
-    CHECK(copy.empty());
-    StaticVector<int, 0> moved{std::move(other)};
-    CHECK(moved.empty());
-}
+// aglio reads max_size() == capacity() as a constant of the type
+static_assert(StaticVector<std::byte,
+                           8>::max_size()
+              == StaticVector<std::byte,
+                              8>::capacity());
 
 // ---------------------------------------------------------------------------
 // capacity boundary: filling exactly to capacity must work in every mode
 template<typename T>
-static void fillToCapacity(char const* name) {
+void fillToCapacity(char const* name) {
     Kvasir::Test::test(name);
 
     StaticVector<T, 3> v;
@@ -778,18 +796,18 @@ static void fillToCapacity(char const* name) {
 }
 
 // initializer_list construction
-static void initializerList() {
+void initializerList() {
     Kvasir::Test::test("initializerList");
 
     StaticVector<int, 8> v{1, 2, 3};
     CHECK(contents(v) == (std::vector<int>{1, 2, 3}));
     CHECK_EQ(v.size(), 3U);
 
-    StaticVector<int, 8> empty{};
+    StaticVector<int, 8> const empty{};
     CHECK(empty.empty());
 
     // exactly at capacity
-    StaticVector<int, 3> exact{7, 8, 9};
+    StaticVector<int, 3> const exact{7, 8, 9};
     CHECK(exact.full());
     CHECK(contents(exact) == (std::vector<int>{7, 8, 9}));
 
@@ -803,21 +821,75 @@ static void initializerList() {
 }
 
 // the vector must work with the standard algorithms
-static void worksWithAlgorithms() {
+void worksWithAlgorithms() {
     Kvasir::Test::test("worksWithAlgorithms");
 
     StaticVector<int, 8> v{5, 3, 1, 4, 2};
 
-    std::sort(v.begin(), v.end());
+    std::ranges::sort(v);
     CHECK(contents(v) == (std::vector<int>{1, 2, 3, 4, 5}));
 
     CHECK(std::accumulate(v.begin(), v.end(), 0) == 15);
-    CHECK(std::find(v.begin(), v.end(), 3) == v.begin() + 2);
-    CHECK(std::is_sorted(v.begin(), v.end()));
+    CHECK(std::ranges::find(v, 3) == v.begin() + 2);
+    CHECK(std::ranges::is_sorted(v));
 
-    std::reverse(v.begin(), v.end());
+    std::ranges::reverse(v);
     CHECK(contents(v) == (std::vector<int>{5, 4, 3, 2, 1}));
 }
+
+// ---------------------------------------------------------------------------
+// std::inplace_vector spellings: try_ refuses on a full vector, unchecked_ returns the new element
+template<typename T>
+void inplaceSpellings(char const* name) {
+    Kvasir::Test::test(name);
+    StaticVector<T, 2> v;
+    T const            one = make<T>(1);
+    auto const*        p1  = v.try_push_back(one);
+    CHECK(p1 == v.data());
+    auto const* p2 = v.try_emplace_back(make<T>(2));
+    CHECK(p2 == v.data() + 1);
+    CHECK(v.full());
+    CHECK(v.try_push_back(make<T>(3)) == nullptr);
+    CHECK(v.try_push_back(one) == nullptr);
+    CHECK(v.try_emplace_back(make<T>(4)) == nullptr);
+    CHECK_EQ(v.size(), 2U);
+    CHECK(v[1] == make<T>(2));
+
+    v.clear();
+    auto& r1 = v.unchecked_push_back(one);
+    CHECK(&r1 == v.data());
+    auto& r2 = v.unchecked_emplace_back(make<T>(5));
+    CHECK(&r2 == v.data() + 1);
+    CHECK(v[1] == make<T>(5));
+}
+
+// a T with only `<`: <=> synthesises a weak_ordering from it, as std::vector does
+struct LessOnly {
+    int  value;
+    bool operator==(LessOnly const&) const = default;
+
+    bool operator<(LessOnly const& o) const { return value < o.value; }
+};
+
+void lessOnlyCompares() {
+    Kvasir::Test::test("lessOnlyCompares");
+    StaticVector<LessOnly, 4> const a{LessOnly{1}, LessOnly{2}};
+    StaticVector<LessOnly, 4> const b{LessOnly{1}, LessOnly{3}};
+    CHECK(a < b);
+    CHECK(b > a);
+    CHECK(a <= a);
+    CHECK(!(b < a));
+    CHECK((a <=> b) == std::weak_ordering::less);
+}
+
+static_assert([] {
+    StaticVector<int, 2> v;
+    v.try_push_back(1);
+    v.try_push_back(2);
+    return v.try_push_back(3) == nullptr && v.size() == 2;
+}());
+
+}   // namespace
 
 int main() {
     // trivial storage backend
@@ -848,6 +920,9 @@ int main() {
     noLeaks("clearAndResize<Tracked>", &clearAndResize<Tracked>);
     noLeaks("copyAndMove<Tracked>", &copyAndMove<Tracked>);
     noLeaks("swapping<Tracked>", &swapping<Tracked>);
+    inplaceSpellings<int>("inplaceSpellings<int>");
+    noLeaks("inplaceSpellings<Tracked>", &inplaceSpellings<Tracked>);
+    lessOnlyCompares();
     noLeaks("constructorsAndAssign<Tracked>", &constructorsAndAssign<Tracked>);
     noLeaks("comparisons<Tracked>", &comparisons<Tracked>);
     noLeaks("fillToCapacity<Tracked>", &fillToCapacity<Tracked>);
@@ -856,7 +931,6 @@ int main() {
     resizeAndOverwrite();
     pairCopiesAsBytes();
     destructorDestroysElements();
-    zeroCapacity();
     initializerList();
     worksWithAlgorithms();
 

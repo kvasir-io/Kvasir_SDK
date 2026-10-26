@@ -1,5 +1,5 @@
-# ARM GCC Compiler Configuration Configures the build environment for ARM targets using GCC toolchain Uses
-# arm-none-eabi-gcc cross-compilation tools
+# The toolchain file of COMPILE_TARGET arm_gcc: arm-none-eabi-gcc and its binutils for the chip package's core
+# (TARGET_*, kvasir_core()), libstdc++ and newlib by default (CPPLIB, CLIB), libgcc.
 
 include(${CMAKE_CURRENT_LIST_DIR}/compiler_common.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/arm_compiler_common.cmake)
@@ -48,41 +48,28 @@ set(target_flags -mfloat-abi=${TARGET_FLOAT_ABI} -mfpu=${target_fpu} -mcpu=${TAR
 # =auto: plain -flto warns "using serial compilation of N LTRANS jobs" on every link
 set(optimize_option_common -ggdb3 -flto=auto)
 
-# plain -fstack-protector in the release sets, as arm_clang.cmake
-set(optimize_option_speed ${optimize_option_common} -Ofast -fstack-protector)
+# plain -fstack-protector in the release sets, as arm_clang.cmake. speed is -O3 as in arm_clang.cmake, not -Ofast: gcc's
+# -Ofast is -O3 plus the fast-math set (-ffinite-math-only folds an isnan/isfinite check to a constant, reassociation,
+# no signed zeros, excess precision fast) and -fallow-store-data-races (a store the source does not make, seen by the
+# other core or an ISR) - neither is wanted from a speed set, and a gcc image must compute what the clang one computes
+set(optimize_option_speed ${optimize_option_common} -O3 -fstack-protector)
 set(optimize_option_size ${optimize_option_common} -Os -fstack-protector)
 set(optimize_option_debug ${optimize_option_common} -Og)
 
-set(optimize_specs_speed "nosys")
-set(optimize_specs_size "nano")
-set(optimize_specs_debug "nano")
+# The warning list, shared with host test trees: kvasir::warnings carries it into the image's own code (util.cmake),
+# with three C++-only ones; the runtime libraries compile with the compiler's defaults
+include(${CMAKE_CURRENT_LIST_DIR}/kvasir_warnings.cmake)
+set(kvasir_image_warning_flags
+    ${kvasir_gcc_warning_flags} -Wno-unused-macros $<$<COMPILE_LANGUAGE:CXX>:-Woverloaded-virtual>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wsign-promo> $<$<COMPILE_LANGUAGE:CXX>:-Wstrict-null-sentinel>)
+# gcc's LTO link runs the middle end again, and its warning options (-Wextra, -Wstrict-overflow=2, -Wshadow, ...) reach
+# lto1 from the link line only (lto-wrapper takes no -W option from the objects): the image's link gets the list too
+set(kvasir_image_link_warning_flags ${kvasir_gcc_warning_flags} -Wno-unused-macros -Woverloaded-virtual -Wsign-promo
+                                    -Wstrict-null-sentinel)
 
-set(common_warning_flags
-    -Wall
-    -Wextra
-    # errors, matching arm_clang.cmake: the ISO-conformance issues this catches (the extern "C" main declaration, the
-    # __STDC_HOSTED__ redefine this flag was once disabled for) must fail the build, not scroll past as warnings
-    -pedantic-errors
-    -Wdouble-promotion
-    -Wcast-align
-    -Wcast-qual
-    -Wdisabled-optimization
-    -Wformat=2
-    -Winit-self
-    -Wlogical-op
-    -Wredundant-decls
-    -Wshadow
-    # level 5 is too noisy: it fires inside libc++'s to_chars and on the KVASIR_START vector read
-    -Wstrict-overflow=2
-    -Wundef
-    -Wno-unused
-    # gcc, unlike clang, fires this for the unnameable base-class subobject of designated-initialized aggregates
-    -Wno-missing-field-initializers
-    -Wstrict-aliasing=1)
-
-# gcc has no minimal UBSan runtime; kvasir/Util/ubsan.hpp defines the full-ABI __ubsan_handle_* functions. Compile-only:
-# never on the link line, so gcc does not add its libubsan. _GLIBCXX_ASSERTIONS is libstdc++'s counterpart of libc++'s
-# debug hardening mode (reported through std::__glibcxx_assert_fail, defined in StartUp.hpp).
+# gcc has no minimal UBSan runtime; kvasir/Runtime/ubsan.hpp defines the full-ABI __ubsan_handle_* functions.
+# Compile-only: never on the link line, so gcc does not add its libubsan. _GLIBCXX_ASSERTIONS is libstdc++'s counterpart
+# of libc++'s debug hardening mode (reported through std::__glibcxx_assert_fail, defined in StartUp/Runtime/Libc.hpp).
 #
 # gcc's null-pointer checks stay on: address 0 is readable on these chips (the boot ROM on the RP chips - ROM_BASE,
 # RP2040 datasheet md l.1238, RP2350 md l.1439 -, the flash on SAM D21/C21 - "Internal Flash 0x00000000", SAM D21
@@ -117,18 +104,7 @@ endif()
 if("${CLIB}" STREQUAL "llvm")
     if("${CPPLIB}" STREQUAL "libstdc++")
         # -nostdinc also drops gcc's own C++ directories; put libstdc++'s back by hand, in driver order
-        execute_process(
-            COMMAND ${CMAKE_CXX_COMPILER} -print-sysroot
-            OUTPUT_VARIABLE _gcc_sysroot
-            OUTPUT_STRIP_TRAILING_WHITESPACE)
-        get_filename_component(_gcc_sysroot "${_gcc_sysroot}" REALPATH)
-        file(GLOB_RECURSE _gcc_cxx_cstddef "${_gcc_sysroot}/include/c++/*/cstddef")
-        list(LENGTH _gcc_cxx_cstddef _gcc_cxx_count)
-        if(NOT _gcc_cxx_count EQUAL 1)
-            message(FATAL_ERROR "expected exactly one include/c++/<version>/cstddef under "
-                                "${_gcc_sysroot}, found ${_gcc_cxx_count}: ${_gcc_cxx_cstddef}")
-        endif()
-        get_filename_component(_gcc_cxx_include "${_gcc_cxx_cstddef}" DIRECTORY)
+        kvasir_gcc_sysroot(${CMAKE_CXX_COMPILER} _gcc_sysroot _gcc_cxx_include)
         list(APPEND system_includes ${_gcc_cxx_include}/arm-none-eabi ${_gcc_cxx_include} ${_gcc_cxx_include}/backward)
     endif()
     list(APPEND system_includes ${kvasir_cmake_dir}/../lib/libc/include ${kvasir_cmake_dir}/../lib/libc)
@@ -138,11 +114,15 @@ if("${CLIB}" STREQUAL "llvm")
 endif()
 list(TRANSFORM system_includes PREPEND "-isystem")
 
-set(common_flags ${target_flags} ${common_warning_flags} ${profile_flags} ${system_includes} ${compiler_common_flags}
-                 ${arm_compiler_common_flags})
+# C++26 gives an uninitialised local an erroneous value: gcc initialises it (.DEFERRED_INIT), and at -Og an 8-byte one
+# is a memset call - in a RAM function a call into flash (an apply() reading two registers). Locals stay uninitialised
+# as in C++23 and as clang leaves them; reading one is still an error the sanitizers and warnings look for.
+set(auto_var_init_flags -ftrivial-auto-var-init=uninitialized)
 
-set(cxx_flags ${common_flags} ${compiler_common_cxx_flags} ${nostd_cxx_flags} -Woverloaded-virtual -Wsign-promo
-              -Wstrict-null-sentinel)
+set(common_flags ${target_flags} ${profile_flags} ${system_includes} ${compiler_common_flags}
+                 ${arm_compiler_common_flags} ${auto_var_init_flags})
+
+set(cxx_flags ${common_flags} ${compiler_common_cxx_flags} ${nostd_cxx_flags})
 
 set(c_flags ${common_flags} ${compiler_common_c_flags} ${nostd_c_flags})
 
@@ -152,37 +132,30 @@ set(asm_flags ${common_flags} ${compiler_common_asm_flags})
 
 set(LINKER_PREFIX "-Wl,")
 
-# --whole-archive bracketed around one archive, for util.cmake's shared runtime archives
-set(CMAKE_C_LINK_LIBRARY_USING_KVASIR_WHOLE_ARCHIVE_SUPPORTED TRUE)
-set(CMAKE_C_LINK_LIBRARY_USING_KVASIR_WHOLE_ARCHIVE "${LINKER_PREFIX}--whole-archive" "<LINK_ITEM>"
-                                                    "${LINKER_PREFIX}--no-whole-archive")
-set(CMAKE_CXX_LINK_LIBRARY_USING_KVASIR_WHOLE_ARCHIVE_SUPPORTED TRUE)
-set(CMAKE_CXX_LINK_LIBRARY_USING_KVASIR_WHOLE_ARCHIVE ${CMAKE_C_LINK_LIBRARY_USING_KVASIR_WHOLE_ARCHIVE})
+kvasir_whole_archive_feature("${LINKER_PREFIX}")
 
-# GNU ld 2.39+ warns "LOAD segment with RWX permissions": RAM functions next to the data are wanted. Probed by hand: a
-# toolchain file has no check_linker_flag yet; an older ld neither warns nor knows the flag.
-execute_process(
-    COMMAND arm-none-eabi-ld --help
-    OUTPUT_VARIABLE kvasir_gnu_ld_help
-    ERROR_QUIET)
-if(kvasir_gnu_ld_help MATCHES "--no-warn-rwx-segments")
-    list(APPEND linker_common_flags --no-warn-rwx-segments)
-endif()
+# GNU ld warns "LOAD segment with RWX permissions": RAM functions next to the data are wanted
+list(APPEND linker_common_flags --no-warn-rwx-segments)
 
 list(TRANSFORM linker_common_flags PREPEND ${LINKER_PREFIX})
 
+# the link per optimisation set (cmake/arm_compiler_common.cmake)
+set(optimize_link_option_speed)
+set(optimize_link_option_size)
+set(optimize_link_option_debug)
 if("${CLIB}" STREQUAL "llvm")
     # no specs file: the driver must not add newlib; libgcc is still wanted
-    set(linker_flags ${linker_common_flags} -nostdlib)
+    foreach(_set speed size debug)
+        set(linker_flags_${_set} ${linker_common_flags} -nostdlib)
+    endforeach()
     # standard libraries land after the objects, where GNU ld needs -lgcc to be
     set(CMAKE_C_STANDARD_LIBRARIES "-lgcc")
     set(CMAKE_CXX_STANDARD_LIBRARIES "-lgcc")
-    set(optimize_specs_speed ${SPEC_REPLACEMENT_EMPTY_MARKER})
-    set(optimize_specs_size ${SPEC_REPLACEMENT_EMPTY_MARKER})
-    set(optimize_specs_debug ${SPEC_REPLACEMENT_EMPTY_MARKER})
 else()
-    set(linker_flags ${linker_common_flags} -nostartfiles --specs=${SPEC_REPLACEMENT_STRING}.specs -Wl,--start-group
-                     -Wl,--end-group)
+    # newlib through gcc's specs: nano (newlib-nano, libstdc++ nano) for size and debug, nosys for speed
+    set(linker_flags_speed ${linker_common_flags} -nostartfiles --specs=nosys.specs)
+    set(linker_flags_size ${linker_common_flags} -nostartfiles --specs=nano.specs)
+    set(linker_flags_debug ${linker_common_flags} -nostartfiles --specs=nano.specs)
 endif()
 
 include(${CMAKE_CURRENT_LIST_DIR}/compiler_common_end.cmake)

@@ -89,12 +89,48 @@ static_assert(
   }(),
   "setPeriod: counted from the last grid point");
 
+// ---- the shared arithmetic: Every and the Executor's Repeat (Kvasir::Detail) --------------------
+
+static_assert(
+  [] {
+      constexpr auto p = std::chrono::milliseconds{10};
+      for(std::int64_t const t :
+          {10, 11, 19, 20, 29, 47, 1000}) {   // on time, late, k periods late
+          Every<Ms> up{10ms, at(10)};
+          Every<Ms> skip{10ms, at(10)};
+          Every<Ms> re{10ms, at(10)};
+          MsTp      dUp   = at(10);
+          MsTp      dSkip = at(10);
+          MsTp      dRe   = at(10);
+          if(!up.due(at(t))) { return false; }
+          Kvasir::Detail::catchUp(dUp, p);
+          auto const k = skip.dueCount(at(t));
+          if(up.next() != dUp || k != Kvasir::Detail::skipPast(dSkip, p, at(t))
+             || skip.next() != dSkip)
+          {
+              return false;
+          }
+          // k periods passed, the next due time on the old grid and past now
+          if(k != static_cast<std::uint32_t>((t - 10) / 10 + 1) || dSkip <= at(t)
+             || dSkip.time_since_epoch().count() % 10 != 0)
+          {
+              return false;
+          }
+          re.skipTo(at(t));
+          Kvasir::Detail::rebase(dRe, p, at(t));
+          if(re.next() != dRe || dRe != at(t + 10)) { return false; }
+      }
+      return true;
+  }(),
+  "Detail::catchUp / skipPast / rebase are due() / dueCount() / skipTo(), and skipPast keeps the "
+  "grid");
+
 // ---- Deadline ----------------------------------------------------------------------------------
 
 static_assert(
   [] {
-      Deadline<Ms> d;
-      return d.stopped() && !d.expired(at(0)) && !d.armed(at(0)) && d.remaining(at(0)) == 0ms;
+      Deadline<Ms> const d;
+      return d.isStopped() && !d.expired(at(0)) && !d.armed(at(0)) && d.remaining(at(0)) == 0ms;
   }(),
   "Deadline: stopped by default");
 
@@ -104,7 +140,7 @@ static_assert(
       d.restart(50ms, at(100));
       bool ok = d.armed(at(149)) && !d.expired(at(149)) && d.remaining(at(120)) == 30ms;
       ok      = ok && d.expired(at(150)) && !d.armed(at(150)) && d.remaining(at(160)) == -10ms;
-      ok      = ok && !d.due(at(149)) && d.due(at(150)) && d.stopped() && !d.due(at(151));
+      ok      = ok && !d.due(at(149)) && d.due(at(150)) && d.isStopped() && !d.due(at(151));
       return ok;
   }(),
   "Deadline: armed, expired, remaining signed, due once then stopped");
@@ -113,9 +149,9 @@ static_assert(
   [] {
       Deadline<Ms> d{50ms, at(0)};
       d.restart(50ms, at(40));   // moves the end
-      bool ok = !d.expired(at(50)) && d.expired(at(90));
+      bool const ok = !d.expired(at(50)) && d.expired(at(90));
       d.stop();
-      return ok && d.stopped() && !d.expired(at(1000));
+      return ok && d.isStopped() && !d.expired(at(1000));
   }(),
   "Deadline: restart while armed moves the end, stop");
 
@@ -125,38 +161,51 @@ static_assert(sizeof(Every32<Ms>) == 8 && sizeof(Deadline32<Ms>) == 8);
 
 // ---- 32-bit forms across the wrap ----------------------------------------------------------------
 
-constexpr std::int64_t Wrap = std::int64_t{1} << 32;
+constexpr std::int64_t wrap = std::int64_t{1} << 32;
 
 static_assert(
   [] {
-      Every32<Ms> e{10ms, at(Wrap - 15)};
-      bool        ok = e.due(at(Wrap - 15)) && !e.due(at(Wrap - 6));
-      ok             = ok && e.due(at(Wrap - 5));                           // grid point Wrap - 5
-      ok             = ok && !e.due(at(Wrap + 4)) && e.due(at(Wrap + 5));   // across the wrap
-      ok             = ok && e.dueCount(at(Wrap + 36)) == 3;                // 15, 25, 35
-      ok             = ok && !e.due(at(Wrap + 44)) && e.due(at(Wrap + 45));
+      Every32<Ms> e{10ms, at(wrap - 15)};
+      bool        ok = e.due(at(wrap - 15)) && !e.due(at(wrap - 6));
+      ok             = ok && e.due(at(wrap - 5));                           // grid point Wrap - 5
+      ok             = ok && !e.due(at(wrap + 4)) && e.due(at(wrap + 5));   // across the wrap
+      ok             = ok && e.dueCount(at(wrap + 36)) == 3;                // 15, 25, 35
+      ok             = ok && !e.due(at(wrap + 44)) && e.due(at(wrap + 45));
       return ok;
   }(),
   "Every32: due and dueCount across 2^32 ms");
 
 static_assert(
   [] {
-      Every32<Ms> e{10ms, at(Wrap - 3)};
-      (void)e.due(at(Wrap - 3));
-      e.skipTo(at(Wrap + 100));
-      return !e.due(at(Wrap + 109)) && e.due(at(Wrap + 110));
+      Every32<Ms> e{10ms, at(wrap - 3)};
+      (void)e.due(at(wrap - 3));
+      e.skipTo(at(wrap + 100));
+      return !e.due(at(wrap + 109)) && e.due(at(wrap + 110));
   }(),
   "Every32: skipTo across the wrap");
+
+// the distance from the last grid point is unsigned: a gap past half the range (2^31 + 10 Units, beyond
+// Rollover's signed distance) still counts as elapsed
+static_assert(
+  [] {
+      constexpr std::int64_t half = std::int64_t{1} << 31;
+      Every32<Ms>            e{10ms, at(wrap - 15)};
+      bool                   ok = e.due(at(wrap - 15));   // last grid point Wrap - 15
+      ok                        = ok && e.due(at(wrap - 15 + half + 10));
+      Deadline32<Ms> const d{10ms, at(wrap - 15)};
+      return ok && d.expired(at(wrap - 15 + half + 10)) && !d.armed(at(wrap - 15 + half + 10));
+  }(),
+  "Every32 / Deadline32: a gap of 2^31 + 10 Units is elapsed (unsigned distance)");
 
 static_assert(
   [] {
       Deadline32<Ms> d;
-      bool           ok = d.stopped() && !d.expired(at(0)) && d.remaining(at(0)).count() == 0;
-      d.restart(20ms, at(Wrap - 10));
-      ok = ok && d.armed(at(Wrap + 9)) && !d.expired(at(Wrap + 9));
-      ok = ok && d.remaining(at(Wrap)).count() == 10;
-      ok = ok && d.expired(at(Wrap + 10)) && d.remaining(at(Wrap + 12)).count() == -2;
-      ok = ok && d.due(at(Wrap + 10)) && d.stopped();
+      bool           ok = d.isStopped() && !d.expired(at(0)) && d.remaining(at(0)).count() == 0;
+      d.restart(20ms, at(wrap - 10));
+      ok = ok && d.armed(at(wrap + 9)) && !d.expired(at(wrap + 9));
+      ok = ok && d.remaining(at(wrap)).count() == 10;
+      ok = ok && d.expired(at(wrap + 10)) && d.remaining(at(wrap + 12)).count() == -2;
+      ok = ok && d.due(at(wrap + 10)) && d.isStopped();
       return ok;
   }(),
   "Deadline32 across the wrap");
@@ -168,12 +217,12 @@ using Cpu = Kvasir::Test::FakeClockT<std::chrono::duration<std::int64_t, std::ra
 
 // the power of two of clock ticks closest to a microsecond; a clock at or above 1 us per tick is
 // its own short tick, so the cases above (FakeClock in ms) count in milliseconds as before
-static_assert(Kvasir::detail::ShortShift<Cpu<125'000'000>> == 7);   // 1.024 us
-static_assert(Kvasir::detail::ShortShift<Cpu<150'000'000>> == 7);   // 0.853 us
-static_assert(Kvasir::detail::ShortShift<Cpu<48'000'000>> == 6);    // 1.33 us
-static_assert(Kvasir::detail::ShortShift<Cpu<12'000'000>> == 4);    // 1.33 us
-static_assert(Kvasir::detail::ShortShift<Cpu<1'000'000>> == 0);
-static_assert(Kvasir::detail::ShortShift<Us> == 0 && Kvasir::detail::ShortShift<Ms> == 0);
+static_assert(Kvasir::Detail::shortShift<Cpu<125'000'000>> == 7);   // 1.024 us
+static_assert(Kvasir::Detail::shortShift<Cpu<150'000'000>> == 7);   // 0.853 us
+static_assert(Kvasir::Detail::shortShift<Cpu<48'000'000>> == 6);    // 1.33 us
+static_assert(Kvasir::Detail::shortShift<Cpu<12'000'000>> == 4);    // 1.33 us
+static_assert(Kvasir::Detail::shortShift<Cpu<1'000'000>> == 0);
+static_assert(Kvasir::Detail::shortShift<Us> == 0 && Kvasir::Detail::shortShift<Ms> == 0);
 static_assert(std::ratio_equal_v<Kvasir::ShortTick<Cpu<125'000'000>>,
                                  std::ratio<128,
                                             125'000'000>>);
@@ -204,13 +253,13 @@ static_assert(
 static_assert(
   [] {
       // across 2^32 short ticks (73 minutes at 125 MHz)
-      Every32<Fast> e{1ms, shortAt(Wrap - 500)};
-      bool          ok = e.due(shortAt(Wrap - 500)) && !e.due(shortAt(Wrap + 476));
-      ok               = ok && e.due(shortAt(Wrap + 477));
-      ok               = ok && e.dueCount(shortAt(Wrap + 477 + 3 * 977)) == 3;
-      Deadline32<Fast> d{10ms, shortAt(Wrap - 100)};   // 9765.6 short ticks: 9766
-      ok = ok && d.armed(shortAt(Wrap + 9665)) && d.expired(shortAt(Wrap + 9666));
-      ok = ok && d.remaining(shortAt(Wrap)).count() == 9666;
+      Every32<Fast> e{1ms, shortAt(wrap - 500)};
+      bool          ok = e.due(shortAt(wrap - 500)) && !e.due(shortAt(wrap + 476));
+      ok               = ok && e.due(shortAt(wrap + 477));
+      ok               = ok && e.dueCount(shortAt(wrap + 477 + 3 * 977)) == 3;
+      Deadline32<Fast> const d{10ms, shortAt(wrap - 100)};   // 9765.6 short ticks: 9766
+      ok = ok && d.armed(shortAt(wrap + 9665)) && d.expired(shortAt(wrap + 9666));
+      ok = ok && d.remaining(shortAt(wrap)).count() == 9666;
       return ok;
   }(),
   "the short-tick forms across the wrap");
@@ -246,10 +295,10 @@ int main() {
     CHECK(d.armed());
     Ms::advance(1ms);
     CHECK(d.due());
-    CHECK(d.stopped());
+    CHECK(d.isStopped());
 
     // micro-second 32-bit form on a microsecond clock across 2^32 us (71.6 min)
-    Us::set(std::chrono::microseconds{Wrap - 100});
+    Us::set(std::chrono::microseconds{wrap - 100});
     Every32<Us, std::micro> fast{1000us};
     CHECK(fast.due());
     Us::advance(999us);

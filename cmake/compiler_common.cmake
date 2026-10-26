@@ -2,8 +2,8 @@
 # libstdc++'s bits/stdc++.h)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
-# Common Compiler Configuration Shared compiler flags and settings used across all compiler toolchains Defines
-# optimization, warning, and language standard settings
+# The flags every image and runtime library starts from, either compiler: sections per function and object, the stack
+# protector, the language standards without exceptions and RTTI, the static link with its entry ResetISR.
 
 set(compiler_common_flags
     -ffunction-sections
@@ -14,8 +14,7 @@ set(compiler_common_flags
     # no math function here sets errno (the libc is built LIBC_MATH_NO_ERRNO): with this the compiler may use the
     # instruction for sqrtf and friends where the core has one
     -fno-math-errno
-    -fstack-protector-strong
-    -Wno-unused-macros)
+    -fstack-protector-strong)
 
 set(compiler_common_cxx_flags
     -std=c++26

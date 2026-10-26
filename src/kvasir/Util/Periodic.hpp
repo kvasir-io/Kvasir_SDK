@@ -19,10 +19,15 @@
 //   skipTo(now)  rebase: the next due() is one period from now, whatever was missed (no burst
 //                after a flash erase or a log flood).
 //
+// The same three are Kvasir::Repeat::catchUp / skip / rebase, what an Executor timer is armed with
+// (Executor.hpp): one set of arithmetic, Detail::catchUp / skipPast / rebase, for both.
+//
 // Deadline is a one-shot: stopped, or armed until an end time. Every32 / Deadline32 are 8-byte
 // forms for structs kept in many copies; they wrap (see there). An ISR and the main loop must not
 // share one object. On a per-core clock (CoreSystickClock) build and poll on the same core, or
 // synchronise the clocks.
+
+#include "kvasir/Util/Rollover.hpp"
 
 #include <cassert>
 #include <chrono>
@@ -39,6 +44,40 @@ concept PollClock = requires {
     typename C::duration;
     { C::now() } -> std::same_as<typename C::time_point>;
 };
+
+/// What a periodic schedule does when it ran late. Every implements one per call (due / dueCount /
+/// skipTo); an Executor timer is armed with one (once: catchUp for a periodic timer).
+enum class Repeat : std::uint8_t { once, catchUp, skip, rebase };
+
+namespace Detail {
+    // The schedule arithmetic of Every and Executor. `due` is the time the run was due; the caller
+    // has checked now >= due.
+    template<typename TP,
+             typename D>
+    [[gnu::always_inline]] constexpr void catchUp(TP& due,
+                                                  D   period) {
+        due += period;
+    }
+
+    /// skip: moves `due` past now on the old grid; returns the periods passed (1 = on time).
+    template<typename TP,
+             typename D>
+    [[gnu::always_inline]] constexpr std::uint32_t skipPast(TP& due,
+                                                            D   period,
+                                                            TP  now) {
+        auto const k = static_cast<std::uint32_t>((now - due) / period) + 1U;
+        due += period * k;
+        return k;
+    }
+
+    template<typename TP,
+             typename D>
+    [[gnu::always_inline]] constexpr void rebase(TP& due,
+                                                 D   period,
+                                                 TP  now) {
+        due = now + period;
+    }
+}   // namespace Detail
 
 template<PollClock ClockT>
 class Every {
@@ -62,7 +101,7 @@ public:
     /// (catch-up).
     [[nodiscard]] constexpr bool due(time_point now = ClockT::now()) {
         if(now < next_) { return false; }
-        next_ += period_;
+        Detail::catchUp(next_, period_);
         return true;
     }
 
@@ -70,13 +109,11 @@ public:
     /// One 64-bit division, on the due path only.
     [[nodiscard]] constexpr std::uint32_t dueCount(time_point now = ClockT::now()) {
         if(now < next_) { return 0; }
-        auto const k = static_cast<std::uint32_t>((now - next_) / period_) + 1U;
-        next_ += period_ * k;
-        return k;
+        return Detail::skipPast(next_, period_, now);
     }
 
     /// Restart from `now`: the next `due()` is one period from now, whatever was missed.
-    constexpr void skipTo(time_point now) { next_ = now + period_; }
+    constexpr void skipTo(time_point now) { Detail::rebase(next_, period_, now); }
 
     /// A new period, counted from the last grid point: a shorter one fires `p` after the last
     /// due(), a longer one never fires early.
@@ -128,21 +165,21 @@ public:
         end_ = now + std::chrono::duration_cast<duration>(in);
     }
 
-    constexpr void stop() { end_ = Stopped; }
+    constexpr void stop() { end_ = stopped; }
 
-    [[nodiscard]] constexpr bool stopped() const { return end_ == Stopped; }
+    [[nodiscard]] constexpr bool isStopped() const { return end_ == stopped; }
 
     [[nodiscard]] constexpr bool expired(time_point now = ClockT::now()) const {
-        return !stopped() && now >= end_;
+        return !isStopped() && now >= end_;
     }
 
     [[nodiscard]] constexpr bool armed(time_point now = ClockT::now()) const {
-        return !stopped() && now < end_;
+        return !isStopped() && now < end_;
     }
 
     /// Signed: negative once expired, zero when stopped.
     [[nodiscard]] constexpr duration remaining(time_point now = ClockT::now()) const {
-        return stopped() ? duration{} : end_ - now;
+        return isStopped() ? duration{} : end_ - now;
     }
 
     /// True exactly once, when expired; the deadline is stopped after it.
@@ -156,17 +193,17 @@ public:
     [[nodiscard]] constexpr time_point end() const { return end_; }
 
 private:
-    static constexpr time_point Stopped = time_point::max();
-    time_point                  end_{Stopped};
+    static constexpr time_point stopped = time_point::max();
+    time_point                  end_{stopped};
 };
 
-namespace detail {
-    // A short tick is 2^ShortShift ticks of the clock: the power of two that comes closest to a
+namespace Detail {
+    // A short tick is 2^shortShift ticks of the clock: the power of two that comes closest to a
     // microsecond (125 MHz: 2^7 = 1.024 us; 150 MHz: 2^7 = 0.853 us; 48 MHz: 2^6 = 1.33 us), 2^0
     // for a clock whose own tick is a microsecond or longer. The clock's time in short ticks is
     // a shift, where any decimal unit is a 64-bit division.
     template<PollClock ClockT>
-    inline constexpr unsigned ShortShift = [] {
+    inline constexpr unsigned shortShift = [] {
         using P                         = typename ClockT::period;
         std::uintmax_t const ticksPerUs = static_cast<std::uintmax_t>(P::den)
                                         / (static_cast<std::uintmax_t>(P::num) * 1'000'000U);
@@ -177,22 +214,22 @@ namespace detail {
         if(ticksPerUs > 1 && ticksPerUs * ticksPerUs >= 2 * low * low) { ++shift; }
         return shift;
     }();
-}   // namespace detail
+}   // namespace Detail
 
 /// The unit Every32 and Deadline32 count in by default: about a microsecond, 2^32 of them
 /// 61 to 95 minutes on the clocks here.
 template<PollClock ClockT>
 using ShortTick = std::ratio_multiply<typename ClockT::period,
-                                      std::ratio<std::intmax_t{1} << detail::ShortShift<ClockT>>>;
+                                      std::ratio<std::intmax_t{1} << Detail::shortShift<ClockT>>>;
 
-namespace detail {
+namespace Detail {
     // the clock's time in Unit, truncated to 32 bits: wraps every 2^32 Units
     template<PollClock ClockT,
              typename Unit>
     constexpr std::uint32_t ticks32(typename ClockT::time_point t) {
         if constexpr(std::ratio_equal_v<Unit, ShortTick<ClockT>>) {
             return static_cast<std::uint32_t>(
-              static_cast<std::uint64_t>(t.time_since_epoch().count()) >> ShortShift<ClockT>);
+              static_cast<std::uint64_t>(t.time_since_epoch().count()) >> shortShift<ClockT>);
         } else {
             return static_cast<std::uint32_t>(
               std::chrono::duration_cast<std::chrono::duration<std::int64_t, Unit>>(
@@ -211,7 +248,7 @@ namespace detail {
         assert(n >= 0 && n < (std::int64_t{1} << 31));   // below half the range
         return static_cast<std::uint32_t>(n);
     }
-}   // namespace detail
+}   // namespace Detail
 
 // Every in 8 bytes: the last grid point and the period, both in Unit, 32 bits. It stores no
 // position to order: due() compares the unsigned distance `now - last` with the period, which
@@ -235,10 +272,10 @@ public:
     constexpr explicit Every32(std::chrono::duration<Rep,
                                                      P> period,
                                time_point               first = ClockT::now())
-      : last_{detail::ticks32<ClockT,
-                              Unit>(first)
-              - detail::units32<Unit>(period)}
-      , period_{detail::units32<Unit>(period)} {}
+      : last_{Rollover<std::uint32_t>{Detail::ticks32<ClockT,
+                                                      Unit>(first)}
+              - Detail::units32<Unit>(period)}
+      , period_{Detail::units32<Unit>(period)} {}
 
     /// Catch-up, as Every::due().
     [[nodiscard]] constexpr bool due(time_point now = ClockT::now()) {
@@ -255,25 +292,29 @@ public:
     }
 
     /// As Every::skipTo(): the next due() is one period from now.
-    constexpr void skipTo(time_point now) { last_ = detail::ticks32<ClockT, Unit>(now); }
+    constexpr void skipTo(time_point now) {
+        last_ = Rollover<std::uint32_t>{Detail::ticks32<ClockT, Unit>(now)};
+    }
 
     /// As Every::setPeriod(): counted from the last grid point.
     template<typename Rep,
              typename P>
     constexpr void setPeriod(std::chrono::duration<Rep,
                                                    P> p) {
-        period_ = detail::units32<Unit>(p);
+        period_ = Detail::units32<Unit>(p);
     }
 
     [[nodiscard]] constexpr ticks period() const { return ticks{period_}; }
 
 private:
-    constexpr std::uint32_t elapsed(time_point now) const {
-        return static_cast<std::uint32_t>(detail::ticks32<ClockT, Unit>(now) - last_);
+    // the UNSIGNED forward distance from the last grid point: never Rollover's signed operator-,
+    // which would halve the "any gap below 2^32" range above
+    [[nodiscard]] constexpr std::uint32_t elapsed(time_point now) const {
+        return static_cast<std::uint32_t>(Detail::ticks32<ClockT, Unit>(now) - last_.value());
     }
 
-    std::uint32_t last_;
-    std::uint32_t period_;
+    Rollover<std::uint32_t> last_;
+    std::uint32_t           period_;
 };
 
 // Deadline in 8 bytes: the start and the interval in Unit, 32 bits (no end position without an
@@ -301,27 +342,27 @@ public:
     constexpr void restart(std::chrono::duration<Rep,
                                                  P> in,
                            time_point               now = ClockT::now()) {
-        start_    = detail::ticks32<ClockT, Unit>(now);
-        interval_ = detail::units32<Unit>(in) | ArmedBit;
+        start_    = Rollover<std::uint32_t>{Detail::ticks32<ClockT, Unit>(now)};
+        interval_ = Detail::units32<Unit>(in) | armedBit;
     }
 
     constexpr void stop() { interval_ = 0; }
 
-    [[nodiscard]] constexpr bool stopped() const { return (interval_ & ArmedBit) == 0; }
+    [[nodiscard]] constexpr bool isStopped() const { return (interval_ & armedBit) == 0; }
 
     [[nodiscard]] constexpr bool expired(time_point now = ClockT::now()) const {
-        return !stopped() && elapsed(now) >= interval();
+        return !isStopped() && elapsed(now) >= interval();
     }
 
     [[nodiscard]] constexpr bool armed(time_point now = ClockT::now()) const {
-        return !stopped() && elapsed(now) < interval();
+        return !isStopped() && elapsed(now) < interval();
     }
 
     /// Signed, in Unit: negative once expired, zero when stopped.
     [[nodiscard]] constexpr std::chrono::duration<std::int32_t,
                                                   Unit>
     remaining(time_point now = ClockT::now()) const {
-        if(stopped()) { return {}; }
+        if(isStopped()) { return {}; }
         return std::chrono::duration<std::int32_t, Unit>{
           static_cast<std::int32_t>(interval() - elapsed(now))};
     }
@@ -334,16 +375,17 @@ public:
     }
 
 private:
-    static constexpr std::uint32_t ArmedBit = 1U << 31;
+    static constexpr std::uint32_t armedBit = 1U << 31;
 
-    constexpr std::uint32_t interval() const { return interval_ & ~ArmedBit; }
+    [[nodiscard]] constexpr std::uint32_t interval() const { return interval_ & ~armedBit; }
 
-    constexpr std::uint32_t elapsed(time_point now) const {
-        return static_cast<std::uint32_t>(detail::ticks32<ClockT, Unit>(now) - start_);
+    // unsigned, as Every32's
+    [[nodiscard]] constexpr std::uint32_t elapsed(time_point now) const {
+        return static_cast<std::uint32_t>(Detail::ticks32<ClockT, Unit>(now) - start_.value());
     }
 
-    std::uint32_t start_{};
-    std::uint32_t interval_{};
+    Rollover<std::uint32_t> start_{};
+    std::uint32_t           interval_{};   // the armed bit in bit 31: a plain word
 };
 
 }   // namespace Kvasir

@@ -31,6 +31,7 @@
  * ├─────────────────────────────────────┤ _LINKER_INTERN_data_start_flash_
  * │ .data (flash copy of init data)     │
  * └─────────────────────────────────────┘ _LINKER_INTERN_data_end_flash_
+ *   (a chip's own load images after it) _LINKER_INTERN_image_end_flash_ (default: .data's end)
  *
  * RAM:
  * ┌─────────────────────────────────────┐ ORIGIN(ram)
@@ -40,7 +41,7 @@
  * │                                 |   │
  * │ .stack (early placement)        |   │
  * │                                 |   │
- * │ Stack space (two-stage link)    |   │
+ * │ Stack space (what RAM is left)  |   │
  * ├─────────────────────────────────────┤ _LINKER_INTERN_stack_end_
  * │ .data (initialized globals)         │ <- LMA=flash, VMA=RAM, copied at startup
  * │  - .ramfunc* (RAM functions)        │
@@ -91,7 +92,7 @@
  * │                                 |   │
  * │ .stack (late placement)         |   │
  * │                                 |   │
- * │ Stack space (two-stage link)    |   │
+ * │ Stack space (what RAM is left)  |   │
  * ├─────────────────────────────────┴───┤ _LINKER_INTERN_stack_end_
  * ├─────────────────────────────────┬───┤ _LINKER_INTERN_heap_start_
  * │                                 |   │
@@ -196,14 +197,14 @@ PROVIDE(__exidx_end = 0);
 
 _LINKER_INTERN_min_stack_size_ = cmake_min_stack_size;
 
-/* The stack (common_stack_body.inc.ld) takes the RAM the other sections leave: cmake_ram_size minus the other RAM
+/* The stack (common_stack_body.inc.ld) takes the RAM the other sections leave: LENGTH(ram) minus the other RAM
    sections (_LINKER_INTERN_ram_other_size_, common_ram.ld / common_ram_only.ld), the minimum stack, the heap and a
    1/256 margin; the linker resolves the forward references. Top level, not inside .stack: GNU ld makes a symbol
    assigned inside an output section relative to that section. Linker arithmetic is unsigned: when that much is not
    left the extra is 0, so an overflow reads "section ... will not fit in region 'ram'", and the assert below catches
    the case where everything fits but the margin does not. */
-_LINKER_INTERN_ram_wanted_  = _LINKER_INTERN_ram_other_size_ + cmake_min_stack_size + cmake_heap_size + cmake_ram_size / 256;
-_LINKER_INTERN_stack_extra_ = _LINKER_INTERN_ram_wanted_ <= cmake_ram_size ? cmake_ram_size - _LINKER_INTERN_ram_wanted_ : 0;
+_LINKER_INTERN_ram_wanted_  = _LINKER_INTERN_ram_other_size_ + cmake_min_stack_size + cmake_heap_size + LENGTH(ram) / 256;
+_LINKER_INTERN_stack_extra_ = _LINKER_INTERN_ram_wanted_ <= LENGTH(ram) ? LENGTH(ram) - _LINKER_INTERN_ram_wanted_ : 0;
 
 /* ROM/Flash symbols defined in configuration-specific files */
 /* RAM definitions */
@@ -219,17 +220,19 @@ _LINKER_INTERN_stackProtector_size_ = _LINKER_INTERN_stackProtector_end_ - _LINK
 ASSERT( _LINKER_INTERN_data_start_flash_ == 0 || _LINKER_INTERN_data_end_flash_ - _LINKER_INTERN_data_start_flash_
      == _LINKER_INTERN_data_end_ - _LINKER_INTERN_data_start_,"ERROR: corrupted linker file - data in RAM smaller than in flash");
 
+ASSERT( _LINKER_INTERN_data_start_flash_ % 8 == 0,
+        "ERROR: .data's load image in flash is not 8-aligned (initMemory's __aeabi_memcpy8 needs it)");
+
 ASSERT( _LINKER_INTERN_min_stack_size_ <= _LINKER_INTERN_stack_size_ - _LINKER_INTERN_stackProtector_size_,"ERROR: not enough space for stack");
 
 /* common_stack_body.inc.ld: the sections, MIN_STACK_SIZE, HEAP_SIZE and the RAM/256 margin must fit in RAM */
-ASSERT( _LINKER_INTERN_ram_wanted_ <= cmake_ram_size,
+ASSERT( _LINKER_INTERN_ram_wanted_ <= LENGTH(ram),
         "ERROR: not enough RAM: the sections, the minimum stack, the heap and a RAM/256 margin do not fit");
 
 /* A secondary core's vector table in the image means a SecondaryCore is in use; it needs a
    stack, and a zero-sized one would overflow on the first push. */
 ASSERT( _LINKER_INTERN_core1_vectors_end_ == _LINKER_INTERN_core1_vectors_start_ || cmake_core1_stack_size >= 1024,
         "ERROR: a SecondaryCore is linked but CORE1_STACK_SIZE is not set (needs at least 1k)");
-/*ASSERT(_LINKER_INTERN_init_array_start_ ==  _LINKER_INTERN_init_array_end_,"ERROR: global init stuff not supported");*/
 
 /* ResetISR is named by the Startup's reset entry (StartUp.hpp nameResetEntry), which exists only
    when main.cpp instantiates the Startup's vector table. Without it --entry=ResetISR is only a
@@ -255,7 +258,7 @@ _LINKER_stack_end_        = _LINKER_INTERN_stack_end_;
 /* Core 1's stack: .stack1 in ram, or with CORE1_STACK_PLACEMENT scratch (cmake_core1_stack_in_scratch, util.cmake)
    the part of the chip's core 1 scratch bank its linker script reserves (_LINKER_INTERN_stack1_scratch_*). A chip
    without a scratch bank defines neither; the PROVIDEs keep the expression linkable and the ASSERT refuses the
-   placement there (util.cmake refuses it first, from TARGET_CORE1_SCRATCH_SIZE). */
+   placement there (util.cmake refuses it first, from kvasir_chip(CORE1_SCRATCH_SIZE)). */
 PROVIDE(_LINKER_INTERN_stack1_scratch_start_ = 0);
 PROVIDE(_LINKER_INTERN_stack1_scratch_end_ = 0);
 ASSERT( !cmake_core1_stack_in_scratch || _LINKER_INTERN_stack1_scratch_end_ - _LINKER_INTERN_stack1_scratch_start_ >= cmake_core1_stack_size,
@@ -269,6 +272,13 @@ _LINKER_init_array_end_   = _LINKER_INTERN_init_array_end_;
 _LINKER_data_start_flash_ = _LINKER_INTERN_data_start_flash_;
 _LINKER_data_end_flash_   = _LINKER_INTERN_data_end_flash_;
 _LINKER_data_size_        = _LINKER_INTERN_data_end_flash_ - _LINKER_INTERN_data_start_flash_;
+
+/* The end of the flash image: the load end of the last section the scripts load into flash. The default is .data's;
+   a chip script that loads anything after .data defines _LINKER_INTERN_image_end_flash_ before it includes this
+   file. 0 in a RAM-only image (_LINKER_INTERN_data_end_flash_ is 0 there). cmake/tools/elf_image.py fails a link
+   that loads a flash section past it. */
+PROVIDE(_LINKER_INTERN_image_end_flash_ = _LINKER_INTERN_data_end_flash_);
+_LINKER_image_end_flash_  = _LINKER_INTERN_image_end_flash_;
 
 _LINKER_data_start_       = _LINKER_INTERN_data_start_;
 _LINKER_data_end_         = _LINKER_INTERN_data_end_;

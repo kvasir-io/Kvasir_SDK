@@ -16,8 +16,6 @@
     // inlined into a RAM function, it brings its instrumentation along: exempt as well
     #define KVASIR_RAM_FUNC_INLINE_ATTRIBUTES                                         \
         gnu::section(".ramfunc"), gnu::always_inline, clang::no_sanitize("undefined")
-    #define KVASIR_RESETISR_ATTRIBUTES noreturn
-    #define KVASIR_ALWAYS_INLINE       clang::always_inline
     // no atexit() registration for the static's destructor
     #define KVASIR_NO_DESTROY                    clang::no_destroy
     #define KVASIR_NO_SANITIZE_UNSIGNED_OVERFLOW clang::no_sanitize("unsigned-integer-overflow")
@@ -30,21 +28,17 @@
           gnu::no_sanitize("undefined", "bounds-strict"), gnu::no_stack_protector
     #define KVASIR_RAM_FUNC_INLINE_ATTRIBUTES                              \
         gnu::always_inline, gnu::no_sanitize("undefined", "bounds-strict")
-    // the C++ body behind the naked reset entry (StartUp.hpp KVASIR_RESET_ENTRY_ASM): not naked
-    // itself, gcc builds no frame for a naked function and the body is the whole start-up in C++
-    #define KVASIR_RESETISR_ATTRIBUTES noreturn
-    #define KVASIR_ALWAYS_INLINE       gnu::always_inline
-    // gcc has no no_destroy; the atexit() registration lands in StartUp.hpp's stub instead
+    // gcc has no no_destroy; the atexit() registration lands in StartUp/Runtime/Libc.hpp's stub instead
     #define KVASIR_NO_DESTROY
     // gcc has no unsigned-overflow sanitizer; naming it anyway earns a -Wattributes
     #define KVASIR_NO_SANITIZE_UNSIGNED_OVERFLOW
 #endif
 
-// The section of an INLINE variable: [[KVASIR_SECTION(".noInit")]] on a namespace-scope inline
+// The section of an INLINE variable: [[KVASIR_SECTION(".eeprom")]] on a namespace-scope inline
 // variable or a variable template, [[KVASIR_SECTION_MEMBER(".eeprom")]] on a class's static inline
 // member. gcc's LTO makes such a variable local to the link and forgets its section attribute with
 // that - measured with arm-none-eabi-g++ 16.2 -flto: StackProtector's sentinel in .bss
-// instead of at the stack's bottom, the RP2040's SimpleEeprom value in .data instead of .eeprom.
+// instead of at the stack's bottom, a store's value in .data instead of .eeprom.
 // Two attributes keep the section, each with a price that decides where it fits:
 //   externally_visible  emits nothing that no code refers to (a record in .noInit costs RAM only in
 //                       the images that use it) - but is refused on a variable without external
@@ -63,6 +57,15 @@
     #define KVASIR_SECTION_MEMBER(name) gnu::section(name), gnu::used
 #endif
 
+// .noInit for an INLINE variable: [[KVASIR_NOINIT]]. Its own input section, .noInit.inline (the linker's
+// *(.noInit*) puts it into .noInit): gcc refuses a TU where an inline (COMDAT) variable and a plain one share a
+// named section ("'x' causes a section type conflict with 'y' in section '.noInit'") - every TU that uses one of
+// the SDK's records (Panic::lastPanic, Fault::lastFault, ...) and keeps a plain variable of its own in .noInit.
+// A class's static inline member takes [[KVASIR_NOINIT_MEMBER]] (KVASIR_SECTION_MEMBER's linkage rule above).
+// A plain, static or unnamed-namespace variable takes [[gnu::section(".noInit")]].
+#define KVASIR_NOINIT        KVASIR_SECTION(".noInit.inline")
+#define KVASIR_NOINIT_MEMBER KVASIR_SECTION_MEMBER(".noInit.inline")
+
 // Kept through the compiler AND the linker's garbage collection though nothing refers to it (a
 // descriptor only a tool reads). arm-none-eabi-gcc has no `retain` ("'retain' attribute ignored
 // [-Wattributes]", 16.2): there it is `used` alone, and the linker may still drop the section.
@@ -80,6 +83,19 @@
     #define KVASIR_MINSIZE
 #endif
 
+// No profile counters in this function under -fprofile-instr-generate (the coverage variant): code that runs
+// before memory is set up. clang instruments even a naked function - a counter increment (a literal load of the
+// counter's address) ahead of its asm - which breaks the reset entry's "cpsid i first" (check_reset_entry.py),
+// and whatever counts before initMemory() lands in .data/.bss that is wiped next. Only spelled out where clang
+// instruments (it defines __LLVM_INSTR_PROFILE_GENERATE then): LLVM inlines nothing across a mismatch of the
+// attribute (areInlineCompatible, isEqual<NoProfileAttr>), so on resetBody it would keep the whole start-up out
+// of line in every other image too. gcc has no coverage variant here. Empty, it leaves `[[a, ]]`: valid C++.
+#ifdef __LLVM_INSTR_PROFILE_GENERATE
+    #define KVASIR_NO_PROFILE gnu::no_profile_instrument_function
+#else
+    #define KVASIR_NO_PROFILE
+#endif
+
 // Per-core memory: the RP2040's SRAM4 (core 1, "scratch_x") and SRAM5 (core 0, "scratch_y"), banks
 // outside the striped main RAM that the datasheet offers "for per-core purposes, e.g. stack and
 // frequently-executed code" (RP2040 datasheet 2.6.2). The chip package defines KVASIR_CORE_SCRATCH
@@ -92,7 +108,7 @@
 // linker veneer, flash is out of BL range) and is not checked or exempted like
 // KVASIR_RAM_FUNC_ATTRIBUTES. No const objects in _DATA (a read-only object in a writable section
 // is a section type conflict).
-#if defined(KVASIR_CORE_SCRATCH)
+#ifdef KVASIR_CORE_SCRATCH
     // the ".bss." prefix makes the section NOBITS: it costs no flash
     #define KVASIR_CORE0_BSS  gnu::section(".bss.scratch_y")
     #define KVASIR_CORE1_BSS  gnu::section(".bss.scratch_x")

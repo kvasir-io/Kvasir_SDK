@@ -2,13 +2,22 @@
 """
 Memory Usage Analysis Tool for Embedded Systems
 Analyzes binary files and generates formatted memory usage reports
+
+The sections and their addresses come from the ELF itself (kvasir_elf.Elf), the regions from the linker script's MEMORY
+block. Flash rows count every section's load image: a section the image loads (kvasir_elf's load view, what the flash
+artefacts are cut from) is booked to the region of its load address, and also to the region of its run address when
+that is another one (.data and RAM functions: flash and ram). A NOBITS section counts at its run address only.
 """
 
-import subprocess
+from linker_utils import get_memory_regions, find_region_for_address
+import struct
 import sys
-import re
+from pathlib import Path
 from typing import List, Union, Dict
-from linker_utils import get_memory_regions, find_region_for_address, parse_size as parse_size_util
+
+sys.dont_write_bytecode = True      # no __pycache__ in cmake/tools
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from kvasir_elf import Elf, SHF_ALLOC  # noqa: E402
 
 
 class MemoryRegionUsage:
@@ -30,15 +39,6 @@ class PrintRecord:
         self.perc = perc
 
 
-class Section:
-    """Represents a binary section with its name, size, and address."""
-
-    def __init__(self, name: str, size: str, addr: str = None) -> None:
-        self.name = name
-        self.size = size
-        self.addr = addr
-
-
 def humanbytes(B: Union[int, float]) -> str:
     """Convert bytes to human-readable format."""
     B = float(B)
@@ -52,21 +52,23 @@ def humanbytes(B: Union[int, float]) -> str:
     return "{0:.2f} KB".format(B/KB)
 
 
-def machinebytes(size_string: str) -> int:
-    """Convert size string with suffixes (K, M) to bytes."""
-    return parse_size_util(size_string)
-
-
 def main() -> None:
     """Main function to analyze memory usage and generate report."""
-    if len(sys.argv) != 7:
-        print("Usage: pretty_size.py <size_tool> <binary> <flash_size> <ram_size> <eeprom_size> <linker_file>", file=sys.stderr)
+    if len(sys.argv) != 3:
+        print("Usage: pretty_size.py <binary> <linker_file>", file=sys.stderr)
         sys.exit(1)
 
-    size_tool = sys.argv[1]
-    binary = sys.argv[2]
-    linker_file = sys.argv[6]
+    binary = sys.argv[1]
+    try:
+        elf = Elf(Path(binary).read_bytes())
+    except (OSError, ValueError, struct.error) as e:
+        print(f"Error reading '{binary}': {e}", file=sys.stderr)
+        sys.exit(1)
+    run(elf, binary, sys.argv[2])
 
+
+def run(elf: Elf, binary: str, linker_file: str) -> None:
+    """The memory table of an Elf already read from `binary`, printed."""
     # Parse memory regions from linker script
     memory_regions = get_memory_regions(linker_file)
     if not memory_regions:
@@ -79,77 +81,25 @@ def main() -> None:
         region_usage[region.name] = MemoryRegionUsage(
             region.name, region.length)
 
-    # Get section information from binary
     try:
-        objdump_res = subprocess.check_output(
-            [size_tool, "--format=sysv", binary], stderr=subprocess.STDOUT)
-        lines = objdump_res.splitlines()
-    except subprocess.CalledProcessError as e:
-        print(f"Error running size tool '{size_tool}': {e}", file=sys.stderr)
-        sys.exit(1)
-    except FileNotFoundError:
-        print(f"Size tool '{size_tool}' not found", file=sys.stderr)
+        load_address = elf.load_addresses()
+    except (ValueError, struct.error) as e:
+        print(f"Error reading '{binary}': {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Remove header and footer lines
-    if len(lines) >= 4:
-        del lines[-1]
-        del lines[-1]
-        del lines[0]
-        del lines[0]
-    else:
-        print("Unexpected output format from size tool", file=sys.stderr)
-        sys.exit(1)
-
-    # Parse sections with addresses
-    sections: List[Section] = []
-    for line in lines:
-        try:
-            sl = line.split()
-            if len(sl) >= 3:
-                section_name = sl[0].decode('cp437')
-                section_size = sl[1].decode('cp437')
-                section_addr = sl[2].decode('cp437')
-                sections.append(
-                    Section(section_name, section_size, section_addr))
-        except (UnicodeDecodeError, IndexError) as e:
-            print(f"Error parsing section line: {e}", file=sys.stderr)
+    # Every allocated section with a size; .stack and .heap are reserved space, not "used"
+    for section in elf.sections:
+        if not section['flags'] & SHF_ALLOC or section['size'] == 0 or section['name'] in (".stack", ".heap"):
             continue
-
-    # For each section, determine which memory region it belongs to
-    # Skip .stack and .heap as they're allocated space, not "used"
-    # Skip debug sections and other non-loadable sections
-    for section in sections:
-        if section.name in [".stack", ".heap"]:
-            continue
-
-        # Skip debug sections, comments, and attributes
-        if (section.name.startswith(".debug_") or
-                section.name in [".ARM.attributes", ".comment", ".stab", ".stabstr"]):
-            continue
-
-        # Parse section address
-        try:
-            addr = int(section.addr, 0)  # base 0 auto-detects 0x prefix
-        except (ValueError, AttributeError):
-            # Skip sections without valid addresses
-            continue
-
-        # Skip sections with size 0
-        try:
-            size = int(section.size)
-            if size == 0:
-                continue
-        except ValueError:
-            print(
-                f"Warning: Could not parse section size '{section.size}' for section '{section.name}'", file=sys.stderr)
-            continue
-
-        # Find which memory region contains this section
-        region = find_region_for_address(memory_regions, addr)
-
-        if region and region.name in region_usage:
-            region_usage[region.name].used += size
+        load = None
+        if section['name'] in load_address:
+            load = find_region_for_address(
+                memory_regions, load_address[section['name']])
+        run = find_region_for_address(memory_regions, section['addr'])
+        if load:
+            region_usage[load.name].used += section['size']
+        if run and run is not load:
+            region_usage[run.name].used += section['size']
 
     # Create print records only for regions that exist
     print_records: List[PrintRecord] = []

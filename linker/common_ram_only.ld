@@ -27,14 +27,7 @@ SECTIONS {
         _LINKER_INTERN_text_end_ = .;
     } > ram
 
-    /* Code written at run time and then executed (chip bootrom_functions.hpp: the bootrom's XIP setup function, copied
-       out of BOOTRAM): the image's one writable and executable range, an MPU region of its own (chip Mpu.hpp) */
-    .ramExec (NOLOAD) : AT(ADDR(.ramExec)) ALIGN(32) {
-        _LINKER_INTERN_ramExec_start_ = .;
-        *(.ramExec*)
-        . = ALIGN(32);
-        _LINKER_INTERN_ramExec_end_ = .;
-    } > ram
+    INCLUDE common_ramExec.inc.ld
 
     .data : {
         INCLUDE common_data_body.inc.ld
@@ -67,7 +60,7 @@ _LINKER_vectors_end_ = ADDR(.noInitLowRam);
 _LINKER_text_start_ = _LINKER_INTERN_text_start_;
 _LINKER_text_end_ = _LINKER_INTERN_text_end_;
 
-/* Flash symbols set to zero for RAM-only (kept for compatibility) */
+/* No .data load image in RAM-only: zero, which common.ld's load-image assert reads as "none" */
 _LINKER_INTERN_data_start_flash_ = 0;
 _LINKER_INTERN_data_end_flash_ = 0;
 

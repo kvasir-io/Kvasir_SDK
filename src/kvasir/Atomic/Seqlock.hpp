@@ -9,9 +9,9 @@
 // safe. ThreadSanitizer cannot know that: under TSan the copy is done word by word through
 // relaxed atomics, which models exactly the guarantee the seqlock needs (every word is a
 // whole word) and lets TSan check the protocol around it. Everywhere else it is a memcpy.
-#if defined(__SANITIZE_THREAD__)
+#ifdef __SANITIZE_THREAD__
     #define KVASIR_SEQLOCK_TSAN 1
-#elif defined(__has_feature)
+#elifdef __has_feature
     #if __has_feature(thread_sanitizer)
         #define KVASIR_SEQLOCK_TSAN 1
     #endif
@@ -22,7 +22,7 @@
 
 namespace Kvasir::Atomic {
 
-namespace detail {
+namespace Detail {
     // dst <- src, sizeof(T) bytes.
     template<typename T>
     void seqlockCopy(T&       dst,
@@ -42,7 +42,7 @@ namespace detail {
         std::memcpy(&dst, &src, sizeof(T));
 #endif
     }
-}   // namespace detail
+}   // namespace Detail
 
 // A latest-value mailbox: one writer publishes whole snapshots of T, any number of readers
 // take the most recent one. The writer never waits, never blocks and never fails; a reader
@@ -64,7 +64,7 @@ struct Seqlock {
         // The fence keeps the "in flight" mark ahead of the data stores; the release store
         // below keeps the data stores ahead of the "done" mark.
         std::atomic_thread_fence(std::memory_order_release);
-        detail::seqlockCopy(data_, value);
+        Detail::seqlockCopy(data_, value);
         seq_.store(s + 2, std::memory_order_release);
     }
 
@@ -72,7 +72,7 @@ struct Seqlock {
     [[nodiscard]] bool tryRead(T& out) const {
         auto const s1 = seq_.load(std::memory_order_acquire);
         if((s1 & 1U) != 0) { return false; }
-        detail::seqlockCopy(out, data_);
+        Detail::seqlockCopy(out, data_);
         std::atomic_thread_fence(std::memory_order_acquire);
         return seq_.load(std::memory_order_relaxed) == s1;
     }

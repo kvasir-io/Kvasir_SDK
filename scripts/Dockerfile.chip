@@ -1,0 +1,29 @@
+# The kvasirio/<chip> images: the SDK image plus one chip package. Build context: the chip repository, checked out
+# with its submodules (recursive). Built by .github/workflows/chip-image.yml, which every chip repository's
+# <chip>-docker-build.yml calls; locally `docker buildx build -f <sdk>/scripts/Dockerfile.chip <chip repo>`.
+#   EXTRA_AUR_PACKAGES  AUR packages the chip's firmware builds need besides the ARM toolchain (RP: picotool)
+#   WITH_KVASIR_DEVICES 1: clone kvasir_devices master next to the SDK (a chip whose chip.hpp includes drivers from it,
+#                       cmake/chip.cmake registers it); 0: none. KVASIR_DEVICES_ROOT is set either way - a Dockerfile
+#                       cannot set an ENV inside an `if` - and names a missing directory with 0.
+FROM kvasirio/kvasir:latest
+
+ARG EXTRA_AUR_PACKAGES=""
+ARG WITH_KVASIR_DEVICES=1
+
+ENV CHIP_ROOT=/opt/chip
+COPY . ${CHIP_ROOT}/
+
+ENV KVASIR_DEVICES_ROOT=/opt/kvasir_devices
+RUN if [ "${WITH_KVASIR_DEVICES}" = 1 ]; then \
+        git clone https://github.com/kvasir-io/kvasir_devices.git ${KVASIR_DEVICES_ROOT} && \
+        git config --global --add safe.directory ${KVASIR_DEVICES_ROOT}; \
+    fi
+
+RUN su aur_user -c "yay -S --noconfirm --disable-download-timeout --asdeps gcc-arm-none-eabi-bin" && \
+    if [ -n "${EXTRA_AUR_PACKAGES}" ]; then \
+        su aur_user -c "yay -S --noconfirm --disable-download-timeout --removemake ${EXTRA_AUR_PACKAGES}"; \
+    fi && \
+    rm -rf /home/aur_user/* /home/aur_user/.* && \
+    git config --global --add safe.directory ${CHIP_ROOT}
+
+ENTRYPOINT ["/opt/kvasir/scripts/entrypoint.sh"]

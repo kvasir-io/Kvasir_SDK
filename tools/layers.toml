@@ -1,0 +1,279 @@
+# The include layering of the Kvasir repositories, as data for tools/layer_check.py.
+#
+# Layers from the bottom up. An include may go to the same or a lower layer, or to a log layer when the source
+# layer has `log = true`. `has_include = false`: no `__has_include` feature switch in that layer.
+#
+#   base          Mpl, Util base (attributes, concepts, Static*, Crc, ...)          -> std only
+#   register      the register model (Register, Io vocabulary)                    -> base
+#   port          the port contract (hook primaries, interrupt traits, linker symbols, resources) and the HAL
+#                 vocabulary (Hal/: clock, owner, DMA channel, pin, UART and SPI vocabulary)
+#   core          core_cortex_*, generated core peripherals
+#   runtime       Atomic, Multicore, StartUp, Util runtime (Panic, Check, Health, ...)
+#   chip          the chip packages' core part, and the generated chip registers (`generated`, same rank)
+#   bus           bus engines below the chip drivers (kvasir_devices BusTypes, QueueCore, LineRecovery), and the
+#                 kvasir_devices vocabulary a chip driver implements or reports in (USB backend contract and
+#                 descriptors, input decoders, quantities)
+#   chip_drivers  the chip packages' queued I2C/SPI, USB and button/encoder drivers
+#   devices       kvasir_devices parts
+#   app           firmware
+#   log           uc_log, rtt, remote_fmt, string_constant: beside the order, never include Kvasir
+#   log_adapter   formatters for other libraries (aglio, RegisterFmt): opt-in; a library layer includes one only as a
+#                 [keep.include] (none: the log variants force RegisterFmt in, util.cmake; a driver names Register/Flags.hpp)
+
+order = ["base", "register", "port", "core", "runtime", "chip", "bus", "chip_drivers", "devices", "app"]
+
+skip_dirs = [".git", "build", "build_*", "build-*", "_deps", "docker_build", "cmake-build-*"]
+
+[layer.base]
+has_include = false
+[layer.register]
+log = false          # no log library inside the register model
+has_include = false
+[layer.port]
+has_include = false
+[layer.core]
+has_include = false
+[layer.runtime]
+has_include = false
+[layer.chip]
+has_include = false
+[layer.generated]
+same_as = "chip"
+log = false          # chip data must not need the log library
+has_include = false
+[layer.bus]
+[layer.chip_drivers]
+[layer.devices]
+[layer.app]
+log_adapter = true   # firmware opts in to adapters
+[layer.log]
+kind = "log"
+[layer.log_adapter]
+kind = "log_adapter"
+
+# --- where each repository's files belong (first matching glob wins) ----------------------------------------------
+
+[repo.Kvasir_SDK]
+exclude = ["tests/**", "lib/**", "tools/**", "cmake/**", "linker/**", "scripts/**"]
+[repo.Kvasir_SDK.paths]
+"src/kvasir/Mpl/**" = "base"
+"src/kvasir/Register/RegisterFmt.hpp" = "log_adapter"
+"src/kvasir/Register/{Wait,WaitLog}.hpp" = "runtime"   # bounded waits: the image's WaitPolicy hook (Port), a panic, a MainLoop log entry
+"src/kvasir/Register/**" = "register"
+"src/kvasir/Io/Claims.hpp" = "port"      # pin claims: resources of the resource checker
+"src/kvasir/Io/**" = "register"
+"src/kvasir/Port/**" = "port"
+"src/kvasir/Hal/**" = "port"          # the HAL vocabulary: resource tags and concepts over StartUp/Resources.hpp
+"src/kvasir/Common/Tags.hpp" = "base"    # Tag::User, the hook tag every layer names; no includes
+"src/kvasir/Common/**" = "port"
+"src/kvasir/StartUp/{Entry,Resources,InterruptNames}.hpp" = "port"
+"src/kvasir/StartUp/**" = "runtime"
+"src/kvasir/Atomic/**" = "runtime"
+"src/kvasir/Multicore/**" = "runtime"
+"src/kvasir/Util/**" = "base"          # std, Mpl or other Util headers only (runtime is Runtime/, Health/, Log/)
+"src/kvasir/Control/**" = "base"       # numeric filters, std only
+"src/kvasir/Runtime/**" = "runtime"    # fatal path, crash records, boot report and guard, image check, stores, executor
+"src/kvasir/Health/**" = "runtime"     # the Health supervisor, its checks, HealthKey, HealthRecords
+"src/kvasir/Log/RttSink.hpp" = "app"   # an image config header's backend: names the chip's DebuggerPresent and CPU ceiling
+"src/kvasir/Log/**" = "runtime"        # RateLimiter, LogLimited, FaultLog: the SDK side of driver log lines (drivers include them)
+
+[repo.uc_log]
+parent = "Kvasir_SDK"
+subdir = "uc_log"
+paths = { "src/**" = "log" }
+
+[repo.remote_fmt]
+parent = "uc_log"
+subdir = "remote_fmt"
+paths = { "src/**" = "log" }
+
+[repo.string_constant]
+parent = "remote_fmt"
+subdir = "string_constant"
+paths = { "src/**" = "log" }
+
+[repo.rtt]
+parent = "uc_log"
+subdir = "rtt"
+paths = { "src/**" = "log" }
+
+[repo.svd_converter]
+parent = "Kvasir_SDK"
+subdir = "svd_converter"
+paths = { "src/generator_templates/**" = "generated" }
+
+[repo.cmake_git_version]
+parent = "Kvasir_SDK"
+subdir = "cmake_git_version"
+paths = { "src/**" = "base" }
+
+[repo.core_cortex_common]
+exclude = ["tests/**"]
+paths = { "*.hpp" = "core" }
+
+[repo.core_cortex_m0plus]
+paths = { "src/core/**" = "core" }
+
+[repo.core_cortex_m33]
+paths = { "src/core/**" = "core" }
+
+[repo.core_cortex_m4]
+paths = { "src/core/**" = "core" }
+
+[repo.chip_rp_common]
+exclude = ["tests/**"]
+[repo.chip_rp_common.paths]
+"{I2CQueued,SPIQueued,usb}.hpp" = "chip_drivers"
+"usb/**" = "chip_drivers"
+"**" = "chip"
+
+[repo.chip_atsam_common]
+exclude = ["tests/**"]
+[repo.chip_atsam_common.paths]
+"{Sercom_I2CQueued,Sercom_SPIQueued,SamPushButton,SamRotaryEncoder,SamQuadratureEncoder}.hpp" = "chip_drivers"
+"usb/**" = "chip_drivers"
+"**" = "chip"
+
+[repo.chip_rp2040]
+[repo.chip_rp2040.paths]
+"src/chip/drivers.hpp" = "chip_drivers"   # the opt-in aggregate of every driver
+"src/chip/**" = "chip"
+
+[repo.chip_rp2350]
+[repo.chip_rp2350.paths]
+"src/chip/drivers.hpp" = "chip_drivers"   # the opt-in aggregate of every driver
+"src/chip/**" = "chip"
+
+[repo.chip_atsamd21]
+[repo.chip_atsamd21.paths]
+"src/chip/drivers.hpp" = "chip_drivers"   # the opt-in aggregate of every driver
+"src/chip/**" = "chip"
+
+[repo.chip_atsamc21]
+[repo.chip_atsamc21.paths]
+"src/chip/drivers.hpp" = "chip_drivers"   # the opt-in aggregate of every driver
+"src/chip/**" = "chip"
+
+[repo.chip_atsame51]
+[repo.chip_atsame51.paths]
+"src/chip/drivers.hpp" = "chip_drivers"   # the opt-in aggregate of every driver
+"src/chip/**" = "chip"
+
+[repo.chip_stm32f413]
+[repo.chip_stm32f413.paths]
+"src/chip/drivers.hpp" = "chip_drivers"   # the opt-in aggregate of every driver
+"src/chip/**" = "chip"
+
+[repo.kvasir_devices]
+exclude = ["test/**"]
+[repo.kvasir_devices.paths]
+"src/kvasir/Devices/{Bus/Callbacks,Bus/DeadBus,Bus/MaskDepth,Bus/QueuedFront,Bus/RequestQueue,Bus/Ticks,BusTypes,Features,Log,I2C/Controller/LineRecovery,I2C/Controller/QueueCore,I2C/Controller/QueueHw,I2C/Controller/QueuedFront,I2C/Controller/Request,SPI/Client,SPI/QueueCore,SPI/QueueHw,SPI/QueuedFront}.hpp" = "bus"
+"src/kvasir/Devices/{PushButton,QuadratureDecoder,RotaryEncoder,Quantities}.hpp" = "bus"   # what the chips' input and SPI drivers build on
+"src/kvasir/Devices/USB/{Backend,Config,Descriptors,Mixins,VendorReset}.hpp" = "bus"   # the contract a chip's USB backend implements
+"src/kvasir/Devices/**" = "devices"
+
+# --- include spellings: where an include goes when it does not resolve next to the including file --------------
+# (longest prefix wins; `repo` + `path`: the spelling with the prefix replaced by `path` is classified by that
+# repository's globs, whether the repository was scanned or not; `layer`: a fixed layer. Spellings not listed here
+# - the standard library, mp-units, glaze, ... - are not checked.)
+
+[[spelling]]
+prefix = "kvasir/Devices/"
+repo = "kvasir_devices"
+path = "src/kvasir/Devices/"
+[[spelling]]
+prefix = "kvasir/"
+repo = "Kvasir_SDK"
+path = "src/kvasir/"
+[[spelling]]
+prefix = "cortex_common/"
+repo = "core_cortex_common"
+[[spelling]]
+prefix = "core/"
+layer = "core"
+[[spelling]]
+prefix = "core_peripherals/"
+layer = "core"
+[[spelling]]
+prefix = "chip/rp_common/"
+repo = "chip_rp_common"
+[[spelling]]
+prefix = "chip/atsam_common/"
+repo = "chip_atsam_common"
+[[spelling]]
+prefix = "chip/"
+layer = "chip"
+[[spelling]]
+prefix = "peripherals/"
+layer = "generated"
+[[spelling]]
+prefix = "cmake_git_version/"
+layer = "base"
+[[spelling]]
+prefix = "uc_log/"
+layer = "log"
+[[spelling]]
+prefix = "remote_fmt/"
+layer = "log"
+[[spelling]]
+prefix = "rtt/"
+layer = "log"
+[[spelling]]
+prefix = "string_constant/"
+layer = "log"
+[[spelling]]
+prefix = "fmt/"
+layer = "log"
+[[spelling]]
+prefix = "aglio/"
+layer = "log_adapter"
+
+# --- exceptions -----------------------------------------------------------------------------------------------------
+# Keys as layer_check.py prints them; reasons are neutral (this file is part of a library). There is no allow-list:
+# a NEW finding is fixed (the include goes down, the name becomes public, the switch comes from the build).
+#   [keep.<check>]    a deliberate exception: the reason names the rule that makes it one
+# An entry whose finding is gone is STALE and fails: remove it in the change that removed the finding.
+
+[rules]
+# `#if defined(MACRO) && __has_include(H)`: the build sets MACRO (the switch), __has_include only checks that the
+# optional header is there. Any other macro, or a bare __has_include, is a has_include finding.
+guarded_has_include = ["KVASIR_LOG_FORMATTERS", "USE_UC_LOG"]
+# the register layer's own raw access: Mmio holds the one volatile cast, Register/ builds the masked reads and the
+# literal addresses the field API stands on
+mmio_exempt = { R1 = ["Kvasir_SDK/src/kvasir/Register/Mmio.hpp"], R2 = ["Kvasir_SDK/src/kvasir/Register/**"], R3 = ["Kvasir_SDK/src/kvasir/Register/**"], R4 = ["Kvasir_SDK/src/kvasir/Register/**"] }
+
+[keep.include]
+
+[keep.has_include]
+
+[keep.cycle]
+# Files that include each other: either one may be included first (#pragma once), but neither reads alone. Each pair
+# is a front and the part it completes; a new cycle is fixed, not listed.
+
+[keep.mmio]
+# A register goes through apply(), memory that is not a register through Kvasir::Memory, an object shared with an
+# interrupt or another core through std::atomic. Memory another bus master writes is plain memory with a hand-off: a
+# DMA's descriptors and buffers through Kvasir::Hal::handToHardware()/takeFromHardware() around the register access
+# that passes them, a field it moves while the core polls through Kvasir::Hal::loadHardwareField(), the RTT offsets
+# the debug probe writes through rtt's loadOffset() - both a load through a `T const volatile&` (no cast; what C++26's
+# atomic_ref<T const volatile>, P3323, will spell; kvasir/Hal/DmaHandoff.hpp, rtt.hpp). What stays is the atomics'
+# own implementation.
+"Kvasir_SDK/src/kvasir/StartUp/Runtime/LibAtomicBlocks.hpp: R1 static_cast<T const volatile*>" = ["the libatomic entry points' implementation (what std::atomic calls on a core without the operation): it cannot itself be an atomic", 2]
+"Kvasir_SDK/src/kvasir/StartUp/Runtime/LibAtomicBlocks.hpp: R1 static_cast<T volatile*>" = ["the libatomic entry points' implementation (what std::atomic calls on a core without the operation): it cannot itself be an atomic", 2]
+# R4: a register type spelled by hand outside the register layer. The generated headers and the factories build every
+# Address and Action; what is left are partial specialisations that MATCH the factories' types (no type is built):
+# what a Startup action provides (a pin, an interrupt, a priority), what a Hal block's action writes.
+"Kvasir_SDK/src/kvasir/Hal/Block.hpp: R4 Register::Action<" = ["actionWriteOf<>: the address, mask and literal of a field action, read off its type by partial specialisation", 2]
+"Kvasir_SDK/src/kvasir/Hal/Block.hpp: R4 Register::Address<" = ["actionWriteOf<>: the address, mask and literal of a field action, read off its type by partial specialisation", 2]
+"Kvasir_SDK/src/kvasir/StartUp/StartUp.hpp: R4 Register::Action<" = "isActionOrList<>: a Startup phase member is an action, matched by partial specialisation"
+"chip_atsam_common/Io.hpp: R4 Register::Action<" = "ResourceOfAction<>: a PINCFG PMUXEN write provides its pin, matched by partial specialisation"
+"chip_atsam_common/Io.hpp: R4 Register::Address<" = "ResourceOfAction<>: a PINCFG PMUXEN write provides its pin, matched by partial specialisation"
+"chip_rp_common/Io.hpp: R4 Register::Action<" = "ResourceOfAction<>: an IO_BANK0 GPIO_CTRL write provides its pin, matched by partial specialisation"
+"chip_rp_common/Io.hpp: R4 Register::Address<" = "ResourceOfAction<>: an IO_BANK0 GPIO_CTRL write provides its pin, matched by partial specialisation"
+"chip_stm32f413/src/chip/Io.hpp: R4 Register::Action<" = "ResourceOfAction<>: a MODER write provides its pin, matched by partial specialisation"
+"chip_stm32f413/src/chip/Io.hpp: R4 Register::Address<" = "ResourceOfAction<>: a MODER write provides its pin, matched by partial specialisation"
+"core_cortex_common/Nvic.hpp: R4 Register::Action<" = ["InterruptOfAction<> / PriorityOfAction<>: an NVIC enable or IPR write names its line, matched by partial specialisation", 3]
+"core_cortex_common/Nvic.hpp: R4 Register::Address<" = ["InterruptOfAction<> / PriorityOfAction<>: an NVIC enable or IPR write names its line, matched by partial specialisation", 3]
+"core_cortex_common/SystemControl.hpp: R4 Register::Action<" = ["PriorityOfAction<>: an SHPR write names its exception, matched by partial specialisation", 2]
+"core_cortex_common/SystemControl.hpp: R4 Register::Address<" = ["PriorityOfAction<>: an SHPR write names its exception, matched by partial specialisation", 2]
+"core_cortex_common/Systick.hpp: R4 Register::Action<" = "InterruptOfAction<>: CSR.TICKINT written to one enables the SysTick exception, matched by partial specialisation"

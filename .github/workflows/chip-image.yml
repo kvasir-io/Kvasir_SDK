@@ -1,0 +1,145 @@
+name: Chip image
+
+# Reusable: builds and pushes kvasirio/<chip> from scripts/Dockerfile.chip with the calling chip repository as the
+# build context, then sets the "<TITLE> Container Build" commit status on the caller's commit (in a called workflow
+# `context.repo` and `context.sha` are the caller's). Callers: chip_*/.github/workflows/<chip>-docker-build.yml - the
+# file names this repository's dispatch-chip-images.yml dispatches.
+
+on:
+    workflow_call:
+        inputs:
+            chip:
+                description: 'image name below kvasirio/, e.g. atsamd21'
+                required: true
+                type: string
+            title:
+                description: 'name in the job, status and summary texts, e.g. ATSAMD21'
+                required: true
+                type: string
+            extra-aur-packages:
+                description: 'AUR packages besides the ARM toolchain (Dockerfile.chip EXTRA_AUR_PACKAGES)'
+                required: false
+                type: string
+                default: ''
+            with-kvasir-devices:
+                description: 'clone kvasir_devices into the image (Dockerfile.chip WITH_KVASIR_DEVICES)'
+                required: false
+                type: boolean
+                default: true
+        secrets:
+            DOCKERHUB_USERNAME:
+                required: true
+            DOCKERHUB_TOKEN:
+                required: true
+
+jobs:
+    build-push:
+        name: build and push
+        runs-on: ubuntu-latest
+        outputs:
+            build-date: ${{ steps.set-date.outputs.build-date }}
+        steps:
+            - name: Checkout the chip repository
+              uses: actions/checkout@v6
+              with:
+                path: chip
+                submodules: recursive
+
+            - name: Checkout the chip Dockerfile
+              uses: actions/checkout@v6
+              with:
+                repository: kvasir-io/Kvasir_SDK
+                ref: master
+                path: sdk
+                sparse-checkout: scripts/Dockerfile.chip
+                sparse-checkout-cone-mode: false
+
+            - name: Set build date
+              id: set-date
+              run: |
+                # Get current date in YYYY.MM.DD format (Arch ISO style)
+                BUILD_DATE=$(date +%Y.%m.%d)
+                echo "build-date=$BUILD_DATE" >> $GITHUB_OUTPUT
+                echo "Build date: $BUILD_DATE"
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v4
+
+            - name: Log in to DockerHub
+              uses: docker/login-action@v4
+              with:
+                username: ${{ secrets.DOCKERHUB_USERNAME }}
+                password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+            - name: Build and push ${{ inputs.title }} Docker image
+              uses: docker/build-push-action@v7
+              with:
+                context: chip
+                file: sdk/scripts/Dockerfile.chip
+                build-args: |
+                    EXTRA_AUR_PACKAGES=${{ inputs.extra-aur-packages }}
+                    WITH_KVASIR_DEVICES=${{ inputs.with-kvasir-devices && '1' || '0' }}
+                push: true
+                platforms: linux/amd64
+                tags: |
+                    kvasirio/${{ inputs.chip }}:latest
+                    kvasirio/${{ inputs.chip }}:${{ steps.set-date.outputs.build-date }}
+                cache-from: type=gha
+                cache-to: type=gha,mode=max
+
+    notify-status:
+        runs-on: ubuntu-latest
+        needs: [build-push]
+        if: always()
+        steps:
+            - name: Set build status
+              run: |
+                if [ "${{ needs.build-push.result }}" = "success" ]; then
+                  echo "BUILD_STATUS=success" >> $GITHUB_ENV
+                  echo "BUILD_MESSAGE=✅ ${{ inputs.title }} container built and pushed to kvasirio/${{ inputs.chip }}:latest" >> $GITHUB_ENV
+                elif [ "${{ needs.build-push.result }}" = "failure" ]; then
+                  echo "BUILD_STATUS=failure" >> $GITHUB_ENV
+                  echo "BUILD_MESSAGE=❌ ${{ inputs.title }} container build failed - check workflow logs" >> $GITHUB_ENV
+                else
+                  echo "BUILD_STATUS=cancelled" >> $GITHUB_ENV
+                  echo "BUILD_MESSAGE=🚫 ${{ inputs.title }} container build was cancelled" >> $GITHUB_ENV
+                fi
+
+            - name: Update commit status
+              uses: actions/github-script@v8
+              env:
+                STATUS_CONTEXT: ${{ inputs.title }} Container Build
+              with:
+                script: |
+                    const status = process.env.BUILD_STATUS;
+                    const message = process.env.BUILD_MESSAGE;
+
+                    let state;
+                    if (status === 'success') state = 'success';
+                    else if (status === 'failure') state = 'failure';
+                    else state = 'error';
+
+                    await github.rest.repos.createCommitStatus({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      sha: context.sha,
+                      state: state,
+                      target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                      description: message,
+                      context: process.env.STATUS_CONTEXT
+                    });
+
+            - name: Create summary
+              run: |-
+                echo "## ${{ inputs.title }} Container Build Status" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "${{ env.BUILD_MESSAGE }}" >> $GITHUB_STEP_SUMMARY
+
+                if [ "${{ needs.build-push.result }}" = "success" ]; then
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "**Image Tags:**" >> $GITHUB_STEP_SUMMARY
+                  echo "- \`kvasirio/${{ inputs.chip }}:latest\`" >> $GITHUB_STEP_SUMMARY
+                  echo "- \`kvasirio/${{ inputs.chip }}:${{ needs.build-push.outputs.build-date }}\`" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "[View on DockerHub](https://hub.docker.com/r/kvasirio/${{ inputs.chip }})" >> $GITHUB_STEP_SUMMARY
+                fi

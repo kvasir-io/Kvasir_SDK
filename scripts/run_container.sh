@@ -64,7 +64,7 @@ elif [ "$1" = "attach" ]; then
     fi
 
     echo "Attaching to container: ${CONTAINER_NAME}"
-    if ! docker exec -it "${CONTAINER_NAME}" /workspace/project/kvasir/scripts/entrypoint.sh fish; then
+    if ! docker exec -it "${CONTAINER_NAME}" /opt/kvasir/scripts/entrypoint.sh fish; then
         echo "Error: Failed to attach to container"
         exit 1
     fi

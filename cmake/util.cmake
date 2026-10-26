@@ -1,9 +1,19 @@
-# Kvasir Utility Functions Core utility functions and target configuration for Kvasir framework Provides build system
-# integration, size reporting, and target setup
+# What a firmware includes after project(): the image targets (target_configure_kvasir, kvasir_executable_variants and
+# the variant table), their link and post-link steps (tools/kvasir_postlink.py), the J-Link and printer targets.
 
-include(${KVASIR_ROOT_DIR}/cmake_git_version/CMakeLists.txt)
+# as at the top of kvasir.cmake, for the functions defined from here on
+cmake_policy(SET CMP0174 NEW)
 
-add_subdirectory(${KVASIR_ROOT_DIR}/uc_log ${CMAKE_BINARY_DIR}/kvasir_uc_log)
+include(${KVASIR_ROOT}/cmake_git_version/CMakeLists.txt)
+
+include(${kvasir_cmake_dir}/kvasir_interface.cmake)
+
+add_subdirectory(${KVASIR_ROOT}/uc_log ${CMAKE_BINARY_DIR}/kvasir_uc_log)
+
+# glaze (uc_log -> aglio -> glaze) puts -Wno-missing-braces on its INTERFACE compile options, and an INTERFACE option
+# reaches every consumer: the image's own code was compiled with -Wmissing-braces off. glaze's headers are SYSTEM
+# includes already, so its own code needs no option.
+kvasir_quarantine_interface(glaze_glaze STRIP_OPTIONS "-Wno-missing-braces")
 
 find_package(
     Python3
@@ -12,8 +22,29 @@ find_package(
 
 include(${kvasir_cmake_dir}/jlink.cmake)
 
+# kvasir::base, kvasir::sdk (with uc_log, added above), kvasir::test_support
 include(${kvasir_cmake_dir}/kvasir_sdk_targets.cmake)
-target_link_libraries(kvasir_sdk INTERFACE uc_log::uc_log)
+
+# kvasir::warnings: the warning list of Kvasir code (kvasir_warnings.cmake, as the toolchain file completes it:
+# kvasir_image_warning_flags). Not in CMAKE_<LANG>_FLAGS: the runtime libraries and fetched dependencies compile with
+# the compiler's defaults. target_configure_kvasir puts its options into the image's own COMPILE_OPTIONS, first, so a
+# firmware's later -W<name> still overrides a -Wno-<name> of the list and uc_log's catalog TU (it compiles with the
+# image's COMPILE_OPTIONS) gets them too; other code links it. gcc also takes them on the image's link
+# (kvasir_image_link_warning_flags: its LTO-time warnings), clang has none there.
+add_library(kvasir_warnings INTERFACE)
+add_library(kvasir::warnings ALIAS kvasir_warnings)
+target_compile_options(kvasir_warnings INTERFACE ${kvasir_image_warning_flags})
+if(kvasir_image_link_warning_flags)
+    target_link_options(kvasir_warnings INTERFACE ${kvasir_image_link_warning_flags})
+endif()
+
+# kvasir_chip()'s LINKER_OPTIONS are bare (`--wrap=...`): the gcc driver needs them behind -Wl, (LINKER_PREFIX, which
+# the toolchain file sets inside project(); clang links with ld.lld directly, the prefix is empty there)
+kvasir_chip_get(_kvasir_chip_linker_options LINKER_OPTIONS)
+if(_kvasir_chip_linker_options)
+    list(TRANSFORM _kvasir_chip_linker_options PREPEND "${LINKER_PREFIX}")
+    target_link_options(kvasir_chip INTERFACE ${_kvasir_chip_linker_options})
+endif()
 
 # packages registered by the chip package (kvasir_add_package)
 get_property(_kvasir_packages GLOBAL PROPERTY KVASIR_PACKAGES)
@@ -32,84 +63,7 @@ foreach(_package IN LISTS _kvasir_packages)
     message(STATUS "Kvasir: added ${_binary} from ${_source}")
 endforeach()
 
-function(add_clean_file target file)
-    get_target_property(cur_additional_clean_files ${target} ADDITIONAL_CLEAN_FILES)
-    if("${cur_additional_clean_files}" MATCHES NOTFOUND)
-        set(new_additional_clean_files ${file})
-    else()
-        list(APPEND cur_additional_clean_files ${file})
-        set(new_additional_clean_files ${cur_additional_clean_files})
-    endif()
-    set_target_properties(${target} PROPERTIES ADDITIONAL_CLEAN_FILES "${new_additional_clean_files}")
-endfunction()
-
-function(print_size target linker_file)
-    add_custom_command(
-        TARGET ${target}
-        POST_BUILD
-        COMMAND ${CMAKE_SIZE} -x --format=sysv "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
-        COMMAND
-            ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
-            ${kvasir_cmake_dir}/tools/pretty_size.py "${CMAKE_SIZE}" "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
-            "${TARGET_FLASH_SIZE}" "${TARGET_RAM_SIZE}" "${TARGET_EEPROM_SIZE}" "${linker_file}"
-        COMMENT "Print memory usage for ${target}")
-endfunction()
-
-# Every KVASIR_RAM_FUNC_ATTRIBUTES function (KVASIR_RAM_FUNC_MARK()) really runs from RAM, and nothing it reaches from
-# flash; removes the .elf when not, so the next build fails again instead of passing on a stale image.
-function(check_ram_funcs target)
-    add_custom_command(
-        TARGET ${target}
-        POST_BUILD
-        COMMAND
-            ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
-            ${kvasir_cmake_dir}/tools/check_ram_funcs.py --delete-on-failure "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
-        COMMENT "Checking that the RAM functions of ${target}.elf are in RAM"
-        VERBATIM)
-endfunction()
-
-# The reset entry (ResetISR) starts with `cpsid i` and touches no stack before its bl into the C++ body: nothing a
-# compiler emits runs before the core is in reset state (kvasir/StartUp/StartUp.hpp, KVASIR_RESET_ENTRY_ASM).
-function(check_reset_entry target)
-    add_custom_command(
-        TARGET ${target}
-        POST_BUILD
-        COMMAND
-            ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
-            ${kvasir_cmake_dir}/tools/check_reset_entry.py --delete-on-failure
-            "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
-        COMMENT "Checking the reset entry of ${target}.elf"
-        VERBATIM)
-endfunction()
-
-# IMAGE_CRC: writes the image CRC descriptor (kvasir/Util/ImageDescriptor.hpp) into the ELF for Kvasir::ImageCheck. Must
-# run before every artefact made from the ELF; removes the .elf on failure so the next build fails again. It covers the
-# sections generate_images puts into the flash hex (the load view). A RAM image (the descriptor linked into SRAM) is
-# checked where it runs: the patcher keeps only the read-only sections (and the descriptor's own, .text) and prints
-# which. TARGET_IMAGE_CRC_EXCLUDE (chip): pairs of symbols bounding bytes a later step rewrites (the RP2350's picobin
-# block).
-function(patch_image_crc target)
-    set(_excludes)
-    set(_pair ${TARGET_IMAGE_CRC_EXCLUDE})
-    list(LENGTH _pair _n)
-    math(EXPR _odd "${_n} % 2")
-    if(_odd)
-        message(FATAL_ERROR "TARGET_IMAGE_CRC_EXCLUDE is pairs of symbols, got ${_n}: ${TARGET_IMAGE_CRC_EXCLUDE}")
-    endif()
-    while(_pair)
-        list(POP_FRONT _pair _start _end)
-        list(APPEND _excludes --exclude ${_start} ${_end})
-    endwhile()
-    add_custom_command(
-        TARGET ${target}
-        POST_BUILD
-        COMMAND
-            ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
-            ${kvasir_cmake_dir}/tools/patch_image_crc.py "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf" --delete-on-failure
-            --objcopy ${CMAKE_OBJCOPY} --sections-from-load-view ${_excludes}
-        COMMENT "Writing the image CRC descriptor into ${target}.elf"
-        VERBATIM)
-endfunction()
+include(${kvasir_cmake_dir}/kvasir_variants.cmake)
 
 # kvasir_constexpr_budget(<steps> [<target>...]): how much compile-time evaluation the compiler may do - for
 # static_asserts that simulate a plant or measure text (gfx's checked literals). <steps> is clang's count
@@ -132,112 +86,6 @@ function(kvasir_constexpr_budget steps)
     endif()
 endfunction()
 
-function(check_undefined_refs target)
-    add_custom_command(
-        TARGET ${target}
-        POST_BUILD
-        COMMAND ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
-                ${kvasir_cmake_dir}/tools/find_undefined_refs.py "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
-        COMMENT "Checking for undefined references in ${target}.elf"
-        VERBATIM)
-endfunction()
-
-# The flash artefacts from the image's load view (cmake/tools/elf_image.py): every section the linker loads, at its load
-# address - no list of section names to keep in step with the linker scripts. .eeprom's bytes go to the _eeprom* files:
-# <target>_flash.{bin,hex,uf2,elf}, _eeprom.{bin,hex,uf2}, _eeprom_flash.{hex,uf2}.
-function(generate_images target)
-    set(_out "${CMAKE_CURRENT_BINARY_DIR}/${target}")
-    set(_byproducts)
-    foreach(_suffix _flash.bin _flash.hex _flash.elf _eeprom.bin _eeprom.hex _eeprom_flash.hex)
-        list(APPEND _byproducts "${_out}${_suffix}")
-    endforeach()
-    set(_uf2)
-    if(DEFINED TARGET_UF2_CODE)
-        set(_uf2 --uf2-family ${TARGET_UF2_CODE})
-        list(APPEND _byproducts "${_out}_flash.uf2" "${_out}_eeprom.uf2" "${_out}_eeprom_flash.uf2")
-    endif()
-    add_custom_command(
-        TARGET ${target}
-        POST_BUILD
-        COMMAND
-            ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
-            ${kvasir_cmake_dir}/tools/elf_image.py "${_out}.elf" --out-prefix "${_out}" ${_uf2} --objcopy
-            ${CMAKE_OBJCOPY}
-        BYPRODUCTS ${_byproducts}
-        COMMENT "Writing the flash images of ${target}.elf"
-        VERBATIM)
-endfunction()
-
-# the listing disassembles a fixed set of names (objdump skips those an image does not have); a section missing here is
-# visible to whoever reads the listing, unlike one missing from a flash image
-function(generate_lst target)
-    set(extra_flash_sections --section=.boot2 --section=.scratch_x --section=.scratch_y)
-
-    add_custom_command(
-        TARGET ${target}
-        POST_BUILD
-        COMMAND
-            ${CMAKE_OBJDUMP} --section=.vectors --section=.text --section=.data ${extra_flash_sections} --disassemble
-            --demangle --all-headers "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf" >
-            "${CMAKE_CURRENT_BINARY_DIR}/${target}_raw.lst"
-        COMMAND
-            ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
-            ${kvasir_cmake_dir}/tools/beautify_lst.py "${CMAKE_CURRENT_BINARY_DIR}/${target}_raw.lst"
-            "${CMAKE_CURRENT_BINARY_DIR}/${target}.lst"
-        BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${target}_raw.lst ${CMAKE_CURRENT_BINARY_DIR}/${target}.lst
-        VERBATIM)
-endfunction()
-
-function(add_bootloader_app_data target application)
-    target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated/${target})
-    get_target_property(app_bin_dir ${application} BINARY_DIR)
-    add_custom_command(
-        TARGET ${application}
-        COMMAND
-            ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
-            ${kvasir_cmake_dir}/tools/gen_app_data_for_bootloader.py ${app_bin_dir}/${application}_flash.bin
-            ${CMAKE_CURRENT_BINARY_DIR}/generated/${target}/bootloader/app_data.inl DEPENDS
-            ${kvasir_cmake_dir}/tools/gen_app_data_for_bootloader.py
-        BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/generated/${target}/bootloader/app_data.inl
-        COMMENT "Generating bootloader app data for ${target}")
-
-    add_dependencies(${target} ${application})
-endfunction()
-
-function(add_target_linker_dependency target dep)
-    get_target_property(cur_link_deps ${target} LINK_DEPENDS)
-    if("${cur_link_deps}" MATCHES NOTFOUND)
-        set(new_link_deps ${dep})
-    else()
-        list(APPEND cur_link_deps ${dep})
-        set(new_link_deps ${cur_link_deps})
-    endif()
-    set_target_properties(${target} PROPERTIES LINK_DEPENDS "${new_link_deps}")
-endfunction()
-
-function(kvasir_set_target_property target property value)
-    if(property STREQUAL LOG)
-        if(value STREQUAL TRUE)
-            target_compile_definitions(${target} PUBLIC USE_UC_LOG)
-        elseif(value STREQUAL FALSE)
-
-        else()
-            message(FATAL_ERROR "wrong LOG option specified!!!!")
-        endif()
-    elseif(property STREQUAL ASSERT)
-        if(value STREQUAL TRUE)
-            target_compile_definitions(${target} PUBLIC INPUT_USE_KASSERT)
-        elseif(value STREQUAL FALSE)
-
-        else()
-            message(FATAL_ERROR "wrong ASSERT option specified!!!!")
-        endif()
-    else()
-        message(FATAL_ERROR "wrong property option specified!!!!")
-    endif()
-
-endfunction()
-
 enable_language(ASM)
 
 include(${kvasir_cmake_dir}/../lib/compiler-rt/compiler-rt.cmake)
@@ -253,23 +101,18 @@ if("${CPPLIB}" STREQUAL "libstdc++")
     endif()
 endif()
 
-function(target_add_kvasir_lib target name sources)
-    set(libraries
-        ${libraries} "${name}-${target}"
-        PARENT_SCOPE)
-    add_library("${name}-${target}" ${sources})
-endfunction()
+include(${kvasir_cmake_dir}/kvasir_runtime_archives.cmake)
 
-# Create (or reuse) a runtime library shared across all targets that have identical compile flags. The library name
-# encodes a full MD5 of the flags so that targets with different optimisation / sanitiser settings still get their own
-# copy.
-function(target_add_shared_kvasir_lib target name sources opt_flags san_flags)
-    string(MD5 _hash "${opt_flags}_${san_flags}")
-    set(_shared "${name}_${_hash}")
-
-    if(NOT TARGET "${_shared}")
+# target_add_shared_kvasir_lib(<image> <lib> <sources> <strategy> <sanitize flags>): links the runtime archive
+# kvasir_<lib>_<strategy>[_san] (cmake/kvasir_runtime_archives.cmake), made by the first image that needs it with the
+# optimisation set's flags (optimize_option_<strategy>) and the sanitize flags
+function(target_add_shared_kvasir_lib target name sources strategy san_flags)
+    kvasir_runtime_archive_name(_shared ${name} ${strategy} "${san_flags}")
+    set(_flags ${optimize_option_${strategy}} ${san_flags})
+    kvasir_runtime_archive_claim(${_shared} "${_flags}" ${target})
+    if(${_shared}_NEW)
         add_library("${_shared}" ${sources})
-        target_compile_options("${_shared}" PUBLIC ${opt_flags} ${san_flags})
+        target_compile_options("${_shared}" PUBLIC ${_flags})
     endif()
 
     # --whole-archive bracketed around this archive only: a bare --whole-archive link option stays in force for every
@@ -277,583 +120,245 @@ function(target_add_shared_kvasir_lib target name sources opt_flags san_flags)
     target_link_libraries(${target} "$<LINK_LIBRARY:KVASIR_WHOLE_ARCHIVE,${_shared}>")
 endfunction()
 
-function(
-    target_kvasir_config_internal
-    name
-    min_stack_size
-    heap_size
-    optimize
-    sanitize
-    linker_file
-    application
-    bootloader
-    core1_stack_size
-    core1_stack_in_scratch
-    scratch_banks)
+# Every file the link or a post-link step reads: an edit to one relinks the image (POST_BUILD commands have no
+# dependencies of their own). The linker file of the image is added per target.
+set(KVASIR_LINK_INPUTS
+    ${kvasir_cmake_dir}/../linker/common.ld
+    ${kvasir_cmake_dir}/../linker/common_flash.ld
+    ${kvasir_cmake_dir}/../linker/common_ram.ld
+    ${kvasir_cmake_dir}/../linker/common_ram_only.ld
+    ${kvasir_cmake_dir}/../linker/common_eeprom.ld
+    ${kvasir_cmake_dir}/../linker/common_text_body.inc.ld
+    ${kvasir_cmake_dir}/../linker/common_vectors_body.inc.ld
+    ${kvasir_cmake_dir}/../linker/common_data_body.inc.ld
+    ${kvasir_cmake_dir}/../linker/common_ramExec.inc.ld
+    ${kvasir_cmake_dir}/../linker/common_bss_body.inc.ld
+    ${kvasir_cmake_dir}/../linker/common_noInit_body.inc.ld
+    ${kvasir_cmake_dir}/../linker/common_noInitLowRam_body.inc.ld
+    ${kvasir_cmake_dir}/../linker/common_stack_body.inc.ld
+    ${kvasir_cmake_dir}/../linker/common_stack1_body.inc.ld
+    ${kvasir_cmake_dir}/../linker/common_heap_body.inc.ld
+    ${kvasir_cmake_dir}/tools/kvasir_postlink.py
+    ${kvasir_cmake_dir}/tools/kvasir_elf.py
+    ${kvasir_cmake_dir}/tools/linker_utils.py
+    ${kvasir_cmake_dir}/tools/find_undefined_refs.py
+    ${kvasir_cmake_dir}/tools/check_ram_funcs.py
+    ${kvasir_cmake_dir}/tools/check_reset_entry.py
+    ${kvasir_cmake_dir}/tools/patch_image_crc.py
+    ${kvasir_cmake_dir}/tools/pretty_size.py
+    ${kvasir_cmake_dir}/tools/elf_image.py
+    ${kvasir_cmake_dir}/tools/beautify_lst.py)
 
-    # Compute flags first so they are available for the shared-library key.
-    if(optimize STREQUAL size)
-        set(optimize_flags ${optimize_option_size})
-        set(optimize_link_flags ${optimize_link_option_size})
-        set(used_specs ${optimize_specs_size})
-    elseif(optimize STREQUAL speed)
-        set(optimize_flags ${optimize_option_speed})
-        set(optimize_link_flags ${optimize_link_option_speed})
-        set(used_specs ${optimize_specs_speed})
-    elseif(optimize STREQUAL debug)
-        set(optimize_flags ${optimize_option_debug})
-        set(optimize_link_flags ${optimize_link_option_debug})
-        set(used_specs ${optimize_specs_debug})
-    else()
-        message(FATAL_ERROR "wrong OPTIMIZE option specified!!!!")
+# The image's post-link pipeline (cmake/tools/kvasir_postlink.py), one POST_BUILD command: the RAM function, reset entry
+# and undefined-symbol checks, IMAGE_CRC's descriptor (before every artefact, so each one carries it), the flash
+# artefacts from the load view (<target>_flash.{bin,hex,uf2,elf}, _eeprom.{bin,hex,uf2}, _eeprom_flash.{hex,uf2}), the
+# listing, the memory table. A failed step removes the .elf, so the next build fails again instead of passing on a stale
+# image. kvasir_chip(IMAGE_CRC_EXCLUDE): pairs of symbols bounding bytes a later step rewrites (the RP2350's picobin
+# block); kvasir_chip(UF2_FAMILY): the .uf2 artefacts, none without it. Registered before the J-Link and uc_log steps,
+# which read its artefacts.
+function(_kvasir_postlink target linker_file image_crc)
+    set(_out "${CMAKE_CURRENT_BINARY_DIR}/${target}")
+    set(_args --linker-file "${linker_file}" --objcopy ${CMAKE_OBJCOPY} --objdump ${CMAKE_OBJDUMP})
+    if(image_crc)
+        list(APPEND _args --image-crc)
+        kvasir_chip_get(_pair IMAGE_CRC_EXCLUDE) # pairs: kvasir_chip() checked
+        while(_pair)
+            list(POP_FRONT _pair _start _end)
+            list(APPEND _args --exclude ${_start} ${_end})
+        endwhile()
     endif()
-
-    if(sanitize STREQUAL "TRUE")
-        set(sanitize_flags ${sanitize_option})
-    elseif(sanitize STREQUAL "FALSE")
-        set(sanitize_flags)
-    else()
-        message(FATAL_ERROR "wrong SANITIZE option specified!!!! ${sanitize}")
+    set(_byproducts)
+    foreach(
+        _suffix
+        _flash.bin
+        _flash.hex
+        _flash.elf
+        _eeprom.bin
+        _eeprom.hex
+        _eeprom_flash.hex
+        .lst)
+        list(APPEND _byproducts "${_out}${_suffix}")
+    endforeach()
+    kvasir_chip_get(_uf2_family UF2_FAMILY)
+    if(NOT _uf2_family STREQUAL "")
+        list(APPEND _args --uf2-family ${_uf2_family})
+        list(APPEND _byproducts "${_out}_flash.uf2" "${_out}_eeprom.uf2" "${_out}_eeprom_flash.uf2")
     endif()
-
-    # Create or reuse shared runtime libraries keyed on the compile flags.
-    if("${COMPILER_RT}" STREQUAL "clang")
-        target_add_shared_kvasir_lib(${name} rt "${COMPILER_RT_SOURCE_FILES}" "${optimize_flags}" "${sanitize_flags}")
-    endif()
-
-    if("${CPPLIB}" STREQUAL "libc++")
-        target_add_shared_kvasir_lib(${name} cxx "${LIBCXX_SOURCE_FILES}" "${optimize_flags}" "${sanitize_flags}")
-    endif()
-
-    if("${CLIB}" STREQUAL "llvm")
-        target_add_shared_kvasir_lib(${name} c "${LIBC_SOURCE_FILES}" "${optimize_flags}" "${sanitize_flags}")
-        if(NOT heap_size EQUAL 0)
-            target_add_shared_kvasir_lib(${name} c_malloc "${LIBC_MALLOC_SOURCE_FILES}" "${optimize_flags}"
-                                         "${sanitize_flags}")
-        endif()
-    endif()
-
-    set_target_properties(${name} PROPERTIES SUFFIX ".elf")
-
-    target_link_libraries(${name} peripherals)
-    target_link_libraries(${name} core_peripherals)
-    target_link_libraries(${name} uc_log::uc_log)
-    target_include_directories(${name} PUBLIC ${KVASIR_ROOT_DIR}/src)
-    target_include_directories(${name} PUBLIC ${CHIP_ROOT_DIR}/src)
-    target_include_directories(${name} PUBLIC ${CHIP_ROOT_DIR}/core/src)
-    check_ram_funcs(${name})
-    check_reset_entry(${name})
-    check_undefined_refs(${name})
-    get_target_property(_image_crc ${name} KVASIR_IMAGE_CRC)
-    if(_image_crc)
-        patch_image_crc(${name}) # before generate_images: every artefact carries the descriptor
-    endif()
-    generate_images(${name})
-    generate_lst(${name})
-    print_size(${name} ${linker_file})
-    cmake_git_version_add_headers_with_type(${name} ${optimize})
-
-    if(NOT ${application} STREQUAL FALSE)
-        add_bootloader_app_data(${name} ${application})
-    endif()
-
-    # Main linker composition files
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common.ld)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_flash.ld)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_ram.ld)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_ram_only.ld)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_eeprom.ld)
-
-    # Section body include files
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_text_body.inc.ld)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_vectors_body.inc.ld)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_data_body.inc.ld)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_bss_body.inc.ld)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_noInit_body.inc.ld)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_noInitLowRam_body.inc.ld)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_stack_body.inc.ld)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_stack1_body.inc.ld)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/../linker/common_heap_body.inc.ld)
-
-    add_target_linker_dependency(${name} ${linker_file})
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/linker_utils.py)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/find_undefined_refs.py)
-    # POST_BUILD commands have no dependencies of their own: relink when one of their scripts changes
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/check_ram_funcs.py)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/check_reset_entry.py)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/patch_image_crc.py)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/pretty_size.py)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/elf_image.py)
-    add_target_linker_dependency(${name} ${kvasir_cmake_dir}/tools/beautify_lst.py)
-
-    get_filename_component(linker_file_path ${linker_file} ABSOLUTE)
-    get_filename_component(linker_file_path ${linker_file_path} DIRECTORY)
-
-    if(CMAKE_CROSSCOMPILING)
-        target_link_options(
-            ${name}
-            PUBLIC
-            "${LINKER_PREFIX}--library-path=${linker_file_path}"
-            "${LINKER_PREFIX}--library-path=${kvasir_cmake_dir}/../linker"
-            "${LINKER_PREFIX}--defsym=cmake_ram_size=${TARGET_RAM_SIZE}"
-            "${LINKER_PREFIX}--defsym=cmake_min_stack_size=${min_stack_size}"
-            "${LINKER_PREFIX}--defsym=cmake_heap_size=${heap_size}"
-            "${LINKER_PREFIX}--defsym=cmake_core1_stack_size=${core1_stack_size}"
-            "${LINKER_PREFIX}--defsym=cmake_core1_stack_in_scratch=${core1_stack_in_scratch}"
-            "${LINKER_PREFIX}--defsym=cmake_scratch_banks=${scratch_banks}"
-            "${LINKER_PREFIX}--script=${linker_file}"
-            "${LINKER_PREFIX}--Map=${CMAKE_CURRENT_BINARY_DIR}/${name}.map")
-        add_clean_file(${name} ${CMAKE_CURRENT_BINARY_DIR}/${name}.map)
-        add_clean_file(${name} ${CMAKE_CURRENT_BINARY_DIR}/${name}.step1)
-
-        set_property(
-            TARGET ${name}
-            APPEND
-            PROPERTY SOURCES ${CHIP_SOURCES})
-
-        target_compile_options(${name} PUBLIC ${optimize_flags} ${sanitize_flags} ${CHIP_OPTIONS})
-        # the optimisation set's linker options (arm_clang.cmake: backend options of an LTO link); none with gcc
-        target_link_options(${name} PUBLIC ${optimize_link_flags})
-
-        # CHIP_LINKER_OPTIONS are bare linker options (`--wrap=...`): the gcc driver needs them behind -Wl, (clang links
-        # with ld.lld directly, LINKER_PREFIX is empty there)
-        set(chip_linker_options ${CHIP_LINKER_OPTIONS})
-        list(TRANSFORM chip_linker_options PREPEND "${LINKER_PREFIX}")
-        foreach(current_linker_flag ${linker_flags})
-            if(${used_specs} STREQUAL ${SPEC_REPLACEMENT_EMPTY_MARKER})
-                string(REPLACE ${SPEC_REPLACEMENT_STRING} "" current_linker_flag ${current_linker_flag})
-            else()
-                string(REPLACE ${SPEC_REPLACEMENT_STRING} ${used_specs} current_linker_flag ${current_linker_flag})
-            endif()
-            target_link_options(${name} PUBLIC "${current_linker_flag}" ${chip_linker_options})
-        endforeach(current_linker_flag)
-
-        # The J-Link this image's flash and log targets reach: the target's own (target_configure_kvasir JLINK_IP /
-        # JLINK_PROBE, for a desk with one probe per board) or else the JLINK_IP / JLINK_PROBE cache variables.
-        get_property(
-            _own_jlink
-            TARGET ${name}
-            PROPERTY KVASIR_JLINK_IP
-            SET)
-        if(_own_jlink)
-            get_target_property(_jlink_ip ${name} KVASIR_JLINK_IP)
-            get_target_property(_jlink_probe ${name} KVASIR_JLINK_PROBE)
-        else()
-            set(_jlink_ip "${JLINK_IP}")
-            set(_jlink_probe "${JLINK_PROBE}")
-        endif()
-
-        get_target_property(_kvasir_ram_only ${name} KVASIR_RAM_ONLY)
-        if(_kvasir_ram_only)
-            set(_jlink_ram_only RAM_ONLY)
-            # the printer's flash and reset start it in RAM too (uc_log_printer --ram_image)
-            set(_uc_log_ram_image RAM_IMAGE)
-        else()
-            set(_jlink_ram_only "")
-            set(_uc_log_ram_image "")
-        endif()
-        if(${application} STREQUAL FALSE)
-            target_add_flash_jlink(
-                ${name}
-                ${_jlink_ram_only}
-                TARGET_MPU
-                ${TARGET_MPU}
-                SWD_SPEED
-                ${SWD_SPEED}
-                JLINK_IP
-                ${_jlink_ip}
-                JLINK_PROBE
-                "${_jlink_probe}"
-                CONNECT_COMMANDS
-                ${TARGET_JLINK_CONNECT_COMMANDS}
-                SUFFIX
-                "_flash.hex")
-        else()
-            target_add_flash_jlink(
-                ${name}
-                ${_jlink_ram_only}
-                TARGET_MPU
-                ${TARGET_MPU}
-                SWD_SPEED
-                ${SWD_SPEED}
-                JLINK_IP
-                ${_jlink_ip}
-                JLINK_PROBE
-                "${_jlink_probe}"
-                CONNECT_COMMANDS
-                ${TARGET_JLINK_CONNECT_COMMANDS}
-                SUFFIX
-                "_eeprom_flash.hex")
-        endif()
-
-        if(NOT ${bootloader} STREQUAL FALSE)
-            add_dependencies(flash_${name} flash_${bootloader})
-        endif()
-
-        get_target_property(_uc_log_filter ${name} UC_LOG_FILTER)
-        if(NOT _uc_log_filter)
-            set(_uc_log_filter "")
-        endif()
-        target_add_uc_log_rtt_jlink(
-            ${name}
-            ${_uc_log_ram_image}
-            TARGET_MPU
-            ${TARGET_MPU}
-            SWD_SPEED
-            ${SWD_SPEED}
-            JLINK_IP
-            ${_jlink_ip}
-            JLINK_PROBE
-            "${_jlink_probe}"
-            DUPLEX_BASE_PORT
-            ${DUPLEX_BASE_PORT}
-            TRANSPORT
-            ${UC_LOG_TRANSPORT}
-            PRE_RESET_COMMANDS
-            ${TARGET_JLINK_CONNECT_COMMANDS}
-            PARK_SIGNATURE
-            "${TARGET_JLINK_PARK_SIGNATURE}"
-            STALL_SIGNATURE
-            "${TARGET_JLINK_STALL_SIGNATURE}"
-            FLASH_READY_SIGNATURE
-            "${TARGET_JLINK_FLASH_READY_SIGNATURE}"
-            FLASH_WINDOW
-            "${TARGET_JLINK_FLASH_WINDOW}"
-            FLASH_UNCACHED_OFFSET
-            "${TARGET_JLINK_FLASH_UNCACHED_OFFSET}"
-            STALL_RECOVERY
-            ${TARGET_JLINK_STALL_RECOVERY}
-            LOG_FILTER
-            "${_uc_log_filter}"
-            MAP_FILE
-            ${name}.map
-            HEX_FILE
-            "${name}_flash.hex")
-
-    endif()
+    add_custom_command(
+        TARGET ${target}
+        POST_BUILD
+        COMMAND ${Python3_EXECUTABLE} -X pycache_prefix=${CMAKE_BINARY_DIR}/__pycache__
+                ${kvasir_cmake_dir}/tools/kvasir_postlink.py "${_out}.elf" ${_args} --delete-on-failure
+        BYPRODUCTS ${_byproducts}
+        COMMENT "Post-link steps of ${target}.elf"
+        VERBATIM)
 endfunction()
 
-function(kvasir_executable_variants base_name)
+# kvasir_executable_variants(<base> SOURCES <src>... [LIBRARIES <lib>...] [VARIANTS <v>...] [OPTIMIZATION <o>]
+# [DEBUG_OPTIMIZATION <o>] [OUT_TARGETS <var>] [COVERAGE [COVERAGE_MODE bytes|counts] [COVERAGE_LIST <file>]]
+# [<target_configure_kvasir keyword>...]) One image per variant (default: debug release release_log sanitize), named
+# <base>_<variant> (<variant> for base ""), each `add_executable` + `target_configure_kvasir(... VARIANT <variant>)` +
+# LIBRARIES. OPTIMIZATION (size) is every variant's but debug's, DEBUG_OPTIMIZATION (debug) debug's. Every keyword of
+# target_configure_kvasir but VARIANT and OPTIMIZATION_STRATEGY is forwarded to each (KVASIR_CONFIGURE_*). OUT_TARGETS
+# names the variable that gets the targets made. A per-variant define goes `target_compile_definitions(<t> PRIVATE ...)`
+# after the call.
+#
+# COVERAGE: one more image, <base>_coverage: release_log's image with clang's source-coverage instrumentation on the
+# firmware's own translation units, the bare-metal profile runtime (lib/compiler-rt/profile.cmake) and KVASIR_COVERAGE=1
+# for Kvasir::Coverage (kvasir/Util/Coverage.hpp). COVERAGE_MODE `bytes` (default: one byte a region, covered or not,
+# race-free) or `counts` (64-bit counters, for PGO); COVERAGE_LIST a -fprofile-list file restricting what is
+# instrumented. clang only; never with RAM_ONLY; not in ALL, built when named. The runtime libraries are release_log's
+# own archives, uninstrumented.
+function(kvasir_executable_variants base)
     cmake_parse_arguments(
-        PARSE_ARGV
-        1
-        PARSED_ARGS
-        "RAM_ONLY;SCRATCH_BANKS;IMAGE_CRC;COVERAGE"
-        "OPTIMIZATION;MIN_STACK_SIZE;CORE1_STACK_SIZE;CORE1_STACK_PLACEMENT;HEAP_SIZE;MIN_LOG_LEVEL;MIN_LOG_LEVEL_DEBUG;MIN_LOG_LEVEL_RELEASE;LOG_FILTER;LINKER_FILE;SELFTEST_VARIANT;CHECK_LEVEL;CHECK_LEVEL_RELEASE;DCHECK_LEVEL;DCHECK_LEVEL_RELEASE;COVERAGE_MODE;COVERAGE_LIST"
-        "SOURCES;LIBRARIES;ADDITIONAL_FLAGS;ADDITIONAL_DEBUG_FLAGS;ADDITIONAL_RELEASE_FLAGS;ADDITIONAL_SANITIZE_FLAGS")
-
-    if(PARSED_ARGS_UNPARSED_ARGUMENTS)
-        message(FATAL_ERROR "unknown argument ${PARSED_ARGS_UNPARSED_ARGUMENTS}")
+        PARSE_ARGV 1 V "COVERAGE;${KVASIR_CONFIGURE_OPTIONS}"
+        "OPTIMIZATION;DEBUG_OPTIMIZATION;COVERAGE_MODE;COVERAGE_LIST;OUT_TARGETS;${KVASIR_CONFIGURE_ONE_VALUE}"
+        "SOURCES;LIBRARIES;VARIANTS;${KVASIR_CONFIGURE_MULTI_VALUE}")
+    if(V_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR "unknown argument ${V_UNPARSED_ARGUMENTS}")
     endif()
-
-    if(NOT PARSED_ARGS_SOURCES)
+    if(NOT V_SOURCES)
         message(FATAL_ERROR "SOURCES argument is required")
     endif()
+    if(NOT V_OPTIMIZATION)
+        set(V_OPTIMIZATION size)
+    endif()
+    if(NOT V_DEBUG_OPTIMIZATION)
+        set(V_DEBUG_OPTIMIZATION debug)
+    endif()
+    if(NOT V_VARIANTS)
+        set(V_VARIANTS ${KVASIR_VARIANTS})
+    endif()
+    foreach(_v IN LISTS V_VARIANTS)
+        if(NOT _v IN_LIST KVASIR_VARIANTS)
+            message(FATAL_ERROR "${base}: VARIANTS ${_v}: one of ${KVASIR_VARIANTS} (coverage: COVERAGE)")
+        endif()
+    endforeach()
+    kvasir_forward_arguments(_common V "${KVASIR_CONFIGURE_OPTIONS}" "${KVASIR_CONFIGURE_ONE_VALUE}"
+                             "${KVASIR_CONFIGURE_MULTI_VALUE}")
 
-    if(NOT PARSED_ARGS_OPTIMIZATION)
-        set(PARSED_ARGS_OPTIMIZATION size)
-    endif()
-
-    # Forwarded to every variant. Left empty when unset so target_configure_kvasir keeps applying its own default -
-    # passing MIN_STACK_SIZE here is opt-in.
-    set(_min_stack "")
-    if(PARSED_ARGS_MIN_STACK_SIZE)
-        set(_min_stack MIN_STACK_SIZE ${PARSED_ARGS_MIN_STACK_SIZE})
-    endif()
-
-    # Opt-in to a second core: sizes .stack1 and defines KVASIR_MULTICORE for every variant.
-    set(_core1_stack "")
-    if(PARSED_ARGS_CORE1_STACK_SIZE)
-        set(_core1_stack CORE1_STACK_SIZE ${PARSED_ARGS_CORE1_STACK_SIZE})
-    endif()
-    if(PARSED_ARGS_CORE1_STACK_PLACEMENT)
-        list(APPEND _core1_stack CORE1_STACK_PLACEMENT ${PARSED_ARGS_CORE1_STACK_PLACEMENT})
-    endif()
-    # Opt-in to the chip's per-core scratch banks for objects (KVASIR_COREn_{DATA,BSS,CODE}); see
-    # target_configure_kvasir.
-    if(PARSED_ARGS_SCRATCH_BANKS)
-        list(APPEND _core1_stack SCRATCH_BANKS)
-    endif()
-
-    set(_heap "")
-    if(PARSED_ARGS_HEAP_SIZE)
-        set(_heap HEAP_SIZE ${PARSED_ARGS_HEAP_SIZE})
-    endif()
-
-    set(_log_filter "")
-    if(PARSED_ARGS_LOG_FILTER)
-        get_filename_component(_log_filter_path "${PARSED_ARGS_LOG_FILTER}" ABSOLUTE BASE_DIR
-                               "${CMAKE_CURRENT_SOURCE_DIR}")
-        set(_log_filter LOG_FILTER ${_log_filter_path})
-    endif()
-
-    # The firmware's own linker script instead of the chip's (e.g. a calibration sector kept out of the image), relative
-    # to the project.
-    set(_linker_file "")
-    if(PARSED_ARGS_LINKER_FILE)
-        set(_linker_file LINKER_FILE ${PARSED_ARGS_LINKER_FILE})
-    endif()
-
-    # Opt-in to an image that lives entirely in RAM (the chip's LINKER_FILE_RAM_ONLY): loaded by the bootrom's UF2 path
-    # or a debugger, never written to flash. What a flash eraser is built as.
-    set(_ram_only "")
-    if(PARSED_ARGS_RAM_ONLY)
-        set(_ram_only RAM_ONLY)
-    endif()
-    # Opt-in to the image CRC descriptor (Kvasir::ImageCheck), in every variant.
-    set(_image_crc "")
-    if(PARSED_ARGS_IMAGE_CRC)
-        set(_image_crc IMAGE_CRC)
-    endif()
-
-    # Log floor per variant: MIN_LOG_LEVEL applies to every logging variant, MIN_LOG_LEVEL_DEBUG overrides it for the
-    # debug variant, MIN_LOG_LEVEL_RELEASE for release_log and sanitize. Unset means uc_log's default (keep everything).
-    set(_min_log_debug "")
-    set(_min_log_release "")
-    if(PARSED_ARGS_MIN_LOG_LEVEL)
-        set(_min_log_debug MIN_LOG_LEVEL ${PARSED_ARGS_MIN_LOG_LEVEL})
-        set(_min_log_release MIN_LOG_LEVEL ${PARSED_ARGS_MIN_LOG_LEVEL})
-    endif()
-    if(PARSED_ARGS_MIN_LOG_LEVEL_DEBUG)
-        set(_min_log_debug MIN_LOG_LEVEL ${PARSED_ARGS_MIN_LOG_LEVEL_DEBUG})
-    endif()
-    if(PARSED_ARGS_MIN_LOG_LEVEL_RELEASE)
-        set(_min_log_release MIN_LOG_LEVEL ${PARSED_ARGS_MIN_LOG_LEVEL_RELEASE})
-    endif()
-
-    # Handle empty base_name
-    if(base_name STREQUAL "")
-        set(debug_target "debug")
-        set(release_target "release")
-        set(release_log_target "release_log")
-        set(sanitize_target "sanitize")
-    else()
-        set(debug_target "${base_name}_debug")
-        set(release_target "${base_name}_release")
-        set(release_log_target "${base_name}_release_log")
-        set(sanitize_target "${base_name}_sanitize")
-    endif()
-
-    # Debug variant - with logging, debug optimization; not in ALL, built when named (or by its flash/log target)
-    add_executable(${debug_target} EXCLUDE_FROM_ALL ${PARSED_ARGS_SOURCES})
-    target_configure_kvasir(
-        ${debug_target}
-        OPTIMIZATION_STRATEGY
-        debug
-        USE_LOG
-        ${_min_stack}
-        ${_core1_stack}
-        ${_heap}
-        ${_log_filter}
-        ${_ram_only}
-        ${_image_crc}
-        ${_linker_file}
-        ${_min_log_debug}
-        ${PARSED_ARGS_ADDITIONAL_FLAGS}
-        ${PARSED_ARGS_ADDITIONAL_DEBUG_FLAGS})
-    if(PARSED_ARGS_LIBRARIES)
-        target_link_libraries(${debug_target} ${PARSED_ARGS_LIBRARIES})
-    endif()
-
-    # Release variant - no logging, no sanitizer, configurable optimization
-    add_executable(${release_target} ${PARSED_ARGS_SOURCES})
-    target_configure_kvasir(
-        ${release_target}
-        OPTIMIZATION_STRATEGY
-        ${PARSED_ARGS_OPTIMIZATION}
-        ${_min_stack}
-        ${_core1_stack}
-        ${_heap}
-        ${_log_filter}
-        ${_ram_only}
-        ${_image_crc}
-        ${_linker_file}
-        ${PARSED_ARGS_ADDITIONAL_FLAGS}
-        ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
-    if(PARSED_ARGS_LIBRARIES)
-        target_link_libraries(${release_target} ${PARSED_ARGS_LIBRARIES})
-    endif()
-
-    # Release with log variant - with logging, no sanitizer, configurable optimization
-    add_executable(${release_log_target} ${PARSED_ARGS_SOURCES})
-    target_configure_kvasir(
-        ${release_log_target}
-        OPTIMIZATION_STRATEGY
-        ${PARSED_ARGS_OPTIMIZATION}
-        USE_LOG
-        ${_min_stack}
-        ${_core1_stack}
-        ${_heap}
-        ${_log_filter}
-        ${_ram_only}
-        ${_image_crc}
-        ${_linker_file}
-        ${_min_log_release}
-        ${PARSED_ARGS_ADDITIONAL_FLAGS}
-        ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
-    if(PARSED_ARGS_LIBRARIES)
-        target_link_libraries(${release_log_target} ${PARSED_ARGS_LIBRARIES})
-    endif()
-
-    # Sanitize variant - with logging and sanitizer, configurable optimization
-    add_executable(${sanitize_target} ${PARSED_ARGS_SOURCES})
-    target_configure_kvasir(
-        ${sanitize_target}
-        OPTIMIZATION_STRATEGY
-        ${PARSED_ARGS_OPTIMIZATION}
-        USE_SANITIZER
-        USE_LOG
-        ${_min_stack}
-        ${_core1_stack}
-        ${_heap}
-        ${_log_filter}
-        ${_ram_only}
-        ${_image_crc}
-        ${_linker_file}
-        ${_min_log_release}
-        ${PARSED_ARGS_ADDITIONAL_FLAGS}
-        ${PARSED_ARGS_ADDITIONAL_SANITIZE_FLAGS})
-    if(PARSED_ARGS_LIBRARIES)
-        target_link_libraries(${sanitize_target} ${PARSED_ARGS_LIBRARIES})
-    endif()
-
-    # Compile-time self-tests (kvasir/Util/SelfTest.hpp) prove the same thing in every variant, so only one evaluates
-    # them (they are slow to compile): debug unless the firmware names another.
-    if(NOT PARSED_ARGS_SELFTEST_VARIANT)
-        set(PARSED_ARGS_SELFTEST_VARIANT debug)
-    endif()
-    set(_selftest_variants debug release release_log sanitize)
-    if(NOT PARSED_ARGS_SELFTEST_VARIANT IN_LIST _selftest_variants
-       AND NOT PARSED_ARGS_SELFTEST_VARIANT STREQUAL "all"
-       AND NOT PARSED_ARGS_SELFTEST_VARIANT STREQUAL "none")
-        message(FATAL_ERROR "SELFTEST_VARIANT ${PARSED_ARGS_SELFTEST_VARIANT}: one of ${_selftest_variants}, all, none")
-    endif()
-    foreach(_variant IN LISTS _selftest_variants)
-        if(PARSED_ARGS_SELFTEST_VARIANT STREQUAL _variant OR PARSED_ARGS_SELFTEST_VARIANT STREQUAL "all")
-            target_compile_definitions(${${_variant}_target} PRIVATE KVASIR_SELFTEST=1)
+    set(_made)
+    foreach(_v IN LISTS V_VARIANTS)
+        if(base STREQUAL "")
+            set(_t ${_v})
         else()
-            target_compile_definitions(${${_variant}_target} PRIVATE KVASIR_SELFTEST=0)
+            set(_t ${base}_${_v})
         endif()
+        kvasir_variant_row(${_v} _row)
+        set(_exclude)
+        if(_row_EXCLUDE)
+            set(_exclude EXCLUDE_FROM_ALL)
+        endif()
+        set(_opt ${V_OPTIMIZATION})
+        if(_v STREQUAL "debug")
+            set(_opt ${V_DEBUG_OPTIMIZATION})
+        endif()
+        add_executable(${_t} ${_exclude} ${V_SOURCES})
+        target_configure_kvasir(${_t} VARIANT ${_v} OPTIMIZATION_STRATEGY ${_opt} ${_common})
+        if(V_LIBRARIES)
+            target_link_libraries(${_t} ${V_LIBRARIES})
+        endif()
+        list(APPEND _made ${_t})
     endforeach()
 
-    # Runtime checks (kvasir/Util/Check.hpp): 0 off, 1 bare (panic, no log), 2 full (the operands logged). Every TU of
-    # an image must see the same level: set here per target, never in a header. CHECK_LEVEL defaults to 2 (release and
-    # release_log: CHECK_LEVEL_RELEASE); DCHECK follows it in debug and sanitize and is 0 in release and release_log
-    # (DCHECK_LEVEL / DCHECK_LEVEL_RELEASE). A failed KVASIR_SOFT_CHECK panics in sanitize and only logs elsewhere.
-    foreach(_level CHECK_LEVEL CHECK_LEVEL_RELEASE DCHECK_LEVEL DCHECK_LEVEL_RELEASE)
-        if(DEFINED PARSED_ARGS_${_level} AND NOT PARSED_ARGS_${_level} MATCHES "^[012]$")
-            message(FATAL_ERROR "${_level} ${PARSED_ARGS_${_level}}: 0 (off), 1 (bare) or 2 (full)")
-        endif()
-    endforeach()
-    set(_check 2)
-    if(DEFINED PARSED_ARGS_CHECK_LEVEL)
-        set(_check ${PARSED_ARGS_CHECK_LEVEL})
-    endif()
-    set(_check_release ${_check})
-    if(DEFINED PARSED_ARGS_CHECK_LEVEL_RELEASE)
-        set(_check_release ${PARSED_ARGS_CHECK_LEVEL_RELEASE})
-    endif()
-    set(_dcheck ${_check})
-    if(DEFINED PARSED_ARGS_DCHECK_LEVEL)
-        set(_dcheck ${PARSED_ARGS_DCHECK_LEVEL})
-    endif()
-    set(_dcheck_release 0)
-    if(DEFINED PARSED_ARGS_DCHECK_LEVEL_RELEASE)
-        set(_dcheck_release ${PARSED_ARGS_DCHECK_LEVEL_RELEASE})
-    endif()
-    target_compile_definitions(${debug_target} PRIVATE KVASIR_CHECK_LEVEL=${_check} KVASIR_DCHECK_LEVEL=${_dcheck}
-                                                       KVASIR_SOFT_CHECK_ESCALATE=0)
-    target_compile_definitions(${sanitize_target} PRIVATE KVASIR_CHECK_LEVEL=${_check} KVASIR_DCHECK_LEVEL=${_dcheck}
-                                                          KVASIR_SOFT_CHECK_ESCALATE=1)
-    foreach(_t ${release_target} ${release_log_target})
-        target_compile_definitions(${_t} PRIVATE KVASIR_CHECK_LEVEL=${_check_release}
-                                                 KVASIR_DCHECK_LEVEL=${_dcheck_release} KVASIR_SOFT_CHECK_ESCALATE=0)
-    endforeach()
-
-    # Coverage variant (COVERAGE): release_log's image with clang's source-coverage instrumentation on the firmware's
-    # own translation units, the bare-metal profile runtime (lib/compiler-rt/profile.cmake) and KVASIR_COVERAGE=1 for
-    # Kvasir::Coverage (kvasir/Util/Coverage.hpp). COVERAGE_MODE `bytes` (default: one byte a region, covered or not,
-    # race-free) or `counts` (64-bit counters, for PGO); COVERAGE_LIST a -fprofile-list file restricting what is
-    # instrumented. clang only; never with RAM_ONLY; not in ALL, built when named. The runtime libraries are
-    # release_log's own archives, uninstrumented.
-    if(PARSED_ARGS_COVERAGE)
+    if(V_COVERAGE)
         if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-            message(STATUS "${base_name}: no coverage variant with ${CMAKE_CXX_COMPILER_ID} (clang's format only)")
-        elseif(PARSED_ARGS_RAM_ONLY)
-            message(FATAL_ERROR "${base_name}: COVERAGE and RAM_ONLY together: a RAM image has no room for it")
+            message(STATUS "${base}: no coverage variant with ${CMAKE_CXX_COMPILER_ID} (clang's format only)")
+        elseif(V_RAM_ONLY)
+            message(FATAL_ERROR "${base}: COVERAGE and RAM_ONLY together: a RAM image has no room for it")
         else()
-            if(NOT PARSED_ARGS_COVERAGE_MODE)
-                set(PARSED_ARGS_COVERAGE_MODE bytes)
+            if(NOT V_COVERAGE_MODE)
+                set(V_COVERAGE_MODE bytes)
             endif()
-            if(NOT DEFINED coverage_option_${PARSED_ARGS_COVERAGE_MODE})
-                message(FATAL_ERROR "COVERAGE_MODE ${PARSED_ARGS_COVERAGE_MODE}: bytes or counts")
+            if(NOT DEFINED coverage_option_${V_COVERAGE_MODE})
+                message(FATAL_ERROR "COVERAGE_MODE ${V_COVERAGE_MODE}: bytes or counts")
             endif()
-            if(base_name STREQUAL "")
-                set(coverage_target "coverage")
+            if(base STREQUAL "")
+                set(_t coverage)
             else()
-                set(coverage_target "${base_name}_coverage")
+                set(_t ${base}_coverage)
             endif()
-            add_executable(${coverage_target} EXCLUDE_FROM_ALL ${PARSED_ARGS_SOURCES})
-            target_configure_kvasir(
-                ${coverage_target}
-                OPTIMIZATION_STRATEGY
-                ${PARSED_ARGS_OPTIMIZATION}
-                USE_LOG
-                ${_min_stack}
-                ${_core1_stack}
-                ${_heap}
-                ${_log_filter}
-                ${_image_crc}
-                ${_linker_file}
-                ${_min_log_release}
-                ${PARSED_ARGS_ADDITIONAL_FLAGS}
-                ${PARSED_ARGS_ADDITIONAL_RELEASE_FLAGS})
-            target_compile_options(${coverage_target} PRIVATE ${coverage_option_${PARSED_ARGS_COVERAGE_MODE}})
-            if(PARSED_ARGS_COVERAGE_LIST)
-                get_filename_component(_list "${PARSED_ARGS_COVERAGE_LIST}" ABSOLUTE BASE_DIR
-                                       "${CMAKE_CURRENT_SOURCE_DIR}")
-                target_compile_options(${coverage_target} PRIVATE "-fprofile-list=${_list}")
+            add_executable(${_t} EXCLUDE_FROM_ALL ${V_SOURCES})
+            target_configure_kvasir(${_t} VARIANT coverage OPTIMIZATION_STRATEGY ${V_OPTIMIZATION} ${_common})
+            # after the configure call: the string-constants TU (its COMPILE_OPTIONS snapshot) stays uninstrumented
+            target_compile_options(${_t} PRIVATE ${coverage_option_${V_COVERAGE_MODE}})
+            if(V_COVERAGE_LIST)
+                get_filename_component(_list "${V_COVERAGE_LIST}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+                target_compile_options(${_t} PRIVATE "-fprofile-list=${_list}")
                 set_property(
-                    SOURCE ${PARSED_ARGS_SOURCES}
+                    SOURCE ${V_SOURCES}
                     APPEND
                     PROPERTY OBJECT_DEPENDS "${_list}")
             endif()
-            target_compile_definitions(
-                ${coverage_target} PRIVATE KVASIR_COVERAGE=1 KVASIR_SELFTEST=0 KVASIR_CHECK_LEVEL=${_check_release}
-                                           KVASIR_DCHECK_LEVEL=${_dcheck_release} KVASIR_SOFT_CHECK_ESCALATE=0)
-            target_add_shared_kvasir_lib(${coverage_target} prof "${COMPILER_RT_PROFILE_SOURCE_FILES}"
-                                         "${optimize_option_${PARSED_ARGS_OPTIMIZATION}}" "")
-            if(PARSED_ARGS_LIBRARIES)
-                target_link_libraries(${coverage_target} ${PARSED_ARGS_LIBRARIES})
+            target_add_shared_kvasir_lib(${_t} prof "${COMPILER_RT_PROFILE_SOURCE_FILES}" ${V_OPTIMIZATION} "")
+            if(V_LIBRARIES)
+                target_link_libraries(${_t} ${V_LIBRARIES})
             endif()
+            list(APPEND _made ${_t})
         endif()
     endif()
 
+    if(V_OUT_TARGETS)
+        set(${V_OUT_TARGETS}
+            ${_made}
+            PARENT_SCOPE)
+    endif()
 endfunction()
 
+# target_configure_kvasir(<target> VARIANT <debug|release|release_log|sanitize|coverage> [OPTIMIZATION_STRATEGY <o>]
+# [<keyword>...]): makes <target> (an add_executable) a Kvasir image of that variant. The variant row
+# (cmake/kvasir_variants.cmake) decides the log (USE_UC_LOG), the sanitizer, the log floor, the check levels, soft check
+# escalation and the self-tests; OPTIMIZATION_STRATEGY defaults to the row's (debug: debug, else size). The other
+# keywords are KVASIR_CONFIGURE_* (cmake/kvasir_variants.cmake). VARIANT is required.
+#
+# The order of the side effects below is part of the contract: target_add_uc_log_rtt_jlink (string constants) snapshots
+# COMPILE_OPTIONS when it runs, so per-image options added after this call are not in the catalog TU; and the archive
+# order (runtime archives, then kvasir::chip: the chip's registers, the core's, then kvasir::sdk: uc_log) moves LTO's
+# code.
 function(target_configure_kvasir target)
     cmake_parse_arguments(
-        PARSE_ARGV
-        1
-        PARSED_ARGS
-        "USE_LOG;NOT_USE_ASSERT;ENABLE_SELF_OVERRIDE;USE_SANITIZER;RAM_ONLY;SCRATCH_BANKS;IMAGE_CRC"
-        "LOG;MIN_LOG_LEVEL;LOG_FILTER;MIN_STACK_SIZE;CORE1_STACK_SIZE;CORE1_STACK_PLACEMENT;HEAP_SIZE;OPTIMIZATION_STRATEGY;LINKER_FILE;LINKER_FILE_TEMPLATE;APPLICATION;BOOTLOADER;BOOTLOADER_SIZE;JLINK_IP;JLINK_PROBE"
-        "")
-
-    if(PARSED_ARGS_UNPARSED_ARGUMENTS)
-        message(FATAL_ERROR "unknown argument ${PARSED_ARGS_UNPARSED_ARGUMENTS}")
+        PARSE_ARGV 1 A "${KVASIR_CONFIGURE_OPTIONS}" "VARIANT;OPTIMIZATION_STRATEGY;${KVASIR_CONFIGURE_ONE_VALUE}"
+        "${KVASIR_CONFIGURE_MULTI_VALUE}")
+    if(A_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR "unknown argument ${A_UNPARSED_ARGUMENTS}")
     endif()
+    if(NOT A_VARIANT)
+        message(FATAL_ERROR "${target}: target_configure_kvasir needs VARIANT (${KVASIR_VARIANTS} coverage): it "
+                            "decides the log, the sanitizer and the check policy")
+    endif()
+    kvasir_variant_policy(${A_VARIANT} _p A)
+    get_target_property(_warnings kvasir_warnings INTERFACE_COMPILE_OPTIONS)
+    target_compile_options(${target} PRIVATE ${_warnings})
+    get_target_property(_link_warnings kvasir_warnings INTERFACE_LINK_OPTIONS)
+    if(_link_warnings)
+        target_link_options(${target} PRIVATE ${_link_warnings})
+    endif()
+    foreach(
+        _k
+        MPU
+        CORE1_SCRATCH_SIZE
+        LINKER_FILE
+        RAM_ONLY_LINKER_FILE
+        JLINK_CONNECT_COMMANDS
+        JLINK_PARK_SIGNATURE
+        JLINK_STALL_SIGNATURE
+        JLINK_STALL_RECOVERY
+        JLINK_FLASH_READY_SIGNATURE
+        JLINK_FLASH_WINDOW
+        JLINK_FLASH_UNCACHED_OFFSET)
+        kvasir_chip_get(_chip_${_k} ${_k})
+    endforeach()
 
-    if(NOT PARSED_ARGS_MIN_STACK_SIZE)
-        set(PARSED_ARGS_MIN_STACK_SIZE 4k)
+    if(NOT A_MIN_STACK_SIZE)
+        set(A_MIN_STACK_SIZE 4k)
     endif()
 
     # uc_log compile-time log filter, read via #embed: a uc_log_filter.txt next to the project's top CMakeLists.txt is
     # picked up with no argument, LOG_FILTER <dir>/uc_log_filter.txt names another. Editing it only recompiles (#embed
     # puts it into the depfile); only adding or removing the default file re-configures (the glob).
     set(_log_filter "")
-    if(PARSED_ARGS_LOG_FILTER)
-        get_filename_component(_log_filter "${PARSED_ARGS_LOG_FILTER}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    if(A_LOG_FILTER)
+        get_filename_component(_log_filter "${A_LOG_FILTER}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
         if(NOT EXISTS "${_log_filter}")
             message(FATAL_ERROR "${target}: LOG_FILTER ${_log_filter} does not exist")
         endif()
@@ -871,24 +376,48 @@ function(target_configure_kvasir target)
         set_target_properties(${target} PROPERTIES UC_LOG_FILTER "${_log_filter}")
     endif()
 
+    # The image's config header (kvasir_config.hpp): the one app-owned header with what the libraries look up by
+    # uc_log::Tag::User - the log sink (ComBackend) and the log clock (LogClock), both complete. uc_log/uc_log.hpp
+    # includes it first through UC_LOG_CONFIG_HEADER, so every TU of the image sees the same specialisations before any
+    # log line, whatever it included before. src/kvasir_config.hpp of the project is picked up with no argument,
+    # CONFIG_HEADER <file> names another (a missing one is an error). Like the log filter: editing it recompiles, adding
+    # or removing the default file re-configures. Set in every variant: a release image names the sink too.
+    set(_config_header "")
+    if(A_CONFIG_HEADER)
+        get_filename_component(_config_header "${A_CONFIG_HEADER}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        if(NOT EXISTS "${_config_header}")
+            message(FATAL_ERROR "${target}: CONFIG_HEADER ${_config_header} does not exist")
+        endif()
+    else()
+        file(GLOB _config_header CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/src/kvasir_config.hpp")
+    endif()
+    if(_config_header)
+        target_compile_definitions(${target} PRIVATE UC_LOG_CONFIG_HEADER="${_config_header}")
+    endif()
+
     # JLINK_IP / JLINK_PROBE: this image's own J-Link, over the cache variables of the same name -- for a desk with one
     # probe per board, where one machine-wide setting would point every product at the same one. Either one given names
     # the whole connection: JLINK_PROBE alone is that probe on USB even when the cache's JLINK_IP is set.
-    if(PARSED_ARGS_JLINK_IP OR PARSED_ARGS_JLINK_PROBE)
-        set_target_properties(${target} PROPERTIES KVASIR_JLINK_IP "${PARSED_ARGS_JLINK_IP}"
-                                                   KVASIR_JLINK_PROBE "${PARSED_ARGS_JLINK_PROBE}")
+    if(A_JLINK_IP OR A_JLINK_PROBE)
+        set(_jlink_ip "${A_JLINK_IP}")
+        set(_jlink_probe "${A_JLINK_PROBE}")
+        set_target_properties(${target} PROPERTIES KVASIR_JLINK_IP "${A_JLINK_IP}" KVASIR_JLINK_PROBE
+                                                                                   "${A_JLINK_PROBE}")
+    else()
+        set(_jlink_ip "${JLINK_IP}")
+        set(_jlink_probe "${JLINK_PROBE}")
     endif()
 
     # A second core is opt-in. Without CORE1_STACK_SIZE the image is single-core and, by contract, identical to what it
     # was before multicore support existed: no define, an empty .stack1, nothing else.
-    if(NOT PARSED_ARGS_CORE1_STACK_SIZE)
-        set(PARSED_ARGS_CORE1_STACK_SIZE 0)
+    if(NOT A_CORE1_STACK_SIZE)
+        set(A_CORE1_STACK_SIZE 0)
     endif()
-    if(NOT PARSED_ARGS_CORE1_STACK_SIZE STREQUAL "0")
+    if(NOT A_CORE1_STACK_SIZE STREQUAL "0")
         target_compile_definitions(${target} PUBLIC KVASIR_MULTICORE=1)
-        # the size in bytes, for compile-time checks against it (Fault::Handler's core 1 reserve)
-        if(NOT PARSED_ARGS_CORE1_STACK_SIZE MATCHES "^([0-9]+)([kK]?)$")
-            message(FATAL_ERROR "${target}: CORE1_STACK_SIZE ${PARSED_ARGS_CORE1_STACK_SIZE}: expected <n> or <n>k")
+        # the size in bytes, for compile-time checks against it (Fault::HandlerFor's core 1 reserve)
+        if(NOT A_CORE1_STACK_SIZE MATCHES "^([0-9]+)([kK]?)$")
+            message(FATAL_ERROR "${target}: CORE1_STACK_SIZE ${A_CORE1_STACK_SIZE}: expected <n> or <n>k")
         endif()
         if(CMAKE_MATCH_2)
             math(EXPR _core1_stack_bytes "${CMAKE_MATCH_1} * 1024")
@@ -899,26 +428,25 @@ function(target_configure_kvasir target)
     endif()
 
     # Where core 1's stack lives: `ram` (the default, .stack1 next to core 0's stack) or `scratch` (the chip's core 1
-    # scratch bank, TARGET_CORE1_SCRATCH_SIZE bytes: RP2040 SRAM4). Opt-in: the bank caps the stack at 4 KiB, and a core
-    # 1 overflow on the M0+ then runs silently into the top of striped RAM.
+    # scratch bank, kvasir_chip(CORE1_SCRATCH_SIZE) bytes: RP2040 SRAM4). Opt-in: the bank caps the stack at 4 KiB, and
+    # a core 1 overflow on the M0+ then runs silently into the top of striped RAM.
     set(_core1_stack_in_scratch 0)
-    if(PARSED_ARGS_CORE1_STACK_PLACEMENT AND NOT PARSED_ARGS_CORE1_STACK_PLACEMENT STREQUAL "ram")
-        if(NOT PARSED_ARGS_CORE1_STACK_PLACEMENT STREQUAL "scratch")
-            message(FATAL_ERROR "${target}: CORE1_STACK_PLACEMENT ${PARSED_ARGS_CORE1_STACK_PLACEMENT}: "
-                                "expected ram or scratch")
+    if(A_CORE1_STACK_PLACEMENT AND NOT A_CORE1_STACK_PLACEMENT STREQUAL "ram")
+        if(NOT A_CORE1_STACK_PLACEMENT STREQUAL "scratch")
+            message(FATAL_ERROR "${target}: CORE1_STACK_PLACEMENT ${A_CORE1_STACK_PLACEMENT}: expected ram or scratch")
         endif()
-        if(PARSED_ARGS_CORE1_STACK_SIZE STREQUAL "0")
+        if(A_CORE1_STACK_SIZE STREQUAL "0")
             message(FATAL_ERROR "${target}: CORE1_STACK_PLACEMENT scratch without CORE1_STACK_SIZE")
         endif()
-        if(NOT TARGET_CORE1_SCRATCH_SIZE)
-            message(FATAL_ERROR "${target}: CORE1_STACK_PLACEMENT scratch: the chip (${TARGET_MPU}) has no core 1 "
-                                "scratch bank (its chip.cmake sets no TARGET_CORE1_SCRATCH_SIZE)")
+        if(NOT _chip_CORE1_SCRATCH_SIZE)
+            message(FATAL_ERROR "${target}: CORE1_STACK_PLACEMENT scratch: the chip (${_chip_MPU}) has no core 1 "
+                                "scratch bank (its kvasir_chip() passes no CORE1_SCRATCH_SIZE)")
         endif()
-        if(_core1_stack_bytes GREATER TARGET_CORE1_SCRATCH_SIZE)
+        if(_core1_stack_bytes GREATER _chip_CORE1_SCRATCH_SIZE)
             message(
                 FATAL_ERROR
                     "${target}: CORE1_STACK_PLACEMENT scratch: core 1's stack (${_core1_stack_bytes} bytes) "
-                    "does not fit the ${TARGET_CORE1_SCRATCH_SIZE}-byte scratch bank; lower "
+                    "does not fit the ${_chip_CORE1_SCRATCH_SIZE}-byte scratch bank; lower "
                     "CORE1_STACK_SIZE (SecondaryCore::stackHighWater() says how much is used) or drop "
                     "CORE1_STACK_PLACEMENT")
         endif()
@@ -931,149 +459,202 @@ function(target_configure_kvasir target)
     # banks at boot (Startup::ExtraMemoryInit). Opt-in so that an image without it keeps every byte it had; the chip's
     # linker script refuses scratch-bank objects in an image without it (cmake_scratch_banks).
     set(_scratch_banks 0)
-    if(PARSED_ARGS_SCRATCH_BANKS)
-        if(NOT TARGET_CORE1_SCRATCH_SIZE)
-            message(FATAL_ERROR "${target}: SCRATCH_BANKS: the chip (${TARGET_MPU}) has no scratch banks")
+    if(A_SCRATCH_BANKS)
+        if(NOT _chip_CORE1_SCRATCH_SIZE)
+            message(FATAL_ERROR "${target}: SCRATCH_BANKS: the chip (${_chip_MPU}) has no scratch banks")
         endif()
         set(_scratch_banks 1)
         target_compile_definitions(${target} PUBLIC KVASIR_CORE_SCRATCH=1)
     endif()
 
-    if(NOT PARSED_ARGS_HEAP_SIZE)
-        set(PARSED_ARGS_HEAP_SIZE 0k)
+    if(NOT A_HEAP_SIZE)
+        set(A_HEAP_SIZE 0k)
     endif()
-    if(NOT PARSED_ARGS_HEAP_SIZE MATCHES "^0[kKmM]?$")
+    if(NOT A_HEAP_SIZE MATCHES "^0[kKmM]?$")
         target_compile_definitions(${target} PUBLIC KVASIR_HEAP=1)
     endif()
 
-    if(NOT PARSED_ARGS_OPTIMIZATION_STRATEGY)
-        set(PARSED_ARGS_OPTIMIZATION_STRATEGY size)
+    if(NOT A_OPTIMIZATION_STRATEGY)
+        set(A_OPTIMIZATION_STRATEGY ${_p_OPT})
     endif()
 
-    if(PARSED_ARGS_APPLICATION AND PARSED_ARGS_BOOTLOADER)
-        message(FATAL_ERROR "${target}: cant be bootloader and application")
-    endif()
-
-    if(PARSED_ARGS_ENABLE_SELF_OVERRIDE AND NOT PARSED_ARGS_APPLICATION)
-        message(FATAL_ERROR "${target}: cant enable self override for an normal application")
-    endif()
-    if(PARSED_ARGS_ENABLE_SELF_OVERRIDE)
-        set(PARSED_ARGS_ENABLE_SELF_OVERRIDE true)
-    else()
-        set(PARSED_ARGS_ENABLE_SELF_OVERRIDE false)
-    endif()
-
-    if(NOT PARSED_ARGS_APPLICATION)
-        set(PARSED_ARGS_APPLICATION FALSE)
-    else()
-        if(PARSED_ARGS_BOOTLOADER_SIZE)
-            message(FATAL_ERROR "${target}: do not set BOOTLOADER_SIZE in bootloader instead set in application")
-        endif()
-    endif()
-
-    if(NOT PARSED_ARGS_BOOTLOADER)
-        set(PARSED_ARGS_BOOTLOADER FALSE)
-    else()
-        if(NOT PARSED_ARGS_BOOTLOADER_SIZE)
-            set(PARSED_ARGS_BOOTLOADER_SIZE 8192)
-        endif()
-        set_target_properties(${target} PROPERTIES bootloader_size ${PARSED_ARGS_BOOTLOADER_SIZE})
-    endif()
-
-    if(PARSED_ARGS_LINKER_FILE AND PARSED_ARGS_LINKER_FILE_TEMPLATE)
-        message(FATAL_ERROR "${target}: only LINKER_FILE or LINKER_FILE_TEMPLATE allowed")
-    endif()
-
-    if(NOT ${PARSED_ARGS_APPLICATION} STREQUAL "FALSE")
-        get_target_property(bootloader_size ${PARSED_ARGS_APPLICATION} bootloader_size)
-    else()
-        set(bootloader_size ${PARSED_ARGS_BOOTLOADER_SIZE})
-    endif()
-
-    if(PARSED_ARGS_RAM_ONLY)
-        if(PARSED_ARGS_LINKER_FILE OR PARSED_ARGS_LINKER_FILE_TEMPLATE)
+    # RAM_ONLY: an image that lives entirely in RAM (kvasir_chip(RAM_ONLY_LINKER_FILE)): loaded by the bootrom's UF2
+    # path or a debugger, never written to flash; the J-Link script and the printer start it in RAM instead of
+    # resetting. LINKER_FILE: the firmware's own linker script instead of the chip's (e.g. a calibration sector kept out
+    # of the image), relative to the project.
+    set(_jlink_ram_only "")
+    set(_uc_log_ram_image "")
+    if(A_RAM_ONLY)
+        if(A_LINKER_FILE)
             message(
                 FATAL_ERROR "${target}: RAM_ONLY picks the chip's RAM-only linker file; do not pass LINKER_FILE too")
         endif()
-        if(NOT LINKER_FILE_RAM_ONLY)
-            message(FATAL_ERROR "${target}: RAM_ONLY needs the chip to define LINKER_FILE_RAM_ONLY")
+        if(NOT _chip_RAM_ONLY_LINKER_FILE)
+            message(FATAL_ERROR "${target}: RAM_ONLY needs the chip's kvasir_chip(RAM_ONLY_LINKER_FILE)")
         endif()
-        set(PARSED_ARGS_LINKER_FILE ${LINKER_FILE_RAM_ONLY})
+        set(_linker_file ${_chip_RAM_ONLY_LINKER_FILE})
         target_compile_definitions(${target} PUBLIC KVASIR_RAM_ONLY=1)
-        # read by target_kvasir_config_internal: the J-Link script starts the image in RAM instead of resetting
         set_property(TARGET ${target} PROPERTY KVASIR_RAM_ONLY TRUE)
-    elseif(NOT PARSED_ARGS_LINKER_FILE)
-        if(PARSED_ARGS_LINKER_FILE_TEMPLATE)
-            set(GEN_BOOTLOADER_SIZE ${bootloader_size})
-            configure_file(${CMAKE_CURRENT_SOURCE_DIR}/${PARSED_ARGS_LINKER_FILE_TEMPLATE}
-                           ${CMAKE_CURRENT_BINARY_DIR}/generated/${target}/generated.ld @ONLY)
-            set(PARSED_ARGS_LINKER_FILE ${CMAKE_CURRENT_BINARY_DIR}/generated/${target}/generated.ld)
-        else()
-            set(PARSED_ARGS_LINKER_FILE ${LINKER_FILE})
-        endif()
+        set(_jlink_ram_only RAM_ONLY)
+        set(_uc_log_ram_image RAM_IMAGE)
+    elseif(NOT A_LINKER_FILE)
+        set(_linker_file ${_chip_LINKER_FILE})
     else()
-        set(PARSED_ARGS_LINKER_FILE ${CMAKE_CURRENT_SOURCE_DIR}/${PARSED_ARGS_LINKER_FILE})
+        set(_linker_file ${CMAKE_CURRENT_SOURCE_DIR}/${A_LINKER_FILE})
     endif()
 
-    # IMAGE_CRC: the descriptor (KVASIR_IMAGE_CRC) and the post-link step that fills it (patch_image_crc, read by
-    # target_kvasir_config_internal). With RAM_ONLY (or any linker file that loads the image into SRAM) the check covers
-    # the running image's read-only part instead of the flash.
-    if(PARSED_ARGS_IMAGE_CRC)
+    # IMAGE_CRC: the descriptor (KVASIR_IMAGE_CRC) and the post-link step that fills it. With RAM_ONLY (or any linker
+    # file that loads the image into SRAM) the check covers the running image's read-only part instead of the flash.
+    if(A_IMAGE_CRC)
         target_compile_definitions(${target} PUBLIC KVASIR_IMAGE_CRC=1)
         set_property(TARGET ${target} PROPERTY KVASIR_IMAGE_CRC TRUE)
     endif()
 
-    if(PARSED_ARGS_USE_SANITIZER)
-        set(USE_SANITIZER TRUE)
-    else()
-        set(USE_SANITIZER FALSE)
+    # the optimisation set: compile flags, LTO backend options and the whole link of the toolchain file
+    # (optimize_option_<s>, optimize_link_option_<s>, linker_flags_<s>)
+    set(_s ${A_OPTIMIZATION_STRATEGY})
+    if(NOT _s MATCHES "^(size|speed|debug)$")
+        message(FATAL_ERROR "${target}: OPTIMIZATION_STRATEGY ${_s}: size, speed or debug")
+    endif()
+    set(sanitize_flags)
+    if(_p_SAN)
+        set(sanitize_flags ${sanitize_option})
     endif()
 
-    target_kvasir_config_internal(
-        ${target}
-        ${PARSED_ARGS_MIN_STACK_SIZE}
-        ${PARSED_ARGS_HEAP_SIZE}
-        ${PARSED_ARGS_OPTIMIZATION_STRATEGY}
-        ${USE_SANITIZER}
-        ${PARSED_ARGS_LINKER_FILE}
-        ${PARSED_ARGS_APPLICATION}
-        ${PARSED_ARGS_BOOTLOADER}
-        ${PARSED_ARGS_CORE1_STACK_SIZE}
-        ${_core1_stack_in_scratch}
-        ${_scratch_banks})
-
-    if(NOT PARSED_ARGS_USE_LOG)
-        if(PARSED_ARGS_LOG)
-            set(PARSED_ARGS_USE_LOG ${PARSED_ARGS_LOG})
+    # the runtime archives, shared across all targets with identical compile flags
+    if("${COMPILER_RT}" STREQUAL "clang")
+        target_add_shared_kvasir_lib(${target} rt "${COMPILER_RT_SOURCE_FILES}" ${_s} "${sanitize_flags}")
+    endif()
+    if("${CPPLIB}" STREQUAL "libc++")
+        target_add_shared_kvasir_lib(${target} cxx "${LIBCXX_SOURCE_FILES}" ${_s} "${sanitize_flags}")
+    endif()
+    if("${CLIB}" STREQUAL "llvm")
+        target_add_shared_kvasir_lib(${target} c "${LIBC_SOURCE_FILES}" ${_s} "${sanitize_flags}")
+        if(NOT A_HEAP_SIZE EQUAL 0)
+            target_add_shared_kvasir_lib(${target} c_malloc "${LIBC_MALLOC_SOURCE_FILES}" ${_s} "${sanitize_flags}")
         endif()
     endif()
 
-    kvasir_set_target_property(${target} LOG ${PARSED_ARGS_USE_LOG})
+    set_target_properties(${target} PROPERTIES SUFFIX ".elf")
+    # the chip (its headers, registers, definitions, sources and linker options, with the core's headers and registers)
+    # and the SDK (with uc_log): one link each, nothing appended by hand
+    target_link_libraries(${target} kvasir::chip kvasir::sdk)
 
+    _kvasir_postlink(${target} ${_linker_file} "${A_IMAGE_CRC}")
+    cmake_git_version_add_headers_with_type(${target} ${A_OPTIMIZATION_STRATEGY})
+
+    set_property(
+        TARGET ${target}
+        APPEND
+        PROPERTY LINK_DEPENDS ${KVASIR_LINK_INPUTS} ${_linker_file})
+
+    get_filename_component(linker_file_path ${_linker_file} ABSOLUTE)
+    get_filename_component(linker_file_path ${linker_file_path} DIRECTORY)
+    target_link_options(
+        ${target}
+        PUBLIC
+        "${LINKER_PREFIX}--library-path=${linker_file_path}"
+        "${LINKER_PREFIX}--library-path=${kvasir_cmake_dir}/../linker"
+        "${LINKER_PREFIX}--defsym=cmake_min_stack_size=${A_MIN_STACK_SIZE}"
+        "${LINKER_PREFIX}--defsym=cmake_heap_size=${A_HEAP_SIZE}"
+        "${LINKER_PREFIX}--defsym=cmake_core1_stack_size=${A_CORE1_STACK_SIZE}"
+        "${LINKER_PREFIX}--defsym=cmake_core1_stack_in_scratch=${_core1_stack_in_scratch}"
+        "${LINKER_PREFIX}--defsym=cmake_scratch_banks=${_scratch_banks}"
+        "${LINKER_PREFIX}--script=${_linker_file}"
+        "${LINKER_PREFIX}--Map=${CMAKE_CURRENT_BINARY_DIR}/${target}.map")
+    set_property(
+        TARGET ${target}
+        APPEND
+        PROPERTY ADDITIONAL_CLEAN_FILES ${CMAKE_CURRENT_BINARY_DIR}/${target}.map)
+
+    target_compile_options(${target} PUBLIC ${optimize_option_${_s}} ${sanitize_flags})
+    target_link_options(${target} PUBLIC ${optimize_link_option_${_s}} ${linker_flags_${_s}})
+
+    # The J-Link this image's flash and log targets reach: the target's own (JLINK_IP / JLINK_PROBE) or else the
+    # JLINK_IP / JLINK_PROBE cache variables.
+    target_add_flash_jlink(
+        ${target}
+        ${_jlink_ram_only}
+        TARGET_MPU
+        ${_chip_MPU}
+        SWD_SPEED
+        ${SWD_SPEED}
+        JLINK_IP
+        ${_jlink_ip}
+        JLINK_PROBE
+        "${_jlink_probe}"
+        CONNECT_COMMANDS
+        ${_chip_JLINK_CONNECT_COMMANDS})
+    target_add_uc_log_rtt_jlink(
+        ${target}
+        ${_uc_log_ram_image}
+        TARGET_MPU
+        ${_chip_MPU}
+        SWD_SPEED
+        ${SWD_SPEED}
+        JLINK_IP
+        ${_jlink_ip}
+        JLINK_PROBE
+        "${_jlink_probe}"
+        DUPLEX_BASE_PORT
+        ${DUPLEX_BASE_PORT}
+        TRANSPORT
+        ${UC_LOG_TRANSPORT}
+        PRE_RESET_COMMANDS
+        ${_chip_JLINK_CONNECT_COMMANDS}
+        PARK_SIGNATURE
+        "${_chip_JLINK_PARK_SIGNATURE}"
+        STALL_SIGNATURE
+        "${_chip_JLINK_STALL_SIGNATURE}"
+        FLASH_READY_SIGNATURE
+        "${_chip_JLINK_FLASH_READY_SIGNATURE}"
+        FLASH_WINDOW
+        "${_chip_JLINK_FLASH_WINDOW}"
+        FLASH_UNCACHED_OFFSET
+        "${_chip_JLINK_FLASH_UNCACHED_OFFSET}"
+        STALL_RECOVERY
+        ${_chip_JLINK_STALL_RECOVERY}
+        LOG_FILTER
+        "${_log_filter}"
+        MAP_FILE
+        ${target}.map
+        HEX_FILE
+        "${target}_flash.hex")
+
+    if(_p_LOG)
+        # KVASIR_LOG_FORMATTERS: the libraries' remote_fmt formatters and the generated registers' log views exist
+        # (RegisterFmt.hpp, RateLimiter.hpp, kvasir_devices, net, svd_converter's kvasir_bit.hpp) - a variant without
+        # the log parses none of them. UC_LOG_USE_AGLIO: reflectable structs (aglio/glaze) are formattable,
+        # LOG_REFLECTED_STRUCTS ON (the default) or OFF - an image that logs no struct saves glaze in every log TU, and
+        # one that does fails to compile with OFF ("undefined template remote_fmt::formatter<S>"). Both PUBLIC on the
+        # image: every TU agrees (formatter specializations), never set per TU.
+        if(NOT DEFINED A_LOG_REFLECTED_STRUCTS OR A_LOG_REFLECTED_STRUCTS)
+            set(_log_aglio 1)
+        else()
+            set(_log_aglio 0)
+        endif()
+        target_compile_definitions(${target} PUBLIC USE_UC_LOG KVASIR_LOG_FORMATTERS=1 UC_LOG_USE_AGLIO=${_log_aglio})
+        # The registers' formatter comes with the log, not with the chip umbrella: forced into every C++ TU of a log
+        # variant, found on the include path like an #include. A register is no reflectable struct, so a TU without it
+        # could not log one at all (a compile error, never other text); no chip or driver header names it.
+        target_compile_options(${target}
+                               PUBLIC "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include kvasir/Register/RegisterFmt.hpp>")
+    endif()
     # Compile-time floor for UC_LOG_*: call sites below it vanish entirely, catalog strings included. Passed through as
     # a uc_log::LogLevel enumerator name (trace debug info warn error crit); the compiler rejects anything else.
-    if(DEFINED PARSED_ARGS_MIN_LOG_LEVEL)
-        if(NOT PARSED_ARGS_USE_LOG)
-            message(WARNING "${target}: MIN_LOG_LEVEL has no effect without USE_LOG")
-        endif()
-        target_compile_definitions(${target} PUBLIC UC_LOG_MIN_LEVEL=${PARSED_ARGS_MIN_LOG_LEVEL})
+    if(NOT _p_MIN_LOG_LEVEL STREQUAL "")
+        target_compile_definitions(${target} PUBLIC UC_LOG_MIN_LEVEL=${_p_MIN_LOG_LEVEL})
+    endif()
+    # Every TU of an image must see the same levels: set here per target, never in a header.
+    target_compile_definitions(
+        ${target} PRIVATE KVASIR_SELFTEST=${_p_SELFTEST} KVASIR_CHECK_LEVEL=${_p_CHECK}
+                          KVASIR_DCHECK_LEVEL=${_p_DCHECK} KVASIR_SOFT_CHECK_ESCALATE=${_p_ESCALATE})
+    if(A_VARIANT STREQUAL "coverage")
+        target_compile_definitions(${target} PRIVATE KVASIR_COVERAGE=1)
     endif()
 
-    if(PARSED_ARGS_NOT_USE_ASSERT)
-        set(USE_ASSERT FALSE)
-    else()
-        set(USE_ASSERT TRUE)
-    endif()
-
-    kvasir_set_target_property(${target} ASSERT ${USE_ASSERT})
-    target_add_tidy_flags(${target})
-    target_add_cppcheck_flags(${target})
-
-    if(NOT ${PARSED_ARGS_APPLICATION} STREQUAL "FALSE")
-        target_compile_definitions(${target} PUBLIC INPUT_ENABLE_SELF_OVERRIDE=${PARSED_ARGS_ENABLE_SELF_OVERRIDE})
-        target_compile_definitions(${target} PUBLIC INPUT_BOOTLOADER_SIZE=${bootloader_size})
-    endif()
-
+    kvasir_add_tidy_flags(${target} ${A_VARIANT})
+    kvasir_add_cppcheck_flags(${target})
 endfunction()
 
 mark_as_advanced(FORCE CMAKE_INSTALL_PREFIX)

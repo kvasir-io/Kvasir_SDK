@@ -1,5 +1,6 @@
-# ARM Clang Compiler Configuration Configures the build environment for ARM targets using Clang/LLVM toolchain Supports
-# both custom libc++ and GCC libstdc++ standard libraries
+# The toolchain file of COMPILE_TARGET arm_clang: clang and lld for the chip package's core (TARGET_*, kvasir_core()),
+# with the SDK's libc++, llvm-libc and compiler-rt (lib/) or arm-none-eabi-gcc's libstdc++, newlib and libgcc (CPPLIB,
+# CLIB, COMPILER_RT).
 
 include(${CMAKE_CURRENT_LIST_DIR}/compiler_common.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/arm_compiler_common.cmake)
@@ -10,29 +11,7 @@ if("${CPPLIB}" STREQUAL "libstdc++"
     find_program(arm-none-eabi-gcc arm-none-eabi-gcc REQUIRED)
 
     mark_as_advanced(FORCE arm-none-eabi-gcc)
-    # ugly way to get arm-none-eabi-gcc include and lib path
-    execute_process(
-        COMMAND ${arm-none-eabi-gcc} -print-sysroot
-        OUTPUT_VARIABLE GCC_ARM_NONE_EABI_ROOT
-        OUTPUT_STRIP_TRAILING_WHITESPACE)
-
-    execute_process(
-        COMMAND ${arm-none-eabi-gcc} -print-search-dirs
-        OUTPUT_VARIABLE GCC_ARM_NONE_EABI_LIB_DIR
-        OUTPUT_STRIP_TRAILING_WHITESPACE)
-    string(REGEX MATCH "^install: ([^\n\r ]*)" GCC_ARM_NONE_EABI_LIB_DIR ${GCC_ARM_NONE_EABI_LIB_DIR})
-    string(REGEX REPLACE "^install: " "" GCC_ARM_NONE_EABI_LIB_DIR ${GCC_ARM_NONE_EABI_LIB_DIR})
-
-    get_filename_component(GCC_ARM_NONE_EABI_ROOT "${GCC_ARM_NONE_EABI_ROOT}" REALPATH)
-
-    file(GLOB_RECURSE GCC_ARM_NONE_EABI_INCLUDE "${GCC_ARM_NONE_EABI_ROOT}/include/c++/*/cstddef")
-    list(LENGTH GCC_ARM_NONE_EABI_INCLUDE _gcc_cxx_count)
-    if(NOT _gcc_cxx_count EQUAL 1)
-        message(FATAL_ERROR "expected exactly one include/c++/<version>/cstddef under "
-                            "${GCC_ARM_NONE_EABI_ROOT}, found ${_gcc_cxx_count}: ${GCC_ARM_NONE_EABI_INCLUDE}")
-    endif()
-
-    get_filename_component(GCC_ARM_NONE_EABI_INCLUDE "${GCC_ARM_NONE_EABI_INCLUDE}" DIRECTORY)
+    kvasir_gcc_sysroot(${arm-none-eabi-gcc} GCC_ARM_NONE_EABI_ROOT GCC_ARM_NONE_EABI_INCLUDE)
 endif()
 
 find_program(clang clang PATHS REQUIRED)
@@ -94,10 +73,10 @@ set(target_flags
 
 # The Cortex-M0+ has no exclusive accesses, so clang calls a library function for EVERY atomic access there, a plain
 # load or store included. +atomics-32 lets it do loads and stores of up to 32 bits inline (they are single instructions)
-# and call __sync_* for the read-modify-writes only, which kvasir/Atomic/detail/arm_Common_atomic.hpp provides on the
-# same lock as before. Measured: M0+ release images 2.2 % smaller in sum, an atomic load 14 -> 0 cycles and Clock::now()
-# 91 -> 58 on the RP2040. Part of target_flags, which becomes the CMAKE_<LANG>_FLAGS string: as a target option list
-# CMake would drop the second -Xclang.
+# and call __sync_* for the read-modify-writes only, which kvasir/StartUp/Runtime/LibAtomic.hpp provides on the same
+# lock as before. Measured: M0+ release images 2.2 % smaller in sum, an atomic load 14 -> 0 cycles and Clock::now() 91
+# -> 58 on the RP2040. Part of target_flags, which becomes the CMAKE_<LANG>_FLAGS string: as a target option list CMake
+# would drop the second -Xclang.
 if(TARGET_ARCH STREQUAL "v6-m")
     list(APPEND target_flags -Xclang -target-feature -Xclang +atomics-32)
 endif()
@@ -140,10 +119,6 @@ set(optimize_option_debug ${optimize_option_common} -Og ${KVASIR_EXTRA_COMPILE_F
 set(optimize_link_option_speed --mllvm=-arm-promote-constant=true)
 set(optimize_link_option_size)
 set(optimize_link_option_debug)
-
-set(optimize_specs_speed ${SPEC_REPLACEMENT_EMPTY_MARKER})
-set(optimize_specs_size "_nano")
-set(optimize_specs_debug "_nano")
 
 # Real Undefined Behavior (Standard C/C++ UB)
 set(sanitize_option_ub
@@ -230,85 +205,15 @@ if("${CPPLIB}" STREQUAL "libstdc++"
    OR "${COMPILER_RT}" STREQUAL "gcc"
    OR "${CLIB}" STREQUAL "newlib")
     # ask the gcc driver where its multilib lives instead of assembling the directory name by hand
-    set(_multilib_flags -mcpu=${TARGET_CPU} -mfloat-abi=${TARGET_FLOAT_ABI} -m${TARGET_ARM_INSTRUCTION_MODE})
-    if(NOT TARGET_FPU MATCHES none)
-        list(APPEND _multilib_flags -mfpu=${TARGET_FPU})
-    endif()
-    foreach(_lib libc_nano.a libgcc.a)
-        execute_process(
-            COMMAND ${arm-none-eabi-gcc} ${_multilib_flags} -print-file-name=${_lib}
-            OUTPUT_VARIABLE _lib_path
-            OUTPUT_STRIP_TRAILING_WHITESPACE)
-        if(NOT IS_ABSOLUTE "${_lib_path}")
-            message(FATAL_ERROR "arm-none-eabi-gcc has no ${_lib} for ${_multilib_flags}")
-        endif()
-        get_filename_component(_lib_dir "${_lib_path}" DIRECTORY)
-        get_filename_component(_lib_dir "${_lib_dir}" REALPATH)
-        list(APPEND linker_search_path "${_lib_dir}/")
-    endforeach()
-    list(REMOVE_DUPLICATES linker_search_path)
+    kvasir_gcc_multilib_dirs(${arm-none-eabi-gcc} linker_search_path)
 endif()
 
 list(TRANSFORM linker_search_path PREPEND "--library-path=")
 
-set(system_libs)
-
-if("${CPPLIB}" STREQUAL "libstdc++")
-    list(APPEND system_libs stdc++${SPEC_REPLACEMENT_STRING})
-endif()
-
-if("${CLIB}" STREQUAL "newlib")
-    list(APPEND system_libs c${SPEC_REPLACEMENT_STRING})
-    list(APPEND system_libs m)
-endif()
-
-if("${COMPILER_RT}" STREQUAL "gcc")
-    list(APPEND system_libs gcc)
-endif()
-
-list(TRANSFORM system_libs PREPEND "--library=")
-
-set(common_warning_flags
-    -Weverything
-    -Wno-switch-default
-    -Wnan-infinity-disabled
-    -Wno-c++98-compat
-    -Wno-c++98-compat-pedantic
-    -Wno-c++20-compat
-    -Wno-pre-c2x-compat
-    -Wno-pre-c11-compat
-    -pedantic-errors
-    -Wno-padded
-    -Wno-covered-switch-default
-    -Wno-switch-enum
-    -Wno-class-varargs
-    -Wno-gnu-zero-variadic-macro-arguments
-    -Wno-float-equal
-    -Wno-unknown-warning-option
-    -Wno-reserved-identifier
-    -ftemplate-backtrace-limit=0
-    -fmacro-backtrace-limit=0
-    -Wno-zero-as-null-pointer-constant # TODO remove
-    -Wno-documentation-unknown-command
-    -Wno-documentation
-    -Wno-declaration-after-statement
-    -Wno-braced-scalar-init
-    -Wno-unsafe-buffer-usage
-    -Wno-nrvo
-    -Wno-unknown-warning-option)
-
-# clang 23 brought -Wlifetime-safety-* into -Weverything; the two suggestion groups only propose
-# [[clang::lifetimebound]] marks (hundreds, mostly in fetched fmt and llvm-libc). The checks that find dangling
-# references stay on. Guarded: clang 22 does not know the names. Asked from the compiler: a toolchain file runs before
-# CMAKE_CXX_COMPILER_VERSION is set.
-execute_process(
-    COMMAND ${clang++} -dumpversion
-    OUTPUT_VARIABLE kvasir_clang_version
-    OUTPUT_STRIP_TRAILING_WHITESPACE)
-if(kvasir_clang_version VERSION_GREATER_EQUAL 23)
-    list(APPEND common_warning_flags -Wno-lifetime-safety-intra-tu-suggestions
-         -Wno-lifetime-safety-intra-tu-constructor-suggestions)
-endif()
+# The warning list (kvasir_warnings.cmake, shared with host test trees): kvasir::warnings carries it into the image's
+# own code (util.cmake); the runtime libraries, built from upstream code, compile with the compiler's defaults
+include(${CMAKE_CURRENT_LIST_DIR}/kvasir_warnings.cmake)
+set(kvasir_image_warning_flags ${kvasir_clang_warning_flags} -Wno-unused-macros)
 
 set(profile_flags)
 
@@ -320,14 +225,13 @@ set(profile_flags)
 # of memcpy. -Wno-main: StartUp.hpp declares main() extern "C" and takes its address. __STDC_HOSTED__ stays 0: the C
 # library has no FILE, and third-party headers read the macro as "stdio exists" (emio compiles its std::fseek file
 # buffer under it). Clang has no flag for "builtins yes, hosted no" - -fbuiltin after -ffreestanding changes nothing -
-# so the macro is set by hand, which clang calls redefining a builtin macro. Not with libstdc++: it hides <string> and
-# the rest of its hosted headers under __STDC_HOSTED__=0 (requires_hosted.h), and newlib, its C library here, has FILE
-# anyway.
+# so the macro is set by hand, which clang calls redefining a builtin macro (a default warning: its -Wno stays on every
+# command line, the runtime libraries' too). Not with libstdc++: it hides <string> and the rest of its hosted headers
+# under __STDC_HOSTED__=0 (requires_hosted.h), and newlib, its C library here, has FILE anyway.
 list(REMOVE_ITEM arm_compiler_common_flags -ffreestanding)
-list(APPEND common_warning_flags -Wno-main)
+list(APPEND kvasir_image_warning_flags -Wno-main)
 if(NOT "${CPPLIB}" STREQUAL "libstdc++")
-    list(APPEND arm_compiler_common_flags -U__STDC_HOSTED__ -D__STDC_HOSTED__=0)
-    list(APPEND common_warning_flags -Wno-builtin-macro-redefined)
+    list(APPEND arm_compiler_common_flags -U__STDC_HOSTED__ -D__STDC_HOSTED__=0 -Wno-builtin-macro-redefined)
 endif()
 
 if("${CPPLIB}" STREQUAL "libc++")
@@ -339,11 +243,11 @@ if("${CLIB}" STREQUAL "llvm")
 endif()
 
 if("${COMPILER_RT}" STREQUAL "gcc")
-    # tells StartUp.hpp to provide the AEABI memory helpers, which libgcc does not have
+    # tells StartUp/Runtime/Aeabi.hpp to provide the AEABI memory helpers, which libgcc does not have
     list(APPEND profile_flags -DKVASIR_COMPILER_RT_LIBGCC=1)
 endif()
 
-set(common_flags ${target_flags} ${common_warning_flags} ${profile_flags} ${system_includes} ${compiler_common_flags}
+set(common_flags ${target_flags} ${profile_flags} ${system_includes} ${compiler_common_flags}
                  ${arm_compiler_common_flags})
 
 set(cxx_flags ${common_flags} ${compiler_common_cxx_flags} -nostdinc++)
@@ -352,14 +256,9 @@ set(c_flags ${common_flags} ${compiler_common_c_flags} -nostdinc)
 
 set(asm_flags ${common_flags} ${compiler_common_asm_flags})
 
-# --whole-archive bracketed around one archive, for util.cmake's shared runtime archives
-set(CMAKE_C_LINK_LIBRARY_USING_KVASIR_WHOLE_ARCHIVE_SUPPORTED TRUE)
-set(CMAKE_C_LINK_LIBRARY_USING_KVASIR_WHOLE_ARCHIVE "${LINKER_PREFIX}--whole-archive" "<LINK_ITEM>"
-                                                    "${LINKER_PREFIX}--no-whole-archive")
-set(CMAKE_CXX_LINK_LIBRARY_USING_KVASIR_WHOLE_ARCHIVE_SUPPORTED TRUE)
-set(CMAKE_CXX_LINK_LIBRARY_USING_KVASIR_WHOLE_ARCHIVE ${CMAKE_C_LINK_LIBRARY_USING_KVASIR_WHOLE_ARCHIVE})
+kvasir_whole_archive_feature("${LINKER_PREFIX}")
 
-set(linker_flags
+set(link_flags_common
     ${linker_common_flags}
     -nostdlib
     --lto-O${kvasir_lto_level}
@@ -371,7 +270,25 @@ set(linker_flags
     # lld's own level: 2 also merges string tails
     -O2
     ${KVASIR_EXTRA_LINK_FLAGS}
-    ${linker_search_path}
-    ${system_libs})
+    ${linker_search_path})
+
+# the system libraries per optimisation set: size and debug link newlib's and libstdc++'s nano builds
+set(_nano_speed "")
+set(_nano_size _nano)
+set(_nano_debug _nano)
+foreach(_set speed size debug)
+    set(_libs)
+    if("${CPPLIB}" STREQUAL "libstdc++")
+        list(APPEND _libs stdc++${_nano_${_set}})
+    endif()
+    if("${CLIB}" STREQUAL "newlib")
+        list(APPEND _libs c${_nano_${_set}} m)
+    endif()
+    if("${COMPILER_RT}" STREQUAL "gcc")
+        list(APPEND _libs gcc)
+    endif()
+    list(TRANSFORM _libs PREPEND "--library=")
+    set(linker_flags_${_set} ${link_flags_common} ${_libs})
+endforeach()
 
 include(${CMAKE_CURRENT_LIST_DIR}/compiler_common_end.cmake)

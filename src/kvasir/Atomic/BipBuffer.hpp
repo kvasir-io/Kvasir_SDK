@@ -13,7 +13,7 @@
 // writer and is only loaded and stored - no read-modify-write, so no exclusives: Armv6-M has none (DDI0419E A3.4),
 // and byte, aligned halfword and aligned word accesses are single-copy atomic (A3.5.1).
 // A DMA channel as a party: commit before triggering the channel, with a release fence (`dmb`) between them.
-#include "kvasir/Atomic/Queue.hpp"
+#include "kvasir/Atomic/Sync.hpp"
 
 #include <algorithm>
 #include <array>
@@ -34,12 +34,12 @@ struct BipBuffer {
     // Size - 1 there, and a buffer of one would never take an element again.
     static_assert(Size >= 2,
                   "a bip buffer needs at least two elements");
-    using IndexType = Detail::GetIndexTypeT<Size + 1>;   // indices run 0..Size inclusive
+    using IndexType = Detail::IndexFor<Size + 1>;   // indices run 0..Size inclusive
     static_assert(std::numeric_limits<IndexType>::max() >= Size,
                   "Size too big");
 
-    static constexpr auto acquire = TSync::load_memory_order;
-    static constexpr auto release = TSync::store_memory_order;
+    static constexpr auto acquire = TSync::loadMemoryOrder;
+    static constexpr auto release = TSync::storeMemoryOrder;
 
     /// Exactly n contiguous elements, or an empty span. Taking a reservation replaces the last one.
     std::span<T> writeReserve(std::size_t n) {
@@ -106,9 +106,7 @@ struct BipBuffer {
 
     /// Free the first k elements of the last read reservation (k <= its size).
     void readCommit(std::size_t k) {
-        if(k > static_cast<std::size_t>(rdEnd_ - rdAt_)) {
-            k = static_cast<std::size_t>(rdEnd_ - rdAt_);
-        }
+        k         = std::min(k, static_cast<std::size_t>(rdEnd_ - rdAt_));
         auto next = static_cast<IndexType>(rdAt_ + k);
         // Eager wrap: the run before the wrap used up -> read_ goes to 0 at once, so the producer sees [w, Size) free.
         if(rdBeforeWrap_ && next == rdEnd_) { next = 0; }

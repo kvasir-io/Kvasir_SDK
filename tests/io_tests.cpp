@@ -2,7 +2,7 @@
 //
 // Two halves:
 //  * the Io::Detail traits in Io/Utility.hpp, which are pure compile time predicates over
-//    pin locations and ports and are checked with static_asserts;
+//    pin locations and are checked with static_asserts;
 //  * the pin factories in Io/PinFactories.hpp. Those all funnel through
 //    Io::MakeAction<TAction, TPinLocation>, which a chip support file is expected to
 //    specialise. This test provides a small fake chip file (a GPIO block with a direction,
@@ -11,7 +11,6 @@
 #include "kvasir/Io/Io.hpp"
 
 #include "kvasir/Io/PinFactories.hpp"
-#include "kvasir/Io/PortFactories.hpp"
 #include "kvasir/Io/Types.hpp"
 #include "kvasir/Io/Utility.hpp"
 #include "kvasir_test.hpp"
@@ -19,23 +18,18 @@
 #include <cstdint>
 #include <type_traits>
 
-namespace mpl = Kvasir::MPL;
-
 namespace {
 
 template<typename A, typename B>
 constexpr bool same = std::is_same_v<A, B>;
 
 template<int Port, int Pin>
-using Loc = Kvasir::Register::PinLocation<Port, Pin>;
+using Loc = Kvasir::Io::PinLocation<Port, Pin>;
 
 // the pin and port a location names, as values
 static_assert(Kvasir::Io::pinNumber(Loc<0,
                                         25>{})
               == 25);
-static_assert(Kvasir::Io::portNumber(Loc<1,
-                                         7>{})
-              == 1);
 static_assert(Loc<1,
                   7>::pin
                 == 7
@@ -51,32 +45,32 @@ static_assert(Loc<1,
 //   base + 0x8  toggle      write a one to flip a bit, writing zero is ignored
 //   base + 0xC  input       read only
 template<int Port>
-constexpr unsigned PortBase = 0x100U + unsigned(Port) * 0x10U;
+constexpr unsigned portBase = 0x100U + static_cast<unsigned>(Port) * 0x10U;
 
 template<int Port>
-using DirAddr = Kvasir::Register::Address<PortBase<Port>, 0x00000000, 0x00000000, std::uint32_t>;
+using DirAddr = Kvasir::Register::Address<portBase<Port>, 0x00000000, 0x00000000, std::uint32_t>;
 
 template<int Port>
 using OutAddr
-  = Kvasir::Register::Address<PortBase<Port> + 4, 0x00000000, 0x00000000, std::uint32_t>;
+  = Kvasir::Register::Address<portBase<Port> + 4, 0x00000000, 0x00000000, std::uint32_t>;
 
 template<int Port>
 using ToggleAddr
-  = Kvasir::Register::Address<PortBase<Port> + 8, 0xFFFFFFFF, 0x00000000, std::uint32_t>;
+  = Kvasir::Register::Address<portBase<Port> + 8, 0xFFFFFFFF, 0x00000000, std::uint32_t>;
 
 template<int Port>
 using InAddr
-  = Kvasir::Register::Address<PortBase<Port> + 12, 0x00000000, 0x00000000, std::uint32_t>;
+  = Kvasir::Register::Address<portBase<Port> + 12, 0x00000000, 0x00000000, std::uint32_t>;
 
 template<int Port, int Pin>
 using DirField = Kvasir::Register::FieldLocation<DirAddr<Port>,
-                                                 (1U << unsigned(Pin)),
+                                                 (1U << static_cast<unsigned>(Pin)),
                                                  Kvasir::Register::ReadWriteAccess,
                                                  std::uint32_t>;
 
 template<int Port, int Pin>
 using OutField = Kvasir::Register::FieldLocation<OutAddr<Port>,
-                                                 (1U << unsigned(Pin)),
+                                                 (1U << static_cast<unsigned>(Pin)),
                                                  Kvasir::Register::ReadWriteAccess,
                                                  std::uint32_t>;
 
@@ -87,11 +81,11 @@ using ToggleAccess
 
 template<int Port, int Pin>
 using ToggleField = Kvasir::Register::
-  FieldLocation<ToggleAddr<Port>, (1U << unsigned(Pin)), ToggleAccess, std::uint32_t>;
+  FieldLocation<ToggleAddr<Port>, (1U << static_cast<unsigned>(Pin)), ToggleAccess, std::uint32_t>;
 
 template<int Port, int Pin>
 using InField = Kvasir::Register::FieldLocation<InAddr<Port>,
-                                                (1U << unsigned(Pin)),
+                                                (1U << static_cast<unsigned>(Pin)),
                                                 Kvasir::Register::ReadOnlyAccess,
                                                 std::uint32_t>;
 
@@ -101,39 +95,37 @@ using InField = Kvasir::Register::FieldLocation<InAddr<Port>,
 namespace Kvasir { namespace Io {
 
     template<PullConfiguration PC, int Port, int Pin>
-    struct MakeAction<Action::Input<PC>, Register::PinLocation<Port, Pin>>
+    struct MakeAction<Action::Input<PC>, PinLocation<Port, Pin>>
       : Register::Detail::Clear<DirField<Port, Pin>> {};
 
     template<OutputType OT, OutputSpeed OS, int Port, int Pin>
-    struct MakeAction<Action::Output<OT, OS, OutputInit::Low>, Register::PinLocation<Port, Pin>>
+    struct MakeAction<Action::Output<OT, OS, OutputInit::low>, PinLocation<Port, Pin>>
       : Register::Detail::Set<DirField<Port, Pin>> {};
 
     template<OutputType OT, OutputSpeed OS, int Port, int Pin>
-    struct MakeAction<Action::Output<OT, OS, OutputInit::High>, Register::PinLocation<Port, Pin>>
+    struct MakeAction<Action::Output<OT, OS, OutputInit::high>, PinLocation<Port, Pin>>
       : Register::Detail::Set<DirField<Port, Pin>> {};
 
     template<int Port, int Pin>
-    struct MakeAction<Action::Set, Register::PinLocation<Port, Pin>>
+    struct MakeAction<Action::Set, PinLocation<Port, Pin>>
       : Register::Detail::Set<OutField<Port, Pin>> {};
 
     template<int Port, int Pin>
-    struct MakeAction<Action::Clear, Register::PinLocation<Port, Pin>>
+    struct MakeAction<Action::Clear, PinLocation<Port, Pin>>
       : Register::Detail::Clear<OutField<Port, Pin>> {};
 
     template<int Port, int Pin>
-    struct MakeAction<Action::Toggle, Register::PinLocation<Port, Pin>>
+    struct MakeAction<Action::Toggle, PinLocation<Port, Pin>>
       : Register::Detail::Set<ToggleField<Port, Pin>> {};
 
     template<int Port, int Pin>
-    struct MakeAction<Action::Read, Register::PinLocation<Port, Pin>>
+    struct MakeAction<Action::Read, PinLocation<Port, Pin>>
       : Register::Action<InField<Port, Pin>, Register::ReadAction> {};
 
 }}   // namespace Kvasir::Io
 
 using namespace Kvasir::Register;
 using namespace Kvasir::Test;
-using W = Recorder::Write;
-using R = Recorder::Read;
 
 namespace io     = Kvasir::Io;
 namespace detail = Kvasir::Io::Detail;
@@ -174,100 +166,26 @@ static_assert(!detail::PinLocationLess<Loc<1,
                                        Loc<0,
                                            9>>::value);
 
-// --- PinLocationEqual -----------------------------------------------------
-static_assert(detail::PinLocationEqual(Loc<0,
-                                           0>{},
-                                       Loc<0,
-                                           0>{}));
-static_assert(!detail::PinLocationEqual(Loc<0,
-                                            0>{},
-                                        Loc<0,
-                                            1>{}));
-static_assert(!detail::PinLocationEqual(Loc<0,
-                                            0>{},
-                                        Loc<1,
-                                            0>{}));
+// --- pinLocationEqual -----------------------------------------------------
+static_assert(io::pinLocationEqual(Loc<0,
+                                       0>{},
+                                   Loc<0,
+                                       0>{}));
+static_assert(!io::pinLocationEqual(Loc<0,
+                                        0>{},
+                                    Loc<0,
+                                        1>{}));
+static_assert(!io::pinLocationEqual(Loc<0,
+                                        0>{},
+                                    Loc<1,
+                                        0>{}));
 // anything that is not a pair of pin locations compares unequal
-static_assert(!detail::PinLocationEqual(Loc<0,
-                                            0>{},
-                                        1));
-
-// --- GetHwPort ------------------------------------------------------------
-static_assert(detail::GetHwPort<Loc<0,
-                                    5>>::value
-              == 0);
-static_assert(detail::GetHwPort<Loc<3,
-                                    5>>::value
-              == 3);
-
-// --- OnSamePort -----------------------------------------------------------
-static_assert(detail::OnSamePort<Loc<1,
-                                     0>,
-                                 Loc<1,
-                                     7>>::value);
-static_assert(!detail::OnSamePort<Loc<1,
-                                      0>,
-                                  Loc<2,
-                                      0>>::value);
-static_assert(!detail::OnSamePort<int,
-                                  int>::value);
-
-// --- GetPortNumbersT ------------------------------------------------------
-// the pins are sorted and de-duplicated by port, and the port numbers extracted
-static_assert(same<detail::GetPortNumbersT<brigand::list<Loc<0,
-                                                             0>>>,
-                   brigand::list<mpl::Int<0>>>);
-static_assert(same<detail::GetPortNumbersT<brigand::list<Loc<0,
-                                                             1>,
-                                                         Loc<0,
-                                                             0>>>,
-                   brigand::list<mpl::Int<0>>>);
-static_assert(same<detail::GetPortNumbersT<brigand::list<Loc<1,
-                                                             0>,
-                                                         Loc<0,
-                                                             0>>>,
-                   brigand::list<mpl::Int<0>,
-                                 mpl::Int<1>>>);
-static_assert(same<detail::GetPortNumbersT<brigand::list<Loc<2,
-                                                             3>,
-                                                         Loc<0,
-                                                             1>,
-                                                         Loc<2,
-                                                             1>>>,
-                   brigand::list<mpl::Int<0>,
-                                 mpl::Int<2>>>);
-
-// --- IsPort / IsSinglePort / IsDistributedPort ----------------------------
-using SinglePort      = io::Port<io::PortAccess::defaultMode, Loc<0, 0>, Loc<0, 1>>;
-using DistributedPort = io::Port<io::PortAccess::defaultMode, Loc<0, 0>, Loc<1, 1>>;
-
-static_assert(detail::IsPort<SinglePort>::value);
-static_assert(detail::IsPort<DistributedPort>::value);
-static_assert(!detail::IsPort<Loc<0,
-                                  0>>::value);
-static_assert(!detail::IsPort<int>::value);
-
-static_assert(detail::IsSinglePort<SinglePort>::value);
-static_assert(!detail::IsSinglePort<DistributedPort>::value);
-static_assert(!detail::IsSinglePort<int>::value);
-
-static_assert(detail::IsDistributedPort<DistributedPort>::value);
-static_assert(!detail::IsDistributedPort<SinglePort>::value);
-static_assert(!detail::IsDistributedPort<int>::value);
-
-// --- GetAccess ------------------------------------------------------------
-static_assert(detail::GetAccess<SinglePort>::value == io::PortAccess::defaultMode);
-static_assert(detail::GetAccess<io::Port<io::PortAccess::setClear,
-                                         Loc<0,
-                                             0>>>::value
-              == io::PortAccess::setClear);
-static_assert(detail::GetAccess<io::Port<io::PortAccess::toggle,
-                                         Loc<0,
-                                             0>>>::value
-              == io::PortAccess::toggle);
+static_assert(!io::pinLocationEqual(Loc<0,
+                                        0>{},
+                                    1));
 
 // ===========================================================================
-// makePinLocation / makePort
+// makePinLocation
 // ===========================================================================
 
 static_assert(same<decltype(io::makePinLocation(io::HwPort<2>{},
@@ -278,170 +196,229 @@ static_assert(same<decltype(io::makePinLocation(io::HwPort<0>{},
                                                 io::Pin<0>{})),
                    Loc<0,
                        0>>);
+// a port tag, then a pin tag: swapped, or a plain integral constant, it is not callable
+template<typename P, typename N>
+concept PinLocationOf = requires { io::makePinLocation(P{}, N{}); };
+static_assert(PinLocationOf<io::HwPort<0>,
+                            io::Pin<3>>);
+static_assert(!PinLocationOf<io::Pin<3>,
+                             io::HwPort<0>>);
+static_assert(!PinLocationOf<std::integral_constant<int,
+                                                    0>,
+                             std::integral_constant<int,
+                                                    3>>);
 
-// makePort from bare pin locations uses the default access mode
-static_assert(same<decltype(io::makePort(Loc<0,
-                                             0>{},
-                                         Loc<0,
-                                             1>{})),
-                   io::Port<io::PortAccess::defaultMode,
+// ===========================================================================
+// the pin factories live in Io; Register's factories take fields only
+// ===========================================================================
+
+// several pins: the list of what each pin alone gives (Io's variadic forms)
+static_assert(same<decltype(io::read(Loc<0,
+                                         2>{},
+                                     Loc<1,
+                                         7>{})),
+                   brigand::list<decltype(io::read(Loc<0,
+                                                       2>{})),
+                                 decltype(io::read(Loc<1,
+                                                       7>{}))>>);
+static_assert(same<decltype(io::clear(Loc<0,
+                                          2>{},
+                                      Loc<0,
+                                          3>{},
+                                      Loc<1,
+                                          4>{})),
+                   brigand::list<decltype(io::clear(Loc<0,
+                                                        2>{})),
+                                 decltype(io::clear(Loc<0,
+                                                        3>{})),
+                                 decltype(io::clear(Loc<1,
+                                                        4>{}))>>);
+// found by argument-dependent lookup, unqualified, next to `using namespace Kvasir::Register`
+static_assert(same<decltype(read(Loc<0,
+                                     2>{},
+                                 Loc<1,
+                                     7>{})),
+                   decltype(io::read(Loc<0,
+                                         2>{},
+                                     Loc<1,
+                                         7>{}))>);
+
+template<typename... Ts>
+concept RegisterRead = requires { Kvasir::Register::read(Ts{}...); };
+template<typename... Ts>
+concept RegisterSet = requires { Kvasir::Register::set(Ts{}...); };
+template<typename... Ts>
+concept RegisterClear = requires { Kvasir::Register::clear(Ts{}...); };
+template<typename... Ts>
+concept IoSet = requires { io::set(Ts{}...); };
+
+static_assert(!RegisterRead<Loc<0,
+                                1>>);
+static_assert(!RegisterRead<Loc<0,
+                                1>,
                             Loc<0,
-                                0>,
-                            Loc<0,
-                                1>>>);
-// with an explicit access mode as the first argument
-static_assert(same<decltype(io::makePort(io::Access::setClear,
-                                         Loc<0,
-                                             0>{},
-                                         Loc<0,
-                                             1>{})),
-                   io::Port<io::PortAccess::setClear,
-                            Loc<0,
-                                0>,
-                            Loc<0,
-                                1>>>);
+                                2>>);
+static_assert(!RegisterClear<Loc<0,
+                                 1>,
+                             Loc<0,
+                                 2>>);
+static_assert(!RegisterSet<OutField<0,
+                                    1>,
+                           Loc<0,
+                               2>>);   // a field and a pin in one call: neither family
+static_assert(!IoSet<OutField<0,
+                              1>>);   // Io's factories take pins only
+static_assert(RegisterSet<OutField<0,
+                                   1>,
+                          OutField<0,
+                                   2>>);
+static_assert(RegisterRead<InField<0,
+                                   1>,
+                           InField<0,
+                                   2>>);
 
 // ===========================================================================
 // the pin factories, driven through apply()
 // ===========================================================================
 
-static void makeOutputSetsDirectionBit() {
+namespace {
+void makeOutputSetsDirectionBit() {
     test("makeOutputSetsDirectionBit");
 
     apply(makeOutput(Loc<0, 3>{}));
 
     // the direction register has no write-ignored bits, so this is a read-modify-write
     checkActionKinds("rw");
-    CHECK_EQ(writtenValue(PortBase<0>), 1U << 3);
+    CHECK_EQ(writtenValue(portBase<0>), 1U << 3);
 }
 
-static void makeInputClearsDirectionBit() {
+void makeInputClearsDirectionBit() {
     test("makeInputClearsDirectionBit");
 
-    recorder.setReadValue(PortBase<0>, 0xFFFFFFFF);
+    recorder.setReadValue(portBase<0>, 0xFFFFFFFF);
     apply(makeInput(Loc<0, 3>{}));
 
     checkActionKinds("rw");
-    CHECK_EQ(writtenValue(PortBase<0>), 0xFFFFFFF7U);
+    CHECK_EQ(writtenValue(portBase<0>), 0xFFFFFFF7U);
 }
 
-static void makeOutputInitHigh() {
+void makeOutputInitHigh() {
     test("makeOutputInitHigh");
 
     apply(makeOutputInitHigh(Loc<1, 2>{}));
 
     checkActionKinds("rw");
-    CHECK_EQ(writtenValue(PortBase<1>), 1U << 2);
+    CHECK_EQ(writtenValue(portBase<1>), 1U << 2);
 }
 
 // the variadic form configures several pins at once; pins on the same port merge into a
 // single register access
-static void variadicMakeOutputSamePort() {
+void variadicMakeOutputSamePort() {
     test("variadicMakeOutputSamePort");
 
     apply(makeOutput(Loc<0, 0>{}, Loc<0, 1>{}, Loc<0, 2>{}));
 
     checkActionKinds("rw");
-    CHECK_EQ(writeCount(PortBase<0>), 1U);
-    CHECK_EQ(writtenValue(PortBase<0>), 0x7U);
+    CHECK_EQ(writeCount(portBase<0>), 1U);
+    CHECK_EQ(writtenValue(portBase<0>), 0x7U);
 }
 
-static void variadicMakeOutputDifferentPorts() {
+void variadicMakeOutputDifferentPorts() {
     test("variadicMakeOutputDifferentPorts");
 
     apply(makeOutput(Loc<0, 0>{}, Loc<1, 1>{}));
 
     // one read-modify-write per port
-    CHECK_EQ(writeCount(PortBase<0>), 1U);
-    CHECK_EQ(writeCount(PortBase<1>), 1U);
-    CHECK_EQ(writtenValue(PortBase<0>), 0x1U);
-    CHECK_EQ(writtenValue(PortBase<1>), 0x2U);
+    CHECK_EQ(writeCount(portBase<0>), 1U);
+    CHECK_EQ(writeCount(portBase<1>), 1U);
+    CHECK_EQ(writtenValue(portBase<0>), 0x1U);
+    CHECK_EQ(writtenValue(portBase<1>), 0x2U);
 }
 
-static void variadicMakeInput() {
+void variadicMakeInput() {
     test("variadicMakeInput");
 
-    recorder.setReadValue(PortBase<0>, 0xFFFFFFFF);
+    recorder.setReadValue(portBase<0>, 0xFFFFFFFF);
     apply(makeInput(Loc<0, 0>{}, Loc<0, 1>{}));
 
     checkActionKinds("rw");
-    CHECK_EQ(writtenValue(PortBase<0>), 0xFFFFFFFCU);
+    CHECK_EQ(writtenValue(portBase<0>), 0xFFFFFFFCU);
 }
 
-static void setPin() {
+void setPin() {
     test("setPin");
 
     apply(set(Loc<0, 5>{}));
 
     checkActionKinds("rw");
-    CHECK_EQ(writtenValue(PortBase<0> + 4), 1U << 5);
+    CHECK_EQ(writtenValue(portBase<0> + 4), 1U << 5);
 }
 
-static void clearPin() {
+void clearPin() {
     test("clearPin");
 
-    recorder.setReadValue(PortBase<0> + 4, 0xFFFFFFFF);
+    recorder.setReadValue(portBase<0> + 4, 0xFFFFFFFF);
     apply(clear(Loc<0, 5>{}));
 
     checkActionKinds("rw");
-    CHECK_EQ(writtenValue(PortBase<0> + 4), 0xFFFFFFDFU);
+    CHECK_EQ(writtenValue(portBase<0> + 4), 0xFFFFFFDFU);
 }
 
-static void setAndClearDifferentPinsMerge() {
+void setAndClearDifferentPinsMerge() {
     test("setAndClearDifferentPinsMerge");
 
-    recorder.setReadValue(PortBase<0> + 4, 0x00000000);
+    recorder.setReadValue(portBase<0> + 4, 0x00000000);
     apply(set(Loc<0, 0>{}), clear(Loc<0, 1>{}));
 
     // both pins live in the same output register, so one read-modify-write covers them
-    CHECK_EQ(writeCount(PortBase<0> + 4), 1U);
-    CHECK_EQ(writtenValue(PortBase<0> + 4), 0x1U);
+    CHECK_EQ(writeCount(portBase<0> + 4), 1U);
+    CHECK_EQ(writtenValue(portBase<0> + 4), 0x1U);
 }
 
-static void togglePin() {
+void togglePin() {
     test("togglePin");
 
     apply(toggle(Loc<0, 6>{}));
 
     // the toggle register is write-ignored-if-zero, so no read is needed
     checkActions({
-      W{PortBase<0> + 8, 1U << 6}
+      W{portBase<0> + 8, 1U << 6}
     });
 }
 
-static void variadicToggle() {
+void variadicToggle() {
     test("variadicToggle");
 
     apply(toggle(Loc<0, 0>{}, Loc<0, 1>{}, Loc<0, 2>{}));
 
     checkActions({
-      W{PortBase<0> + 8, 0x7U}
+      W{portBase<0> + 8, 0x7U}
     });
 }
 
-static void readPin() {
+void readPin() {
     test("readPin");
 
-    recorder.setReadValue(PortBase<0> + 12, 1U << 4);
+    recorder.setReadValue(portBase<0> + 12, 1U << 4);
     auto const results = apply(read(Loc<0, 4>{}));
 
     checkActionKinds("r");
     CHECK_EQ(get<0>(results), 1U);
 }
 
-static void readPinLow() {
+void readPinLow() {
     test("readPinLow");
 
-    recorder.setReadValue(PortBase<0> + 12, 0x00000000);
+    recorder.setReadValue(portBase<0> + 12, 0x00000000);
     auto const results = apply(read(Loc<0, 4>{}));
 
     CHECK_EQ(get<0>(results), 0U);
 }
 
-static void readTwoPinsSameRegister() {
+void readTwoPinsSameRegister() {
     test("readTwoPinsSameRegister");
 
-    recorder.setReadValue(PortBase<0> + 12, (1U << 2) | (1U << 7));
+    recorder.setReadValue(portBase<0> + 12, (1U << 2) | (1U << 7));
     auto const results = apply(read(Loc<0, 2>{}), read(Loc<0, 7>{}));
 
     // both pins are in the same input register, one read serves both
@@ -450,27 +427,51 @@ static void readTwoPinsSameRegister() {
     CHECK_EQ(get<1>(results), 1U);
 }
 
-// the generic action() factory reaches the same chip specialisations
-static void genericActionFactory() {
-    test("genericActionFactory");
+// read(a, b) of two pins: Io's variadic read, one register read for both
+void variadicReadPins() {
+    test("variadicReadPins");
 
-    apply(action(io::Action::set, Loc<0, 1>{}));
+    recorder.setReadValue(portBase<0> + 12, 1U << 7);
+    auto const results = apply(read(Loc<0, 2>{}, Loc<0, 7>{}));
+
+    checkActionKinds("r");
+    CHECK_EQ(get<0>(results), 0U);
+    CHECK_EQ(get<1>(results), 1U);
+}
+
+// clear(a, b) of two pins: Io's variadic clear, one read-modify-write of the output register
+void variadicClearPins() {
+    test("variadicClearPins");
+
+    recorder.setReadValue(portBase<0> + 4, 0xFFFFFFFF);
+    apply(clear(Loc<0, 1>{}, Loc<0, 4>{}));
 
     checkActionKinds("rw");
-    CHECK_EQ(writtenValue(PortBase<0> + 4), 1U << 1);
+    CHECK_EQ(writtenValue(portBase<0> + 4), 0xFFFFFFEDU);
+}
+
+// the generic action() factory reaches the same chip specialisations
+void genericActionFactory() {
+    test("genericActionFactory");
+
+    apply(action(io::Action::Set{}, Loc<0, 1>{}));
+
+    checkActionKinds("rw");
+    CHECK_EQ(writtenValue(portBase<0> + 4), 1U << 1);
 }
 
 // configuring a pin and driving it in the same apply touches two different registers
-static void configureAndDriveInOneApply() {
+void configureAndDriveInOneApply() {
     test("configureAndDriveInOneApply");
 
     apply(makeOutput(Loc<0, 3>{}), set(Loc<0, 3>{}));
 
-    CHECK_EQ(writeCount(PortBase<0>), 1U);       // direction
-    CHECK_EQ(writeCount(PortBase<0> + 4), 1U);   // output
-    CHECK_EQ(writtenValue(PortBase<0>), 1U << 3);
-    CHECK_EQ(writtenValue(PortBase<0> + 4), 1U << 3);
+    CHECK_EQ(writeCount(portBase<0>), 1U);       // direction
+    CHECK_EQ(writeCount(portBase<0> + 4), 1U);   // output
+    CHECK_EQ(writtenValue(portBase<0>), 1U << 3);
+    CHECK_EQ(writtenValue(portBase<0> + 4), 1U << 3);
 }
+}   // namespace
 
 int main() {
     makeOutputSetsDirectionBit();
@@ -489,6 +490,8 @@ int main() {
     readPin();
     readPinLow();
     readTwoPinsSameRegister();
+    variadicReadPins();
+    variadicClearPins();
 
     genericActionFactory();
     configureAndDriveInOneApply();

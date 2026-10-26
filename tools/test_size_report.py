@@ -16,6 +16,8 @@ from types import SimpleNamespace
 sys.dont_write_bytecode = True  # no __pycache__ next to the imported tools
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / "tests" / "tooling"))
+import armtc  # noqa: E402  when a missing tool is a skip or a failure
 
 spec = importlib.util.spec_from_file_location(
     "size_report", HERE / "size_report.py")
@@ -25,21 +27,6 @@ spec.loader.exec_module(sr)
 
 
 class Names(unittest.TestCase):
-    def test_plain_name(self):
-        for name, plain in [
-            ("memcpy", "memcpy"),
-            ("void a::B<c<int>, 3>::f<x>(d<e>, int) const", "a::B::f"),
-            ("(anonymous namespace)::f(int)", "(anonymous namespace)::f"),
-            ("a::B<int>::operator()(int) const", "a::B::operator()"),
-            ("bool operator<(A const&, A const&)", "operator<"),
-            ("Kvasir::Startup::StartupImpl<X<1>>::ResetISR()",
-             "Kvasir::Startup::StartupImpl::ResetISR"),
-            ("main::{lambda(int)#1}::operator()(int) const",
-             "main::{lambda(int)#1}::operator()"),
-            ("std::__2::array<int, 3ul> x", "x"),
-        ]:
-            self.assertEqual(sr.plain_name(name), plain, name)
-
     def test_buckets(self):
         for name, bucket in [
             ("__llvm_libc::inline_memcpy(char*, char const*, unsigned int)", "libc"),
@@ -146,16 +133,17 @@ class Parsers(unittest.TestCase):
         self.assertEqual(image["buckets"]["app"], {"code": 20, "data": 16})
         self.assertEqual(image["unnamed"],
                          image["flash"] - (16 + 12 + 20 + 8 + 8))
-        self.assertEqual(list(image["ram_objects"].items())[0],
-                         (".bss Kvasir::Atomic::Queue<char, 32ul>::buf", 32))
+        self.assertEqual(list(image["ram_objects"].items())[
+                         0], (".bss Kvasir::Atomic::Queue<char, 32ul>::buf", 32))
         # not a loaded section
         self.assertNotIn("site_tag", image["symbols"])
 
 
-def image(flash: int, symbols: dict[str, int], atomic: int = 0) -> dict:
+def image(flash: int, symbols: dict[str, int], atomic: int = 0, memmove: int = 0) -> dict:
     calls = {name: 0 for name, _ in sr.CALLS} | {
         "canary_functions": 0, "detail": {}}
     calls["atomic"] = atomic
+    calls["memmove"] = memmove
     buckets = {b: {"code": 0, "data": 0} for b in sr.BUCKET_NAMES}
     buckets["app"]["code"] = flash
     return {"flash": flash, "ram": 0, "sections": {".text": flash}, "buckets": buckets,
@@ -186,6 +174,26 @@ class Diff(unittest.TestCase):
         self.assertNotIn("t/same_release", text)
         self.assertIn("| f() | -100 |", text)
 
+    def test_diff_lists_a_memmove_only_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            before, after = Path(tmp) / "a.json", Path(tmp) / "b.json"
+            before.write_text(json.dumps(
+                {"images": {"t/m_release": image(800, {"f()": 800}, memmove=1)}}))
+            after.write_text(json.dumps(
+                {"images": {"t/m_release": image(800, {"f()": 800}, memmove=3)}}))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                sr.cmd_diff(SimpleNamespace(before=str(before), after=str(after), filter=None,
+                                            all=False, top=5))
+        text = out.getvalue()
+        self.assertIn("1 images in both, 1 differ", text)
+        self.assertIn(
+            "| t/m_release | 800 | 800 | 0 | +0.0 % | 0 |  | memmove +2 |", text)
+
+    def test_call_columns_are_every_count_parse_calls_writes(self):
+        self.assertEqual(set(sr.CALL_COLUMNS), set(
+            sr.parse_calls("")) - {"detail"})
+
 
 SOURCE = """
 extern int counter;
@@ -197,10 +205,10 @@ int entry(void) { buffer[0] = (char)helper(1); return buffer[0]; }
 """
 
 
-@unittest.skipUnless(shutil.which("clang") and shutil.which("ld.lld")
-                     and shutil.which("llvm-readelf") and shutil.which("llvm-objdump"),
-                     "needs clang, ld.lld, llvm-readelf and llvm-objdump")
 class LinkedImage(unittest.TestCase):
+    def setUp(self):
+        armtc.need(self, "clang", "ld.lld", "llvm-readelf", "llvm-objdump")
+
     def test_snapshot_of_a_linked_image(self):
         with tempfile.TemporaryDirectory() as tmp:
             tree = Path(tmp) / "repo" / "build"

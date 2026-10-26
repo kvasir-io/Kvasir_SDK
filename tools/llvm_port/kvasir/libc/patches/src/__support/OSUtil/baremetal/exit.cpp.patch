@@ -1,0 +1,25 @@
+Kvasir patch: libc src/__support/OSUtil/baremetal/exit.cpp
+Why:       its internal::exit moved inline into OSUtil/exit.h (see that patch); the file stays in the
+           source list, empty, so a port's list sync has nothing to re-add.
+Upstream:  none - goes with the exit.h patch.
+Proof:     a heap image links (no duplicate internal::exit), libcport --check is clean.
+Drop when: with the exit.h patch.
+
+--- a/src/__support/OSUtil/baremetal/exit.cpp
++++ b/src/__support/OSUtil/baremetal/exit.cpp
+@@ -9,13 +9,5 @@
+ #include "src/__support/OSUtil/exit.h"
+ #include "src/__support/macros/config.h"
+ 
+-namespace LIBC_NAMESPACE_DECL {
+-namespace internal {
+-
+-// This is intended to be provided by the vendor.
+-extern "C" [[noreturn]] void __llvm_libc_exit(int status);
+-
+-[[noreturn]] void exit(int status) { __llvm_libc_exit(status); }
+-
+-} // namespace internal
+-} // namespace LIBC_NAMESPACE_DECL
++// Kvasir: internal::exit is inline in exit.h; __llvm_libc_exit, which it calls,
++// is the vendor's (Kvasir_SDK StartUp.hpp).

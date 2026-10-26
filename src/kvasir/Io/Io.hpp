@@ -1,9 +1,6 @@
 #pragma once
 #include "PinFactories.hpp"
 #include "Types.hpp"
-#include "kvasir/Mpl/Utility.hpp"
-
-//#include "PortFactories.hpp"
 
 namespace Kvasir { namespace Io {
     static constexpr HwPort<0>  port0{};

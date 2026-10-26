@@ -1,9 +1,10 @@
-// Kvasir::Health::Supervisor under a policy that keeps feeding (LogOnly's shape): the watchdog is fed through a
-// starvation, the check gets a fresh window and is reported again each time it runs out, the record holds the
+// Kvasir::Health::Supervisor under a reaction that keeps feeding (OnStarvation::Log's shape): the watchdog is fed
+// through a starvation, the check gets a fresh window and is reported again each time it runs out, the record holds the
 // latest, and a check that beats again is simply healthy. With an onStarved: after the escalation the ladder starts
 // over on the next silence.
-#include "kvasir/Util/Health.hpp"
+#include "kvasir/Health/Health.hpp"
 
+#include "support/FakeClock.hpp"
 #include "test_harness.hpp"
 
 #include <chrono>
@@ -14,18 +15,11 @@ namespace H = Kvasir::Health;
 using namespace std::chrono_literals;
 
 namespace {
-struct FakeClock {
-    using rep        = std::int64_t;
-    using period     = std::milli;
-    using duration   = std::chrono::milliseconds;
-    using time_point = std::chrono::time_point<FakeClock>;
-    static inline time_point t{};
-
-    static time_point now() { return t; }
-};
+using FakeClock = Kvasir::Test::FakeClockT<std::chrono::milliseconds>;
 
 struct FakeWatchdog {
-    static inline int feeds = 0;   // no Timeout member: the supervisor reports 0 for it
+    static constexpr auto timeout = std::chrono::milliseconds{500};
+    static inline int     feeds   = 0;
 
     static void feed() { ++feeds; }
 };
@@ -78,18 +72,20 @@ struct RescueStartup {
 using RescueSup = H::Supervisor<RescueStartup, FakeWatchdog, FakeClock>;
 
 void turn(bool beat) {
-    FakeClock::t += 10ms;
+    FakeClock::advance(10ms);
     if(beat) { H::checkIn<OnlyHealth>(); }
     Sup::service();
 }
 }   // namespace
 
 template<>
-inline constexpr auto Kvasir::Health::injectedPolicy<> = KeepFeeding{};
+struct Kvasir::Health::StarvationReaction<Kvasir::Tag::User> {
+    using type = KeepFeeding;
+};
 
-static_assert(H::LogOnly::keepFeeding && !H::StopFeeding::keepFeeding
-              && !H::RaisePanic::keepFeeding);
-static_assert(Sup::periodMs == 10 && Sup::timeoutMs == 0);
+static_assert(H::OnStarvation::Log::keepFeeding && !H::OnStarvation::StopFeeding::keepFeeding
+              && !H::OnStarvation::Panic::keepFeeding);
+static_assert(Sup::periodMs == 10 && Sup::timeoutMs == 500);
 
 int main() {
     using Kvasir::Test::test;
@@ -101,7 +97,7 @@ int main() {
     int const fed = FakeWatchdog::feeds;
     for(int i = 0; i < 6; ++i) { turn(false); }   // 60 ms > 50 ms
     CHECK(KeepFeeding::calls == 1 && KeepFeeding::last.silentMs == 60
-          && KeepFeeding::last.timeoutMs == 0);
+          && KeepFeeding::last.timeoutMs == 500);
     CHECK(FakeWatchdog::feeds == fed + 6);
     for(int i = 0; i < 5; ++i) { turn(false); }   // a fresh window: 50 ms more is not over
     CHECK(KeepFeeding::calls == 1);
@@ -123,7 +119,7 @@ int main() {
         RescueSup::service();
         int policyAt = 0;
         for(int i = 1; i <= 20; ++i) {
-            FakeClock::t += 10ms;
+            FakeClock::advance(10ms);
             RescueSup::service();
             if(KeepFeeding::calls != before && policyAt == 0) { policyAt = i; }
         }

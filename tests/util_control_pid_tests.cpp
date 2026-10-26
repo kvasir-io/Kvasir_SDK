@@ -1,6 +1,6 @@
 // Kvasir::Control::Pid: P only first, limits, anti-windup, no setpoint kick, dt <= 0, reset,
 // and a closed loop against a first-order plant. Mostly at compile time.
-#include "kvasir/Util/Control/Pid.hpp"
+#include "kvasir/Control/Pid.hpp"
 #include "test_harness.hpp"
 
 #include <bit>
@@ -12,7 +12,7 @@ using Kvasir::Control::Pid;
 using Kvasir::Control::PidGains;
 using namespace std::chrono_literals;
 
-constexpr PidGains<float> Gains{.kp     = 2.0f,
+constexpr PidGains<float> gains{.kp     = 2.0f,
                                 .ki     = 1.0f,
                                 .kd     = 0.5f,
                                 .tau    = 0.1f,
@@ -21,7 +21,7 @@ constexpr PidGains<float> Gains{.kp     = 2.0f,
 
 static_assert(
   [] {
-      Pid<float> p{Gains};
+      Pid<float> p{gains};
       auto const u = p.update(5.0f, 4.0f, 1.0f);   // P only, dt ignored
       return u == 2.0f && p.integral() == 0.0f && p.derivative() == 0.0f;
   }(),
@@ -29,7 +29,7 @@ static_assert(
 
 static_assert(
   [] {
-      Pid<float> p{Gains};
+      Pid<float> p{gains};
       for(int i = 0; i < 100; ++i) {
           auto const u = p.update(100.0f, 0.0f, 0.1f);
           if(u < 0.0f || u > 10.0f) { return false; }
@@ -40,7 +40,7 @@ static_assert(
 
 static_assert(
   [] {
-      Pid<float> p{Gains};
+      Pid<float> p{gains};
       for(int i = 0; i < 100; ++i) { (void)p.update(100.0f, 0.0f, 0.1f); }
       // P = 200 is far past outMax: no room left for the integral
       return p.integral() <= 0.0f;
@@ -49,7 +49,7 @@ static_assert(
 
 static_assert(
   [] {
-      Pid<float> p{Gains};
+      Pid<float> p{gains};
       (void)p.update(1.0f, 1.0f, 0.1f);
       (void)p.update(1.0f, 1.0f, 0.1f);
       (void)p.update(9.0f, 1.0f, 0.1f);   // setpoint step, measurement constant
@@ -59,7 +59,7 @@ static_assert(
 
 static_assert(
   [] {
-      Pid<float> p{Gains};
+      Pid<float> p{gains};
       (void)p.update(5.0f, 1.0f, 0.1f);
       (void)p.update(5.0f, 2.0f, 0.1f);
       auto const i = p.integral();
@@ -72,7 +72,7 @@ static_assert(
 
 static_assert(
   [] {
-      Pid<float> p{Gains};
+      Pid<float> p{gains};
       (void)p.update(5.0f, 1.0f, 0.1f);
       (void)p.update(5.0f, 2.0f, 0.1f);
       p.reset();
@@ -83,10 +83,10 @@ static_assert(
 
 static_assert(
   [] {
-      Pid<float> p{Gains};
+      Pid<float> p{gains};
       (void)p.update(5.0f, 1.0f, 0.1f);
       auto const a = p.update(5.0f, 2.0f, 0.1f);
-      Pid<float> q{Gains};
+      Pid<float> q{gains};
       (void)q.update(5.0f, 1.0f, 100ms);
       auto const b = q.update(5.0f, 2.0f, 100ms);
       return a == b;
@@ -140,11 +140,11 @@ static_assert(
 
 int main() {
     Kvasir::Test::test("pid at run time");
-    Pid<float> p{Gains};
-    float volatile sp = 5.0f;
+    Pid<float> p{gains};
+    float const volatile sp = 5.0f;
     CHECK(p.update(sp, 4.0f, 0.1f) == 2.0f);
     // +0 on a zero error with a positive kp: P + 0 + 0 is P
-    Pid<float> z{Gains};
+    Pid<float> z{gains};
     CHECK(std::bit_cast<std::uint32_t>(z.update(sp, sp, 0.1f)) == 0U);
     return Kvasir::Test::report();
 }

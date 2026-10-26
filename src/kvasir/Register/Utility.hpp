@@ -1,32 +1,11 @@
 #pragma once
+#include "Mmio.hpp"
 #include "Types.hpp"
 
 #include <array>
 #include <cstddef>
 #include <limits>
-
-#ifdef KVASIR_REGISTER_MOCK
-// Test seam: with KVASIR_REGISTER_MOCK defined all register accesses are routed through
-// these functions instead of raw volatile memory access. A test provides the definitions
-// (see tests/kvasir_test.hpp).
-namespace Kvasir { namespace Test {
-    template<typename TRegType,
-             unsigned Address>
-    TRegType read();
-
-    template<typename TRegType,
-             unsigned Address>
-    void write(TRegType);
-
-    // an address known only at run time (Register::Array)
-    template<typename TRegType>
-    TRegType readAt(unsigned address);
-
-    template<typename TRegType>
-    void writeAt(unsigned address,
-                 TRegType);
-}}   // namespace Kvasir::Test
-#endif
+#include <type_traits>
 
 namespace Kvasir { namespace Register {
     constexpr unsigned maskFromRange(unsigned high,
@@ -42,29 +21,6 @@ namespace Kvasir { namespace Register {
     }
 
     namespace Detail {
-        using namespace MPL;
-
-        constexpr unsigned maskStartsAt(unsigned mask) { return unsigned(std::countr_zero(mask)); }
-
-        constexpr bool onlyOneBitSet(unsigned i) { return std::popcount(i) == 1; }
-
-        constexpr unsigned orAllOf() { return 0; }
-
-        constexpr unsigned orAllOf(unsigned l) { return l; }
-
-        template<typename... Ts>
-        constexpr unsigned orAllOf(unsigned l,
-                                   unsigned r,
-                                   Ts... args) {
-            return l | r | orAllOf(args...);
-        }
-
-        template<typename T>
-        struct ValueToUnsigned;
-
-        template<typename T, T I>
-        struct ValueToUnsigned<MPL::Value<T, I>> : MPL::Unsigned<unsigned(I)> {};
-
         template<typename T>
         struct GetFieldType;
 
@@ -146,156 +102,108 @@ namespace Kvasir { namespace Register {
 
         template<typename AT, unsigned M, typename A, typename FT, FT V>
         struct WriteLocationAndCompileTimeValueTypeAreSame<FieldLocation<AT, M, A, FT>,
-                                                           MPL::Value<FT, V>> : std::true_type {};
+                                                           std::integral_constant<FT, V>>
+          : std::true_type {};
+    }   // namespace Detail
 
-        // getters for specific parameters of an Action
-        template<typename T>
-        struct GetAddress;
+    // A register's facts, from its Address, a FieldLocation of it or an Action on it: address, RegType, the
+    // write-ignored-if-zero/-one masks, allBitsSetMask, mustSupplyMask, readHasSideEffect, writeOnlyRegister,
+    // writeBackActsMask (from Mode::semantics), Mode; read()/write() of the whole word (always inlined, through Mmio).
+    // A register picked at run time is read by folding over the generated types and calling
+    // RegisterTraits<typename Reg::Addr>::read() on the match (one word load, the mock sees it). Fields still go
+    // through apply().
+    template<typename T>
+    struct RegisterTraits;
 
-        template<unsigned A, unsigned WIIZ, unsigned WIIO, typename TRegType, typename TMode>
-        struct GetAddress<Address<A, WIIZ, WIIO, TRegType, TMode>> {
-            static constexpr unsigned value                  = A;
-            static constexpr unsigned writeIgnoredIfZeroMask = WIIZ;
-            static constexpr unsigned writeIgnoredIfOneMask  = WIIO;
-            static constexpr unsigned allBitsSetMask         = std::numeric_limits<TRegType>::max();
-            static constexpr unsigned mustSupplyMask         = TMode::mustSupplyMask;
-            static constexpr bool     readHasSideEffect      = TMode::readHasSideEffect;
-            static constexpr unsigned writeOnlyNoIdentityMask = TMode::writeOnlyNoIdentityMask;
-            static constexpr bool     writeOnlyRegister       = TMode::writeOnlyRegister;
-            // Register::WriteBackActs; a register without it writes every write-ignored-if-zero bit as 0
-            static constexpr unsigned writeBackActsMask = [] {
-                if constexpr(requires { TMode::writeBackActsMask; }) {
-                    return TMode::writeBackActsMask & WIIZ;
-                } else {
-                    return WIIZ;
-                }
-            }();
-            using Mode = TMode;
+    template<unsigned A, unsigned WIIZ, unsigned WIIO, typename TRegType, typename TMode>
+    struct RegisterTraits<Address<A, WIIZ, WIIO, TRegType, TMode>> {
+        static constexpr unsigned address                 = A;
+        static constexpr unsigned writeIgnoredIfZeroMask  = WIIZ;
+        static constexpr unsigned writeIgnoredIfOneMask   = WIIO;
+        static constexpr unsigned allBitsSetMask          = std::numeric_limits<TRegType>::max();
+        static constexpr unsigned mustSupplyMask          = TMode::semantics.mustSupply;
+        static constexpr bool     readHasSideEffect       = TMode::semantics.readSideEffect;
+        static constexpr unsigned writeOnlyNoIdentityMask = TMode::semantics.writeOnlyNoIdentity;
+        static constexpr bool     writeOnlyRegister       = TMode::semantics.writeOnlyRegister;
+        // Semantics::writeBackActs (default 0: every write-ignored-if-zero bit goes back as read)
+        static constexpr unsigned writeBackActsMask = TMode::semantics.writeBackActs & WIIZ;
+        // Register::fromReset: a write stores resetFill in the bits it does not name, never reads
+        static constexpr bool     fromReset = TMode::semantics.fromReset;
+        static constexpr unsigned resetFill = TMode::semantics.resetValue;
+        using Mode                          = TMode;
+        using RegType                       = TRegType;
 
-            // always inlined: RAM functions reach registers through these (readWhole / writeWhole), and gcc at -Og
-            // or with sanitizers would leave a plain inline call in flash
-            [[gnu::always_inline]] static TRegType read() {
-#ifdef KVASIR_REGISTER_MOCK
-                return ::Kvasir::Test::read<TRegType, A>();
-#else
-                TRegType volatile& reg = *reinterpret_cast<TRegType volatile*>(value);
-                return reg;
-#endif
-            }
+        // always inlined: RAM functions reach registers through these (readWhole / writeWhole), and gcc at -Og
+        // or with sanitizers would leave a plain inline call in flash
+        [[gnu::always_inline]] static TRegType read() { return Mmio<TRegType>::load(A); }
 
-            [[gnu::always_inline]] static void write(TRegType i) {
-#ifdef KVASIR_REGISTER_MOCK
-                ::Kvasir::Test::write<TRegType, A>(i);
-#else
-                TRegType volatile& reg = *reinterpret_cast<TRegType volatile*>(value);
-                reg                    = i;
-#endif
-            }
+        [[gnu::always_inline]] static void write(TRegType i) { Mmio<TRegType>::store(A, i); }
+    };
 
-            using type = brigand::uint32_t<A>;
-        };
+    template<typename TAddress, unsigned Mask, typename TAccess, typename TFiledType>
+    struct RegisterTraits<FieldLocation<TAddress, Mask, TAccess, TFiledType>>
+      : RegisterTraits<TAddress> {};
 
-        template<typename TAddress, unsigned Mask, typename TAccess, typename TFiledType>
-        struct GetAddress<FieldLocation<TAddress, Mask, TAccess, TFiledType>>
-          : GetAddress<TAddress> {};
+    template<typename TFieldLocation, typename TAction>
+    struct RegisterTraits<Action<TFieldLocation, TAction>> : RegisterTraits<TFieldLocation> {};
 
-        template<typename TFieldLocation, typename TAction>
-        struct GetAddress<Action<TFieldLocation, TAction>> : GetAddress<TFieldLocation> {};
+    // What can be written to a field without changing it. The same table decides the
+    // generated registers' masks: svd_converter's identityOf (src/svd/semantics.hpp); keep the two in
+    // step. SVD `clear`/`set` stay `none` (the RP2040's SVD uses them for fields whose 0 is a
+    // value too); a self-clearing trigger is `oneToSet` in the SVD.
+    enum class Identity : unsigned char { none, zero, one };
 
-        // What can be written to a field without changing it. The same table decides the
-        // generated registers' masks: svd_converter's identityOf (svd_parser.hpp); keep the two in
-        // step. SVD `clear`/`set` stay `none` (the RP2040's SVD uses them for fields whose 0 is a
-        // value too); a self-clearing trigger is `oneToSet` in the SVD.
-        enum class Identity : unsigned char { none, zero, one };
-
-        constexpr Identity identityOf(AccessType             at,
-                                      ModifiedWriteValueType m) {
-            using M = ModifiedWriteValueType;
-            if(at == AccessType::readOnly) { return Identity::zero; }
-            switch(m) {
-            case M::oneToClear:
-            case M::oneToSet:
-            case M::oneToToggle:  return Identity::zero;
-            case M::zeroToClear:
-            case M::zeroToSet:
-            case M::zeroToToggle: return Identity::one;
-            default:              return Identity::none;
-            }
+    constexpr Identity identityOf(AccessType             at,
+                                  ModifiedWriteValueType m) {
+        using M = ModifiedWriteValueType;
+        if(at == AccessType::readOnly) { return Identity::zero; }
+        switch(m) {
+        case M::oneToClear:
+        case M::oneToSet:
+        case M::oneToToggle:  return Identity::zero;
+        case M::zeroToClear:
+        case M::zeroToSet:
+        case M::zeroToToggle: return Identity::one;
+        default:              return Identity::none;
         }
+    }
 
-        template<typename TAccess>
-        inline constexpr Identity identityOfAccess = Identity::none;
+    template<typename TAccess>
+    inline constexpr Identity identityOfAccess = Identity::none;
 
-        template<AccessType AT, ReadActionType RA, ModifiedWriteValueType M>
-        inline constexpr Identity identityOfAccess<Access<AT, RA, M>> = identityOf(AT, M);
+    template<AccessType AT, ReadActionType RA, ModifiedWriteValueType M>
+    inline constexpr Identity identityOfAccess<Access<AT, RA, M>> = identityOf(AT, M);
 
-        // A generated register's write-ignored masks follow from its fields: the zero mask is every
-        // bit that is not a field that needs its value (none) or is ignored at one; the one mask
-        // the fields ignored at one. Checked by the generated
-        // headers under KVASIR_REGISTER_VERIFY_MASKS (costly at compile time, no flash).
-        template<typename TAddress,
-                 std::size_t N>
-        constexpr bool masksMatchFields(std::array<unsigned,
-                                                   N> const& masks,
-                                        std::array<Identity,
-                                                   N> const& ids) {
-            unsigned none = 0;
-            unsigned one  = 0;
-            for(std::size_t i = 0; i < N; ++i) {
-                if(ids[i] == Identity::none) { none |= masks[i]; }
-                if(ids[i] == Identity::one) { one |= masks[i]; }
-            }
-            using A = GetAddress<TAddress>;
-            return A::writeIgnoredIfOneMask == one
-                && A::writeIgnoredIfZeroMask == (A::allBitsSetMask & ~none & ~one);
+    // A generated register's write-ignored masks follow from its fields: the zero mask is every
+    // bit that is not a field that needs its value (none) or is ignored at one; the one mask
+    // the fields ignored at one. svd_converter's computeMasks applies this rule; the generated
+    // headers do not call it (a static_assert in a register struct is only evaluated when the
+    // register is instantiated) - tests instantiate what they check.
+    template<typename TAddress,
+             std::size_t N>
+    constexpr bool masksMatchFields(std::array<unsigned,
+                                               N> const& masks,
+                                    std::array<Identity,
+                                               N> const& ids) {
+        unsigned none = 0;
+        unsigned one  = 0;
+        for(std::size_t i = 0; i < N; ++i) {
+            if(ids[i] == Identity::none) { none |= masks[i]; }
+            if(ids[i] == Identity::one) { one |= masks[i]; }
         }
+        using A = RegisterTraits<TAddress>;
+        return A::writeIgnoredIfOneMask == one
+            && A::writeIgnoredIfZeroMask == (A::allBitsSetMask & ~none & ~one);
+    }
 
-        template<typename T>
-        struct GetFieldLocation;
-
-        template<typename TLocation, typename TAction>
-        struct GetFieldLocation<Action<TLocation, TAction>> {
-            using type = TLocation;
-        };
-
-        // predicate returning result of left < right for RegisterOptions
-        template<typename TLeft, typename TRight>
-        struct RegisterActionLess;
-
-        template<typename T1, typename U1, typename T2, typename U2>
-        struct RegisterActionLess<Register::Action<T1, U1>, Register::Action<T2, U2>>
-          : Bool<(GetAddress<T1>::value < GetAddress<T2>::value)> {};
-
-        using RegisterActionLessP = Template<RegisterActionLess>;
-
-        // predicate returns true if action is a read
-        template<typename T>
-        struct IsReadPred : std::false_type {};
-
-        template<typename A>
-        struct IsReadPred<Register::Action<A, ReadAction>> : std::true_type {};
-
-        template<typename T>
-        struct IsNotReadPred : std::integral_constant<bool, (!IsReadPred<T>::type::value)> {};
-
-        // predicate returns true if action is a read
-        template<typename T>
-        struct IsRuntimeWritePred : std::false_type {};
-
-        template<typename A>
-        struct IsRuntimeWritePred<Register::Action<A, WriteAction>> : std::true_type {};
-
-        template<typename T>
-        struct IsNotRuntimeWritePred
-          : std::integral_constant<bool, (!IsRuntimeWritePred<T>::type::value)> {};
-
+    namespace Detail {
         template<typename T>
         struct GetMask;
 
         // from FieldLocations
         template<typename Address, unsigned Mask, typename TAccess, typename ResultType>
         struct GetMask<FieldLocation<Address, Mask, TAccess, ResultType>>
-          : Value<unsigned, Mask> {};
+          : std::integral_constant<unsigned, Mask> {};
 
         // from Action
         template<typename TFieldLocation, typename TAction>

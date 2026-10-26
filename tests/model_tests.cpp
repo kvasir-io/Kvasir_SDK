@@ -7,32 +7,25 @@
 
 using namespace Kvasir::Register;
 using namespace Kvasir::Test;
-using R = Recorder::Read;
-using W = Recorder::Write;
 
-template<typename T,
-         unsigned V>
-constexpr auto ctv() {
-    return Kvasir::Register::value<T, static_cast<T>(V)>();
-}
+using DivT  = typename decltype(CtrlReg::div)::DataType;
+using DataT = typename decltype(DataReg::data)::DataType;
 
-using divT  = typename decltype(CtrlReg::div)::DataType;
-using dataT = typename decltype(DataReg::data)::DataType;
-
+namespace {
 // a plain register remembers what was written and reads it back
-static void plainWriteThenRead() {
+void plainWriteThenRead() {
     test("plainWriteThenRead");
 
     recorder.model(CtrlReg::Addr::value);
 
-    apply(write(CtrlReg::div, ctv<divT, 0x5A>()));
+    apply(write(CtrlReg::div, ctv<DivT, 0x5A>()));
 
     CHECK_EQ(recorder.model(CtrlReg::Addr::value).value, 0x5A0U);
     CHECK_EQ(static_cast<unsigned>(apply(read(CtrlReg::div))), 0x5AU);
 }
 
 // the three cases of a write-one-to-clear flag
-static void oneToClearFlag() {
+void oneToClearFlag() {
     test("oneToClearFlag");
 
     auto& r = recorder.model(CtrlReg::Addr::value);
@@ -53,7 +46,7 @@ static void oneToClearFlag() {
 }
 
 // one-to-set, one-to-toggle: written ones act, written zeros leave the bit alone
-static void oneToSetAndToggle() {
+void oneToSetAndToggle() {
     test("oneToSetAndToggle");
 
     auto& r = recorder.model(ToggleReg::Addr::value);
@@ -77,7 +70,7 @@ static void oneToSetAndToggle() {
 }
 
 // strobes are never stored, read-only bits keep their value
-static void selfClearingAndReadOnly() {
+void selfClearingAndReadOnly() {
     test("selfClearingAndReadOnly");
 
     auto& r = recorder.model(StatusReg::Addr::value);
@@ -93,7 +86,7 @@ static void selfClearingAndReadOnly() {
 }
 
 // a clear-on-read bit is returned once, then gone
-static void statusClearsOnRead() {
+void statusClearsOnRead() {
     test("statusClearsOnRead");
 
     auto& r = recorder.model(StatusReg::Addr::value);
@@ -106,7 +99,7 @@ static void statusClearsOnRead() {
 }
 
 // full control through the hooks: a FIFO
-static void fifoPopsOnRead() {
+void fifoPopsOnRead() {
     test("fifoPopsOnRead");
 
     std::deque<unsigned> fifo{0x11, 0x22};
@@ -123,7 +116,7 @@ static void fifoPopsOnRead() {
     };
 
     CHECK_EQ(static_cast<unsigned>(apply(read(DataReg::data))), 0x11U);
-    apply(write(DataReg::data, ctv<dataT, 0x33>()));
+    apply(write(DataReg::data, ctv<DataT, 0x33>()));
     CHECK_EQ(static_cast<unsigned>(apply(read(DataReg::data))), 0x22U);
     CHECK_EQ(static_cast<unsigned>(apply(read(DataReg::data))), 0x33U);
     CHECK(fifo.empty());
@@ -131,7 +124,7 @@ static void fifoPopsOnRead() {
 
 // a partial write to a register whose read has a side effect: the read-modify-write pops the
 // FIFO (a compile error for generated registers)
-static void partialWriteOnFifoPops() {
+void partialWriteOnFifoPops() {
     test("partialWriteOnFifoPops");
 
     std::deque<unsigned> fifo{0x11, 0x22};
@@ -146,7 +139,7 @@ static void partialWriteOnFifoPops() {
         return stored;
     };
 
-    apply(write(DataReg::low, ctv<dataT, 0x33>()));
+    apply(write(DataReg::low, ctv<DataT, 0x33>()));
 
     checkActionKinds("rw");
     CHECK_EQ(fifo.size(), 2U);
@@ -155,7 +148,7 @@ static void partialWriteOnFifoPops() {
 }
 
 // a model on one address leaves every other address on the queue, and the trace records both
-static void modelledAndQueuedTogether() {
+void modelledAndQueuedTogether() {
     test("modelledAndQueuedTogether");
 
     recorder.model(StatusReg::Addr::value).value = 0x04;
@@ -174,12 +167,13 @@ static void modelledAndQueuedTogether() {
 }
 
 // a new test case starts without models
-static void resetClearsModels() {
+void resetClearsModels() {
     test("resetClearsModels");
 
     CHECK(recorder.models.empty());
     CHECK_EQ(static_cast<unsigned>(apply(read(StatusReg::all))), 0U);
 }
+}   // namespace
 
 int main() {
     plainWriteThenRead();

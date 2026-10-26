@@ -20,6 +20,7 @@
 // (the line stays asserted). A handler that enables or disables a sibling sees the status read at
 // entry. Children are tested one after the other: meant for a handful per vector, not for 48.
 #include "kvasir/Common/Interrupt.hpp"
+#include "kvasir/Mpl/List.hpp"
 #include "kvasir/Register/Diagnostic.hpp"
 #include "kvasir/Register/Register.hpp"
 
@@ -84,25 +85,6 @@ inline constexpr bool isNullHandler<static_cast<void (*)()>(nullptr)> = true;
 
 namespace Kvasir::Startup::Detail {
 namespace SharedIsrDetail {
-    // the list without repeats, first occurrence kept
-    template<typename Out, typename In>
-    struct Unique;
-
-    template<typename... Os>
-    struct Unique<brigand::list<Os...>, brigand::list<>> {
-        using type = brigand::list<Os...>;
-    };
-
-    template<typename... Os, typename H, typename... Ts>
-    struct Unique<brigand::list<Os...>, brigand::list<H, Ts...>>
-      : Unique<std::conditional_t<(std::is_same_v<H, Os> || ...),
-                                  brigand::list<Os...>,
-                                  brigand::list<Os..., H>>,
-               brigand::list<Ts...>> {};
-
-    template<typename L>
-    using UniqueT = typename Unique<brigand::list<>, L>::type;
-
     template<auto F>
     using FieldOf = std::remove_cvref_t<decltype(F)>;
 
@@ -140,19 +122,24 @@ namespace SharedIsrDetail {
         }
     };
 
-    // A literal write of every bit of the field. On a register whose other bits are all in its
-    // write-ignored-if-zero mask that is a single store.
+    // The flag's clear: reset() writes its bits 1 (a one-to-clear field: the factory refuses any other). On a register
+    // whose other bits are all in its write-ignored-if-zero mask that is a single store.
     template<typename Field>
-    constexpr auto writeOnes() {
-        constexpr unsigned mask = Register::Detail::GetMask<Field>::value;
-        return Register::Action<Field, Register::WriteLiteralAction<mask>>{};
+    constexpr auto clearFlag() {
+        return Register::reset(Field{});
     }
 
+    // The line's enable bit written 1 (set(): one bit).
+    template<typename Field>
+    constexpr auto enableBit() {
+        return Register::set(Field{});
+    }
+
+    // a written 0 leaves the field as it is (one-to-clear, -set or -toggle): only then is the clear's store free of
+    // the other lines' bits
     template<typename Field>
     constexpr bool isWriteOneToClear() {
-        using A                 = Register::Detail::GetAddress<Field>;
-        constexpr unsigned mask = Register::Detail::GetMask<Field>::value;
-        return (A::writeIgnoredIfZeroMask & mask) == mask;
+        return Register::identityOfAccess<typename Field::Access> == Register::Identity::zero;
     }
 
     template<typename C>
@@ -166,35 +153,26 @@ namespace SharedIsrDetail {
     struct Clear<Nvic::ClearFirst<F>> {
         KVASIR_STATIC_ASSERT((isWriteOneToClear<FieldOf<F>>()),
                              (::Kvasir::Register::Diagnostic::NotWriteOneToClear<
-                               ::Kvasir::Register::Detail::GetAddress<FieldOf<F>>,
-                               FieldOf<F>::Mask,
-                               'F'>),
-                             "ClearFirst names a field that is not write-one-to-clear in the "
-                             "generated header (its bits are not in the register's "
-                             "write-ignored-if-zero mask): writing 1 to it would not clear it, and "
-                             "the write would not be a single store");
+                               ::Kvasir::Register::RegisterTraits<FieldOf<F>>,
+                               FieldOf<F>::mask,
+                               'F'>));
 
-        [[gnu::always_inline]] static void before() { Register::apply(writeOnes<FieldOf<F>>()); }
+        [[gnu::always_inline]] static void before() { Register::apply(clearFlag<FieldOf<F>>()); }
 
         [[gnu::always_inline]] static void after() {}
     };
 
     template<auto F>
     struct Clear<Nvic::ClearLast<F>> {
-        KVASIR_STATIC_ASSERT(
-          (isWriteOneToClear<FieldOf<F>>()),
-          (::Kvasir::Register::Diagnostic::NotWriteOneToClear<
-            ::Kvasir::Register::Detail::GetAddress<FieldOf<F>>,
-            FieldOf<F>::Mask,
-            'L'>),
-          "ClearLast names a field that is not write-one-to-clear in the generated "
-          "header (its bits are not in the register's write-ignored-if-zero mask): "
-          "writing 1 to it would not clear it, and the write would not be a single "
-          "store");
+        KVASIR_STATIC_ASSERT((isWriteOneToClear<FieldOf<F>>()),
+                             (::Kvasir::Register::Diagnostic::NotWriteOneToClear<
+                               ::Kvasir::Register::RegisterTraits<FieldOf<F>>,
+                               FieldOf<F>::mask,
+                               'L'>));
 
         [[gnu::always_inline]] static void before() {}
 
-        [[gnu::always_inline]] static void after() { Register::apply(writeOnes<FieldOf<F>>()); }
+        [[gnu::always_inline]] static void after() { Register::apply(clearFlag<FieldOf<F>>()); }
     };
 
     template<typename E>
@@ -204,7 +182,7 @@ namespace SharedIsrDetail {
 
     template<auto F>
     struct EnableSteps<Nvic::Enable<F>> {
-        using type = brigand::list<decltype(writeOnes<FieldOf<F>>())>;
+        using type = brigand::list<decltype(enableBit<FieldOf<F>>())>;
     };
 
     template<typename... Fields>
@@ -245,7 +223,7 @@ struct SharedDispatch {
     static_assert(SharedIsrDetail::agreedPriority<Subs...>() != -2,
                   "the sub-interrupts of one vector ask for different priorities");
 
-    using StatusFieldTypes = SharedIsrDetail::UniqueT<
+    using StatusFieldTypes = MPL::Dedup<
       brigand::append<typename SharedIsrDetail::StatusFields<typename Subs::StatusT>::type...>>;
 
     using Tuple = decltype(SharedIsrDetail::readAll(StatusFieldTypes{}));
@@ -264,7 +242,7 @@ struct SharedDispatch {
         (one<Subs>(st), ...);
     }
 
-    static constexpr Nvic::Isr<std::addressof(onIsr), TIndex> isr{};
+    using Isr = Nvic::Isr<std::addressof(onIsr), TIndex>;
 
     static constexpr auto initStepInterruptConfig = MPL::list(
       brigand::append<typename SharedIsrDetail::EnableSteps<typename Subs::EnableT>::type...,
@@ -298,13 +276,10 @@ struct DispatchFor<Index, brigand::list<Subs...>> {
 template<typename Index, typename Sub>
 using OnIndex = std::is_same<Index, typename Sub::IType>;
 
-template<typename Index, typename AllSubs>
-struct SubsOnIndex;
-
-template<typename Index, typename... Subs>
-struct SubsOnIndex<Index, brigand::list<Subs...>> {
-    using type = brigand::append<
-      std::conditional_t<OnIndex<Index, Subs>::value, brigand::list<Subs>, brigand::list<>>...>;
+template<typename Index>
+struct OnIndexP {
+    template<typename Sub>
+    static constexpr bool holds = OnIndex<Index, Sub>::value;
 };
 
 template<typename AllSubs, typename Indexes>
@@ -313,7 +288,7 @@ struct DispatchersOf;
 template<typename AllSubs, typename... Indexes>
 struct DispatchersOf<AllSubs, brigand::list<Indexes...>> {
     using type = brigand::list<
-      typename DispatchFor<Indexes, typename SubsOnIndex<Indexes, AllSubs>::type>::type...>;
+      typename DispatchFor<Indexes, MPL::Filter<OnIndexP<Indexes>, AllSubs>>::type...>;
 };
 
 template<typename Subs>
@@ -330,7 +305,7 @@ struct SharedDispatchers;
 template<typename... Ps>
 struct SharedDispatchers<brigand::list<Ps...>> {
     using AllSubs = brigand::append<brigand::list<>, typename SubIsrsOf<Ps>::type...>;
-    using Indexes = SharedIsrDetail::UniqueT<typename ITypesOf<AllSubs>::type>;
+    using Indexes = MPL::Dedup<typename ITypesOf<AllSubs>::type>;
     using type    = typename DispatchersOf<AllSubs, Indexes>::type;
 };
 

@@ -1,9 +1,9 @@
-// Kvasir::Profile::HookProfiler (Util/LoopProfiler.hpp) injected into Startup::run / runTurn (StartUp/Hooks.hpp)
+// Kvasir::Profile::HookProfiler (Runtime/LoopProfiler.hpp) injected into Startup::run / runTurn (Port/Extends.hpp)
 // with a fake time source the entries advance: per-entry count / total / worst / last with the calibrated overhead
 // subtracted, the loop's turns, period, worst and slips over the budget, busy turns from runTurn, the self-linked
 // list, clearing; entry names "Class::fn" on gcc and clang; a hook not listed in Config::hooks is not profiled; the
 // specialisation is declared AFTER the first use in this file and still wins.
-#include "kvasir/StartUp/Hooks.hpp"
+#include "kvasir/Port/Extends.hpp"
 #include "test_harness.hpp"
 
 #include <chrono>
@@ -32,7 +32,7 @@ struct Other {
 namespace Drivers {
     template<int N>
     struct Bus {
-        static void handler() { FakeTime::t += 100; }
+        static void voidTurn() { FakeTime::t += 100; }
 
         static Kvasir::Turn turn() {
             FakeTime::t += 7;
@@ -52,7 +52,7 @@ namespace Drivers {
 using Main = Kvasir::Hook::MainLoop;
 template<typename H, auto F>
 using Ext  = Kvasir::Startup::Extend<H, F>;
-using List = brigand::list<Ext<Main, &Drivers::Bus<0>::handler>,
+using List = brigand::list<Ext<Main, &Drivers::Bus<0>::voidTurn>,
                            Ext<Main, &Drivers::Sensor::poll>,
                            Ext<Other, &Drivers::Sensor::other>>;
 
@@ -66,20 +66,21 @@ struct P2 {
 };
 
 void runOnce() {
-    Kvasir::Startup::Detail::runHookOf<Main>(static_cast<brigand::list<P1>*>(nullptr));
+    Kvasir::Startup::Detail::dispatch<Main, void>(static_cast<brigand::list<P1>*>(nullptr));
 }
 
 Kvasir::Turn turnOnce() {
-    return Kvasir::Startup::Detail::runTurnOf<Main>(static_cast<brigand::list<P2>*>(nullptr));
+    return Kvasir::Startup::Detail::dispatch<Main, Kvasir::Turn>(
+      static_cast<brigand::list<P2>*>(nullptr));
 }
 
 void runOther() {
-    Kvasir::Startup::Detail::runHookOf<Other>(static_cast<brigand::list<P1>*>(nullptr));
+    Kvasir::Startup::Detail::dispatch<Other, void>(static_cast<brigand::list<P1>*>(nullptr));
 }
 }   // namespace
 
 // after the functions that use it: the lookup is at instantiation
-#include "kvasir/Util/LoopProfiler.hpp"
+#include "kvasir/Runtime/LoopProfiler.hpp"
 
 namespace {
 struct LoopProfile {
@@ -88,22 +89,34 @@ struct LoopProfile {
 };
 
 using Prof = Kvasir::Profile::HookProfiler<LoopProfile>;
+
+// LoopReport over its own profiler (a Config of its own), so the checks above see none of its clears
+struct ReportProfile {
+    using TimeSource = FakeTime;
+};
+
+constexpr auto reportPeriod = 1s;
+using Report                = Kvasir::Profile::LoopReport<ReportProfile, reportPeriod>;
+using ReportProf            = Kvasir::Profile::HookProfiler<ReportProfile>;
+static_assert(Report::periodTicks == 1'000'000);
 }   // namespace
 
 template<>
-inline constexpr auto Kvasir::Startup::injectedHookProfiler<> = Prof{};
+struct Kvasir::Startup::HookProfiler<Kvasir::Tag::User> {
+    using type = Prof;
+};
 
 int main() {
     using Kvasir::Test::test;
-    using BusStats    = decltype(Prof::stats<Main, Ext<Main, &Drivers::Bus<0>::handler>>);
-    auto& bus         = Prof::stats<Main, Ext<Main, &Drivers::Bus<0>::handler>>;
-    auto& sensor      = Prof::stats<Main, Ext<Main, &Drivers::Sensor::poll>>;
-    auto& busTurn     = Prof::stats<Main, Ext<Main, &Drivers::Bus<1>::turn>>;
-    auto& otherSensor = Prof::stats<Other, Ext<Other, &Drivers::Sensor::other>>;
+    using BusStats          = decltype(Prof::stats<Main, Ext<Main, &Drivers::Bus<0>::voidTurn>>);
+    auto const& bus         = Prof::stats<Main, Ext<Main, &Drivers::Bus<0>::voidTurn>>;
+    auto const& sensor      = Prof::stats<Main, Ext<Main, &Drivers::Sensor::poll>>;
+    auto const& busTurn     = Prof::stats<Main, Ext<Main, &Drivers::Bus<1>::turn>>;
+    auto const& otherSensor = Prof::stats<Other, Ext<Other, &Drivers::Sensor::other>>;
     static_assert(std::is_same_v<BusStats, Kvasir::Profile::EntryStats>);
 
     test("names: Class::fn, template arguments dropped");
-    CHECK(Kvasir::Profile::entryName<&Drivers::Bus<0>::handler> == "Bus::handler");
+    CHECK(Kvasir::Profile::entryName<&Drivers::Bus<0>::voidTurn> == "Bus::voidTurn");
     CHECK(Kvasir::Profile::entryName<&Drivers::Sensor::poll> == "Sensor::poll");
 
     test("calibration: the cost of one measurement is subtracted");
@@ -135,14 +148,35 @@ int main() {
 
     test("the list links every entry once; clear keeps the list");
     int n = 0;
-    for(auto* s = Prof::first(); s != nullptr; s = s->next) { ++n; }
+    for(auto const* s = Prof::first(); s != nullptr; s = s->next) { ++n; }
     CHECK(n == 4);   // Bus<0>, Sensor::poll, Bus<1>::turn, Sensor::idle
     Prof::clear<Main>();
-    CHECK(bus.count == 0 && bus.name == "Bus::handler" && Prof::loop<Main>.turns == 0);
+    CHECK(bus.count == 0 && bus.name == "Bus::voidTurn" && Prof::loop<Main>.turns == 0);
     runOnce();
     n = 0;
-    for(auto* s = Prof::first(); s != nullptr; s = s->next) { ++n; }
+    for(auto const* s = Prof::first(); s != nullptr; s = s->next) { ++n; }
     CHECK(n == 4 && bus.count == 1);
+
+    test(
+      "LoopReport: arms, waits out the period, reports after exactly one period, across a 32-bit "
+      "wrap");
+    FakeTime::perRead = 0;
+    FakeTime::t       = 0xFFFF'0000U;   // the period below crosses the wrap
+    CHECK(Report::turn().in() == std::chrono::microseconds{1'000'000});   // first call: arms
+    auto& rl = ReportProf::loop<Main>;
+    rl.turns = 5;   // stands for a period's statistics
+    FakeTime::t += 999'999;
+    CHECK(Report::turn().in() == std::chrono::microseconds{1});   // one tick early: wait the rest
+    CHECK(rl.turns == 5);
+    FakeTime::t += 1;
+    CHECK(Report::turn().in()
+          == std::chrono::microseconds{1'000'000});   // reported (and cleared), re-armed
+    CHECK(rl.turns == 0);
+    rl.turns = 3;
+    FakeTime::t += 500'000;
+    CHECK(Report::turn().in() == std::chrono::microseconds{500'000} && rl.turns == 3);
+    FakeTime::t += 500'000;
+    CHECK(Report::turn().in() == std::chrono::microseconds{1'000'000} && rl.turns == 0);
 
     return Kvasir::Test::report();
 }

@@ -89,7 +89,7 @@ static_assert(resumes<Crc::Crc16Xmodem<256>>());
 static_assert(resumes<Crc::Crc8MaximDow<>>());
 static_assert(resumes<Crc::Crc7Mmc<>>());
 
-// The vectors of the code the engine replaces, so a migration that loses one fails here too.
+// The check vectors of the per-CRC functions the engine replaced: none of them is lost.
 template<typename E,
          std::size_t N>
 constexpr auto crcOf(std::array<std::uint8_t,
@@ -161,7 +161,7 @@ constexpr std::uint16_t sdBlock() {
 
 static_assert(sdBlock<0xFF>() == 0x7FA1 && sdBlock<0x00>() == 0x0000);
 
-// The Calc adapter: SimpleEeprom's and aglio's `type` + `calc(span)`.
+// The Calc adapter: aglio's `type` + `calc(span)`.
 using EepromCrc = Crc::Calc<Crc::Crc16Ccitt<0>>;
 static_assert(std::is_same_v<EepromCrc::type,
                              std::uint16_t>);

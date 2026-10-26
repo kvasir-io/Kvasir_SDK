@@ -5,9 +5,10 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#define __udivmoddi4 kvasir_udivmoddi4_under_test
-#include "../../lib/compiler-rt/builtins/kvasir/udivmoddi4_udiv.c"
-#undef __udivmoddi4
+// the routine, compiled next to this file under this name (tests/CMakeLists.txt); du_int is uint64_t
+uint64_t kvasir_udivmoddi4_under_test(uint64_t  a,
+                                      uint64_t  b,
+                                      uint64_t* rem);
 
 static uint64_t state = 0x9E3779B97F4A7C15ULL;
 
@@ -23,9 +24,9 @@ static unsigned long failed;
 
 static void check(uint64_t a,
                   uint64_t b) {
-    du_int       r     = 0;
-    du_int const q     = kvasir_udivmoddi4_under_test(a, b, &r);
-    du_int const qOnly = kvasir_udivmoddi4_under_test(a, b, 0);
+    uint64_t       r     = 0;
+    uint64_t const q     = kvasir_udivmoddi4_under_test(a, b, &r);
+    uint64_t const qOnly = kvasir_udivmoddi4_under_test(a, b, 0);
     ++checked;
     if(q != a / b || r != a % b || qOnly != q) {
         if(failed++ < 20) {

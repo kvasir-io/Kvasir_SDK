@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Post-link step of IMAGE_CRC: writes the image CRC descriptor (kvasir/Util/ImageDescriptor.hpp) into the ELF.
 
-The covered bytes are the data records of the flash hex - the same `objcopy -O ihex --only-section=...` that
-generate_object makes <name>_flash.hex with, so what J-Link programs and the log printer checks is what the firmware
-checks. Contiguous records form one segment, exactly as uc_log's detail/HexImage.hpp parseIntelHex builds them; the
-descriptor's own 80 bytes are cut out (its segment split in two). The CRC is CRC-32/ISO-HDLC chained over the
+The covered bytes are the image's load view (kvasir_elf.Elf.loaded(): every section the linker loads, at its load
+address) without .eeprom - the pieces elf_image.py writes <name>_flash.hex from, so what J-Link programs and the log
+printer checks is what the firmware checks. Pieces that touch form one segment, exactly as uc_log's
+printer/HexImage.hpp parseIntelHex joins contiguous records of that hex; the descriptor's own 76 bytes are cut out (its
+segment split in two). The CRC is CRC-32/ISO-HDLC chained over the
 segments in address order (zlib.crc32(data, previous), the printer's imageCrc).
 
 A RAM image (the descriptor itself linked into SRAM: everything loads into RAM, nothing is copied) is checked where
-it runs, so only what must not change while it runs is covered: of the sections named, the ones that are not
+it runs, so only what must not change while it runs is covered: of the loaded sections, the ones that are not
 writable (.vectors, .text with .rodata and, RAM_ONLY, the RAM functions) - .data is left out, it is the program's
 own state from the first instruction. The section that holds the descriptor is covered whatever its flags say: the
 linker scripts put the descriptor with the constants, and lld marks that section (.text) writable as soon as one
@@ -17,13 +18,9 @@ SRAM; the output names the sections covered and the ones left out.
 
 --exclude START END (symbols, repeatable) cuts [START, END) out as well: bytes a later step rewrites without
 changing the program. On the RP2350 that is the picobin block loop in .after_vectors, whose link word picotool seal
-and sign change (chip_rp2350/cmake/chip.cmake, TARGET_IMAGE_CRC_EXCLUDE).
+and sign change (chip_rp2350/cmake/chip.cmake, kvasir_chip IMAGE_CRC_EXCLUDE).
 
-    patch_image_crc.py <elf> --objcopy <llvm-objcopy> (--sections .vectors .text .data ... | --sections-from-load-view)
-                       [--exclude START END] [--delete-on-failure]
-
---sections-from-load-view takes the sections elf_image.py puts into <name>_flash.hex (every loaded section with
-contents but .eeprom), so the covered bytes are those of the flash hex without a list to keep in step.
+    patch_image_crc.py <elf> [--exclude START END] [--delete-on-failure]
 
 Runs before every artefact made from the ELF (.bin, .hex, _flash.elf, .uf2, .lst). Idempotent: the descriptor is
 not part of what it covers, so a second run writes the same bytes. A signing step (RP2350 picobin hash/signature)
@@ -33,109 +30,27 @@ the next build fails again instead of passing on an unpatched image. Exit code: 
 
 import argparse
 import struct
-import subprocess
 import sys
-import tempfile
 import zlib
 from pathlib import Path
+
+sys.dont_write_bytecode = True      # no __pycache__ in cmake/tools
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from kvasir_elf import SHF_ALLOC, SHF_WRITE, SHT_PROGBITS, Elf, merge_contiguous  # noqa: E402
 
 SYMBOL = 'kvasir_image_crc_descriptor'
 MAGIC = 0x4B494352
 UNPATCHED = 0xFFFFFFFF
-VERSION = 1
 MAX_SEGMENTS = 8
-DESCRIPTOR_BYTES = 16 + 8 * MAX_SEGMENTS
+DESCRIPTOR_BYTES = 12 + 8 * MAX_SEGMENTS
 # the printer compares only below it: RAM changes once the firmware runs
 SRAM_BASE = 0x20000000
 
-SHT_PROGBITS = 1
-SHT_SYMTAB = 2
-SHF_WRITE = 0x1
-SHF_ALLOC = 0x2
+EEPROM_SECTION = '.eeprom'
 
 
 class Refused(Exception):
     pass
-
-
-class Elf:
-    """Sections, program headers and symbols of an ELF32 little-endian file."""
-
-    def __init__(self, path):
-        data = Path(path).read_bytes()
-        if data[:4] != b'\x7fELF' or data[4] != 1 or data[5] != 1:
-            raise ValueError(f'{path}: not a 32-bit little-endian ELF')
-        self.data = bytearray(data)
-        phoff, shoff = struct.unpack_from('<II', data, 0x1C)
-        phentsize, phnum, shentsize, shnum, shstrndx = struct.unpack_from(
-            '<HHHHH', data, 0x2A)
-        raw = [struct.unpack_from(
-            '<IIIIIIIIII', data, shoff + i * shentsize) for i in range(shnum)]
-        names = raw[shstrndx][4]
-        self.sections = []
-        for (name, kind, flags, addr, offset, size, link, _info, _align, entsize) in raw:
-            self.sections.append({'name': self._str(names, name), 'type': kind, 'flags': flags, 'addr': addr,
-                                  'offset': offset, 'size': size, 'link': link, 'entsize': entsize})
-        self.segments = [struct.unpack_from(
-            '<IIIIIIII', data, phoff + i * phentsize) for i in range(phnum)]
-
-    def _str(self, table_offset, index):
-        end = self.data.index(0, table_offset + index)
-        return self.data[table_offset + index:end].decode()
-
-    def symbol(self, wanted):
-        for s in self.sections:
-            if s['type'] != SHT_SYMTAB:
-                continue
-            strtab = self.sections[s['link']]['offset']
-            for i in range(s['size'] // s['entsize']):
-                name, value, size, _info, _other, _shndx = struct.unpack_from(
-                    '<IIIBBH', self.data, s['offset'] + i * s['entsize'])
-                if name != 0 and self._str(strtab, name) == wanted:
-                    return value, size
-        return None
-
-    def section_of(self, address):
-        for s in self.sections:
-            if s['flags'] & 0x2 and s['addr'] <= address < s['addr'] + s['size']:
-                return s
-        return None
-
-    def load_address(self, address):
-        for (kind, _offset, vaddr, paddr, filesz, _memsz, _flags, _align) in self.segments:
-            if kind == 1 and vaddr <= address < vaddr + filesz:
-                return paddr + (address - vaddr)
-        return None
-
-
-def parse_intel_hex(text):
-    """[(address, bytes)]: contiguous data records joined, as uc_log's parseIntelHex does."""
-    segments = []
-    base = 0
-    for number, line in enumerate(text.splitlines(), 1):
-        line = line.rstrip('\r ')
-        if not line:
-            continue
-        if line[0] != ':' or len(line) < 11 or len(line) % 2 == 0:
-            raise ValueError(f'hex line {number}: not a record')
-        raw = bytes.fromhex(line[1:])
-        if sum(raw) & 0xFF:
-            raise ValueError(f'hex line {number}: checksum')
-        count, offset, kind = raw[0], (raw[1] << 8) | raw[2], raw[3]
-        if len(raw) != count + 5:
-            raise ValueError(f'hex line {number}: length')
-        if kind == 1:
-            break
-        if kind == 2 and count == 2:
-            base = ((raw[4] << 8) | raw[5]) << 4
-        elif kind == 4 and count == 2:
-            base = ((raw[4] << 8) | raw[5]) << 16
-        elif kind == 0:
-            address = base + offset
-            if not segments or segments[-1][0] + len(segments[-1][1]) != address:
-                segments.append((address, bytearray()))
-            segments[-1][1].extend(raw[4:4 + count])
-    return [(a, bytes(d)) for a, d in segments]
 
 
 def cut(segments, start, length):
@@ -162,34 +77,31 @@ def image_crc(segments):
 
 
 def descriptor_bytes(crc, segments):
-    words = [MAGIC, VERSION, crc, len(segments)]
+    words = [MAGIC, crc, len(segments)]
     for address, data in segments:
         words += [address, len(data)]
     words += [0] * (2 * (MAX_SEGMENTS - len(segments)))
     return struct.pack(f'<{len(words)}I', *words)
 
 
-def load_view_sections(elf_path):
-    """The sections of <name>_flash.hex: elf_image.py's selection (same directory), .eeprom left out."""
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import elf_image
-    pieces = elf_image.Elf(Path(elf_path).read_bytes()).loaded()
-    return [name for (name, _address, _data) in pieces if name != '.eeprom']
+def patch(elf_path, sections=None, excludes=()):
+    """Writes the descriptor; `sections` (the names covered) defaults to the load view without .eeprom."""
+    try:
+        elf = Elf(bytearray(Path(elf_path).read_bytes()))
+    except ValueError as e:
+        raise ValueError(f'{elf_path}: not a 32-bit little-endian ELF') from e
+    result = patch_elf(elf, sections, excludes)
+    Path(elf_path).write_bytes(elf.data)
+    return result
 
 
-def flash_hex(elf_path, objcopy, sections):
-    with tempfile.TemporaryDirectory() as tmp:
-        hex_path = Path(tmp) / 'image.hex'
-        cmd = [objcopy, '--output-target', 'ihex'] + [f'--only-section={s}' for s in sections] + \
-              [str(elf_path), str(hex_path)]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise ValueError(f'{" ".join(cmd)}: {result.stderr.strip()}')
-        return hex_path.read_text()
-
-
-def patch(elf_path, objcopy, sections, excludes=()):
-    elf = Elf(elf_path)
+def patch_elf(elf, sections=None, excludes=()):
+    """patch() on an Elf over a bytearray: the descriptor is written into elf.data (the caller writes the file), so
+    whatever reads that Elf afterwards sees the patched image."""
+    pieces = elf.loaded()
+    if sections is None:
+        sections = [name for (name, _address, _data)
+                    in pieces if name != EEPROM_SECTION]
     found = elf.symbol(SYMBOL)
     if found is None:
         raise Refused(f'no {SYMBOL} in the image: IMAGE_CRC is on, but no translation unit of it includes '
@@ -222,8 +134,8 @@ def patch(elf_path, objcopy, sections, excludes=()):
                    for s in elf.sections if s['name'] in sections and s['size']]
         left_out = [name for name in present if name not in covered]
         sections = covered
-    segments = cut(parse_intel_hex(
-        flash_hex(elf_path, objcopy, sections)), load, DESCRIPTOR_BYTES)
+    segments = cut(merge_contiguous([(lma, data) for (name, lma, data) in pieces if name in sections]), load,
+                   DESCRIPTOR_BYTES)
     for start_symbol, end_symbol in excludes:
         start, end = elf.symbol(start_symbol), elf.symbol(end_symbol)
         if start is None or end is None:
@@ -251,11 +163,10 @@ def patch(elf_path, objcopy, sections, excludes=()):
     if len(segments) > MAX_SEGMENTS:
         listing = ', '.join(f'0x{a:08x}+{len(d)}' for a, d in segments)
         raise Refused(f'{len(segments)} segments, the descriptor holds {MAX_SEGMENTS}: {listing} '
-                      '(raise Descriptor::MaxSegments and MAX_SEGMENTS together)')
+                      '(raise Descriptor::maxSegments and MAX_SEGMENTS together)')
     crc = image_crc(segments)
     elf.data[offset:offset +
              DESCRIPTOR_BYTES] = descriptor_bytes(crc, segments)
-    Path(elf_path).write_bytes(elf.data)
     return crc, segments, (sections, left_out) if ram_image else None
 
 
@@ -263,23 +174,31 @@ def main():
     parser = argparse.ArgumentParser(
         description=(__doc__ or '').split('\n')[0])
     parser.add_argument('elf', type=Path)
-    parser.add_argument('--objcopy', required=True)
-    names = parser.add_mutually_exclusive_group(required=True)
-    names.add_argument('--sections', nargs='+')
-    names.add_argument('--sections-from-load-view', action='store_true')
     parser.add_argument('--exclude', nargs=2, action='append',
                         default=[], metavar=('START', 'END'))
     parser.add_argument('--delete-on-failure', action='store_true')
     args = parser.parse_args()
     try:
-        if args.sections_from_load_view:
-            args.sections = load_view_sections(args.elf)
-        crc, segments, ram_image = patch(
-            args.elf, args.objcopy, args.sections, args.exclude)
+        elf = Elf(bytearray(args.elf.read_bytes()))
+    except (ValueError, OSError) as e:
+        print(f'patch_image_crc: {args.elf.name}: {args.elf}: not a 32-bit little-endian ELF'
+              if isinstance(e, ValueError) else f'patch_image_crc: {args.elf.name}: {e}', file=sys.stderr)
+        code = 2
+    else:
+        code = run(elf, args.elf, args.exclude)
+    if code and args.delete_on_failure:
+        args.elf.unlink(missing_ok=True)
+    return code
+
+
+def run(elf, path, excludes=()):
+    """The patch on an Elf over a bytearray read from `path`: the descriptor into elf.data and the file; 0, or 1 (a
+    refusal) / 2 (a write that failed) after the message."""
+    try:
+        crc, segments, ram_image = patch_elf(elf, excludes=excludes)
+        Path(path).write_bytes(elf.data)
     except (Refused, ValueError, OSError) as e:
-        print(f'patch_image_crc: {args.elf.name}: {e}', file=sys.stderr)
-        if args.delete_on_failure:
-            args.elf.unlink(missing_ok=True)
+        print(f'patch_image_crc: {Path(path).name}: {e}', file=sys.stderr)
         return 1 if isinstance(e, Refused) else 2
     total = sum(len(d) for _a, d in segments)
     where = ''

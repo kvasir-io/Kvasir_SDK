@@ -35,65 +35,19 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.dont_write_bytecode = True      # no __pycache__ in cmake/tools
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from kvasir_elf import SHF_WRITE, SHT_PROGBITS, STT_FUNC, Elf  # noqa: E402
+
 MARK_SECTION = 'kvasir_ram_funcs'
 DATA = 'flash data via '
 
-SHT_PROGBITS = 1
-SHT_SYMTAB = 2
-SHT_NOBITS = 8
-SHF_WRITE = 0x1
-SHF_ALLOC = 0x2
-STT_FUNC = 2
 
-
-class Elf:
-    """The little of an ELF32 little-endian file this needs: sections, symbols, bytes."""
-
-    def __init__(self, path):
-        data = Path(path).read_bytes()
-        if data[:4] != b'\x7fELF' or data[4] != 1 or data[5] != 1:
-            raise ValueError(f'{path}: not a 32-bit little-endian ELF')
-        self.data = data
-        (shoff,) = struct.unpack_from('<I', data, 0x20)
-        shentsize, shnum, shstrndx = struct.unpack_from('<HHH', data, 0x2E)
-        raw = [struct.unpack_from('<IIIIIIIIII', data, shoff + i * shentsize)
-               for i in range(shnum)]
-        names = raw[shstrndx]
-        self.sections = []
-        for (name, stype, flags, addr, offset, size, link, _info, _align, entsize) in raw:
-            self.sections.append({'name': self._str(names[4], name), 'type': stype, 'flags': flags,
-                                  'addr': addr, 'offset': offset, 'size': size, 'link': link,
-                                  'entsize': entsize})
-        self.symbols = []
-        for sec in self.sections:
-            if sec['type'] != SHT_SYMTAB:
-                continue
-            strtab = self.sections[sec['link']]['offset']
-            for i in range(sec['size'] // 16):
-                name, value, size, info, _other, shndx = struct.unpack_from(
-                    '<IIIBBH', data, sec['offset'] + i * 16)
-                self.symbols.append({'name': self._str(strtab, name), 'value': value,
-                                     'size': size, 'type': info & 0xF, 'shndx': shndx})
-
-    def _str(self, table_offset, index):
-        end = self.data.index(b'\0', table_offset + index)
-        return self.data[table_offset + index:end].decode('utf-8', 'replace')
-
-    def section(self, name):
-        return next((s for s in self.sections if s['name'] == name), None)
-
-    def loaded(self):
-        return [s for s in self.sections if s['flags'] & SHF_ALLOC and s['size']]
-
-    def section_at(self, address):
-        return next((s for s in self.loaded() if s['addr'] <= address < s['addr'] + s['size']), None)
-
-    def read(self, address, size):
-        sec = self.section_at(address)
-        if sec is None or sec['type'] == SHT_NOBITS or address + size > sec['addr'] + sec['size']:
-            return None
-        start = sec['offset'] + address - sec['addr']
-        return self.data[start:start + size]
+def load(path):
+    try:
+        return Elf.from_path(path)
+    except ValueError as e:
+        raise ValueError(f'{path}: not a 32-bit little-endian ELF') from e
 
 
 class Regions:
@@ -119,13 +73,13 @@ class Regions:
     def is_ram(self, address):
         if self.from_symbols:
             return any(start <= address < end for start, end in self.ram)
-        sec = self.elf.section_at(address)
+        sec = self.elf.alloc_section_at(address)
         return sec is not None and bool(sec['flags'] & SHF_WRITE)
 
     def is_flash(self, address):
         if self.from_symbols:
             return self.flash is not None and self.flash[0] <= address < self.flash[1]
-        sec = self.elf.section_at(address)
+        sec = self.elf.alloc_section_at(address)
         return sec is not None and sec['type'] == SHT_PROGBITS and not sec['flags'] & SHF_WRITE
 
 
@@ -286,7 +240,7 @@ def check(elf, all_ram_functions, name):
         for address in marks(elf, section):
             function = image.function_at(address)
             if function is None:
-                sec = elf.section_at(address)
+                sec = elf.alloc_section_at(address)
                 problems.append(f'a RAM function mark at {address:#010x} '
                                 f'({sec["name"] if sec else "no section"}) is inside no function symbol')
                 continue
@@ -302,7 +256,7 @@ def check(elf, all_ram_functions, name):
         outside = next(
             (a for a in (start, start + root['size'] - 1) if not regions.is_ram(a)), None)
         if outside is not None:
-            sec = elf.section_at(outside)
+            sec = elf.alloc_section_at(outside)
             problems.append(f'{name(root["name"])} is at {start:#010x} in '
                             f'{sec["name"] if sec else "no section"}, not in RAM'
                             + ('' if is_marked else ' (unmarked)'))
@@ -319,7 +273,7 @@ def check(elf, all_ram_functions, name):
             checked.add(fstart)
             for pc, target, how in image.references(function):
                 if how.startswith(DATA):
-                    sec = elf.section_at(target)
+                    sec = elf.alloc_section_at(target)
                     chain = ' -> '.join(name(f['name']) for f in path[fstart])
                     what = image.symbol_at(target)
                     problems.append(f'{chain} reads flash: {how} at {pc:#010x} -> '
@@ -331,7 +285,7 @@ def check(elf, all_ram_functions, name):
                     continue
                 callee = image.function_at(target)
                 if regions.is_flash(target):
-                    sec = elf.section_at(target)
+                    sec = elf.alloc_section_at(target)
                     chain = ' -> '.join(name(f['name']) for f in path[fstart])
                     what = name(
                         callee['name']) if callee else f'{target:#010x}'
@@ -418,6 +372,26 @@ def lint(elf_path, tool):
     return problems, []
 
 
+def run(elf, path, all_ram_functions=False, sources=True, cxxfilt=None, dwarfdump=None):
+    """The check on an Elf already read from `path` (kvasir_postlink.py reads it once for every step): 0, or 1 after
+    the problems are printed."""
+    problems, marked, reached = check(
+        elf, all_ram_functions, demangler(cxxfilt))
+    notes = []
+    if sources:
+        unmarked, notes = lint(path, dwarfdump)
+        problems += unmarked or []
+    for n in notes:
+        print(f'check_ram_funcs: note: {n}', file=sys.stderr)
+    if not problems:
+        return 0
+    print(f'check_ram_funcs: {Path(path).name}: {len(problems)} problem(s) with the {marked} marked RAM '
+          f'function(s) ({reached} function(s) reached):', file=sys.stderr)
+    for p in problems:
+        print(f'  {p}', file=sys.stderr)
+    return 1
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('elf', type=Path)
@@ -429,28 +403,16 @@ def main():
     ap.add_argument('--dwarfdump')
     args = ap.parse_args()
     try:
-        elf = Elf(args.elf)
+        elf = load(args.elf)
     except (OSError, ValueError) as e:
         print(f'check_ram_funcs: {e}', file=sys.stderr)
         return 2
-    problems, marked, reached = check(
-        elf, args.all_ram_functions, demangler(args.cxxfilt))
-    notes = []
-    if not args.no_sources:
-        unmarked, notes = lint(args.elf, args.dwarfdump)
-        problems += unmarked or []
-    for n in notes:
-        print(f'check_ram_funcs: note: {n}', file=sys.stderr)
-    if not problems:
-        return 0
-    print(f'check_ram_funcs: {args.elf.name}: {len(problems)} problem(s) with the {marked} marked RAM '
-          f'function(s) ({reached} function(s) reached):', file=sys.stderr)
-    for p in problems:
-        print(f'  {p}', file=sys.stderr)
-    if args.delete_on_failure:
+    code = run(elf, args.elf, args.all_ram_functions,
+               not args.no_sources, args.cxxfilt, args.dwarfdump)
+    if code and args.delete_on_failure:
         args.elf.unlink(missing_ok=True)
         print(f'check_ram_funcs: removed {args.elf.name}', file=sys.stderr)
-    return 1
+    return code
 
 
 if __name__ == '__main__':

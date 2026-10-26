@@ -1,12 +1,17 @@
 #pragma once
 
 // Rules over the shape of a Startup list that need no chip and no register: the list itself
-// is wrong, not the hardware it describes. Each is a std::bool_constant; Startup and
-// SecondaryCore turn them into static_asserts, tests/startup_list_tests.cpp checks them both
-// ways on fake lists. Anything that needs the chip (the interrupt range, what a SecondaryCore
-// is) comes in as a template argument so this header compiles on the host.
+// is wrong, not the hardware it describes. Each rule is an offender list (DuplicateEntries,
+// NotPeripherals, ..., the *Indexes of the interrupt rules); the std::bool_constant names below
+// are views of it (true when it is empty). Checks.hpp asserts them, one report per offender,
+// for Startup and SecondaryCore alike; tests/startup_list_tests.cpp checks them both ways on
+// fake lists. Anything that needs the chip (the interrupt range, what a SecondaryCore is)
+// comes in as a template argument so this header compiles on the host.
 //
 //   NoDuplicateEntry      the same type twice in one list runs its init steps twice
+//   HookShapesHold        an entry declares a runtime hook (Entry.hpp's Startup::Detail::RuntimeHook::All)
+//                         that Startup cannot call - another return type, not static, or with
+//                         parameters: it would never run, and a rendezvous hook would count as met
 //   AllArePeripherals     a type that is not a peripheral (a Config listed instead of its
 //                         driver, a typo'd alias) contributes nothing, and nothing says so
 //   AtMostOneSecondary    the chip has one other core
@@ -33,26 +38,43 @@
 //   IsrContractHolds      the three for one entry, over every core's interrupts together, or
 //                         core by core for an entry whose contexts are per core
 //                         (perCoreIsrContexts)
+//   GuardBeforeReport     a BootGuard::Guard (isBootGuard) after Boot::Report (isBootReport): the report takes
+//                         the panic and fault records before the guard reads them, and the guard judges every
+//                         run healthy
+//   HealthServiceAfterReport
+//                         a Health::Service<> (isHealthService) before Boot::Report (isBootReport): the service's
+//                         runtimeInit reports the run before's starvation, a line that follows the boot line
+//   WatchdogBeforeHealthService
+//                         a chip watchdog (isWatchdog: every Kvasir::Watchdog, Health/WatchdogFront.hpp) after a
+//                         Health::Service<>: the service's runtimeInit holds the watchdog off, and one that its own
+//                         runtimeInit arms later (an ungated SAM or STM32 watchdog) would count through the rest of
+//                         the boot and the first turns; a gated one (isGatedWatchdog) has no runtimeInit and may
+//                         come after
+//   BootReportListed      a list with the user log backend names the boot report: an entry with isBootReport
+//                         (Boot::Report, Runtime::Standard) or bootReportInMain (Boot::ReportInMain, a main that
+//                         reports by hand). Without it a panic or fault record stays unreported
+//   ChipEntryNotListed    an entry the chip adds to every primary list itself (chipEntry, Startup::ChipEntries)
+//                         listed by hand: it would run twice (the RP chips' Clocks::DegradedBoot: two records, two
+//                         tries a turn)
 //
+// The rules read a list's entries: a group entry (Entry.hpp) is its members, in its place.
 // The levels are the ones the init steps write, in the order Startup applies them; a priority
 // changed at run time is invisible to these rules.
 
+#include "kvasir/Mpl/List.hpp"
 #include "kvasir/Mpl/Types.hpp"
+#include "kvasir/StartUp/Entry.hpp"
 #include "kvasir/StartUp/Resources.hpp"
+#include "kvasir/Util/Diagnostic.hpp"
 
 #include <array>
 #include <cstddef>
+#include <string_view>
 #include <type_traits>
 
 namespace Kvasir { namespace Startup { namespace ListRules {
 
     namespace Detail {
-        template<typename T,
-                 typename... Ts>
-        constexpr std::size_t countSame(brigand::list<Ts...>) {
-            return (std::size_t{0} + ... + std::size_t{std::is_same_v<T, Ts>});
-        }
-
         template<typename Traits,
                  int I>
         constexpr bool isrIndexInTable() {
@@ -70,27 +92,24 @@ namespace Kvasir { namespace Startup { namespace ListRules {
     // The members Startup, SecondaryCore and the resource check look for. A type with none
     // of them is inert in a list, which is never what listing it meant.
     template<typename T>
-    constexpr bool hasInitSteps
-      = requires { T::earlyInit; } || requires { T::powerClockEnable; }
-     || requires { T::initStepPinConfig; } || requires { T::initStepPeripheryConfig; }
-     || requires { T::initStepInterruptConfig; } || requires { T::initStepPeripheryEnable; };
+    constexpr bool hasInitSteps = ::Kvasir::Startup::Detail::hasPhaseMember<T>;   // Entry.hpp
 
     template<typename T>
-    constexpr bool hasIsr = requires { typename T::Isr; } || requires { T::isr; }
-                         || requires { typename T::SubIsrs; };   // SharedIsr.hpp
+    constexpr bool hasIsr
+      = requires { typename T::Isr; } || requires { typename T::SubIsrs; };   // SharedIsr.hpp
 
+    // a declared hook makes an entry, whatever its shape: HookShapesHold then names the wrong one
     template<typename T>
-    constexpr bool hasRuntimeHooks
-      = requires { T::runtimeInit(); } || requires { T::preEnableRuntimeInit(); }
-     || requires { T::primaryPrepare(); } || requires { T::primarySync(); }
-     || requires { T::secondarySync(); } || requires { typename T::Extends; };
+    constexpr bool hasRuntimeHooks = ::Kvasir::Startup::Detail::RuntimeHook::DeclaresAny<T>::value
+                                  || requires { typename T::Extends; };
 
     template<typename T>
     constexpr bool hasResources
       = requires { typename T::Provides; } || requires { typename T::Claims; };
 
     // isLaunchTimeout: LaunchTimeout; startupCore: a peripheral that names its core;
-    // isStartupEntry: Using<...> and anything else that is listed for the checks alone.
+    // isStartupEntry: Using<...>, DrivenByHand<...> (Port/Extends.hpp) and anything else that is listed for the checks
+    // alone.
     template<typename T>
     constexpr bool hasMarker = requires { T::isLaunchTimeout; } || requires { T::startupCore; }
                             || requires { T::isStartupEntry; };
@@ -111,7 +130,7 @@ namespace Kvasir { namespace Startup { namespace ListRules {
     template<typename T>
     constexpr bool declaresIsrContract = declaresIsrLevels<T> || declaresSingleIsrLevel<T>;
 
-    // An entry whose ISR contexts are separate per core (uc_log's MulticoreRttComBackend): an
+    // An entry whose ISR contexts are separate per core (uc_log's RttLog on two cores): an
     // ISR on one core never preempts a record on the other's, so its contract is held to each
     // core's interrupts on their own.
     template<typename T>
@@ -131,22 +150,12 @@ namespace Kvasir { namespace Startup { namespace ListRules {
     struct NoDuplicateEntry;
 
     namespace Detail {
-        // The first T for which Pred::template holds<T>, or void: a rule's offender, for its compile error.
-        template<typename Pred, typename... Ts>
-        struct FirstWhere {
-            using type = void;
-        };
-
-        template<typename Pred, typename T, typename... Ts>
-        struct FirstWhere<Pred, T, Ts...>
-          : std::conditional_t<Pred::template holds<T>,
-                               std::type_identity<T>,
-                               FirstWhere<Pred, Ts...>> {};
-
+        // A rule's offender, for its compile error, is MPL::FirstWhereT<Pred, Ts...> (Mpl/List.hpp)
+        // over one of the predicates below.
         template<typename List>
         struct DuplicateIn {
             template<typename T>
-            static constexpr bool holds = countSame<T>(List{}) > 1;
+            static constexpr bool holds = MPL::count<T, List> > 1;
         };
 
         template<template<typename> class IsSecondaryCore>
@@ -160,19 +169,77 @@ namespace Kvasir { namespace Startup { namespace ListRules {
             static constexpr bool holds = requires { T::isLaunchTimeout; };
         };
 
+        struct HasIsrTransform {
+            template<typename T>
+            static constexpr bool holds
+              = ::Kvasir::Startup::Detail::hasIsrTransform<T>;   // Entry.hpp
+        };
+
         struct IsClockSettings {
             template<typename T>
             static constexpr bool holds
               = requires { T::coreClockInit(); } || requires { T::peripheryClockInit(); };
         };
+
+        struct IsChipEntry {
+            template<typename T>
+            static constexpr bool holds = ::Kvasir::Startup::Detail::isChipEntry<T>;   // Entry.hpp
+        };
     }   // namespace Detail
+
+    // ---- each shape rule is its offender list; the rule holds when it is empty --------------
+    // Every type listed more than once, once each, in list order.
+    template<typename List>
+    using DuplicateEntries = MPL::Dedup<MPL::Filter<Detail::DuplicateIn<List>, List>>;
+
+    template<template<typename> class IsSecondaryCore, typename List>
+    using NotPeripherals = MPL::Filter<Detail::NotAPeripheral<IsSecondaryCore>, List>;
+
+    namespace Detail {
+        template<template<typename> class IsSecondaryCore>
+        struct IsSecondary {
+            template<typename T>
+            static constexpr bool holds = IsSecondaryCore<T>::value;
+        };
+
+        template<typename List>
+        struct DropFirst {
+            using type = brigand::list<>;
+        };
+
+        template<typename T, typename... Ts>
+        struct DropFirst<brigand::list<T, Ts...>> {
+            using type = brigand::list<Ts...>;
+        };
+    }   // namespace Detail
+
+    // Every SecondaryCore in a list, and every one after the first.
+    template<template<typename> class IsSecondaryCore, typename List>
+    using Secondaries = MPL::Filter<Detail::IsSecondary<IsSecondaryCore>, List>;
+
+    template<template<typename> class IsSecondaryCore, typename List>
+    using ExtraSecondaries = typename Detail::DropFirst<Secondaries<IsSecondaryCore, List>>::type;
+
+    template<typename List>
+    using LaunchTimeouts = MPL::Filter<Detail::IsLaunchTimeout, List>;
+
+    // Every entry that rewrites the list's ISRs (an IsrTransform, Entry.hpp), and every one after the first.
+    template<typename List>
+    using IsrTransformEntries = MPL::Filter<Detail::HasIsrTransform, List>;
+
+    template<typename List>
+    using ExtraIsrTransforms = typename Detail::DropFirst<IsrTransformEntries<List>>::type;
+
+    template<typename List>
+    using ClockSettingsEntries = MPL::Filter<Detail::IsClockSettings, List>;
+
+    // Every chip entry (chipEntry, Entry.hpp: Startup::ChipEntries) in a list as written: the chip adds them itself.
+    template<typename List>
+    using ListedChipEntries = MPL::Filter<Detail::IsChipEntry, List>;
 
     template<typename... Ts>
     struct NoDuplicateEntry<brigand::list<Ts...>>
-      : std::bool_constant<((Detail::countSame<Ts>(brigand::list<Ts...>{}) == 1) && ...)> {
-        using Duplicate =
-          typename Detail::FirstWhere<Detail::DuplicateIn<brigand::list<Ts...>>, Ts...>::type;
-    };
+      : std::bool_constant<Diagnostics::none<DuplicateEntries<brigand::list<Ts...>>>> {};
 
     // IsSecondaryCore: the chip-agnostic predicate from StartUp.hpp, passed in so a test can
     // substitute its own.
@@ -181,57 +248,90 @@ namespace Kvasir { namespace Startup { namespace ListRules {
 
     template<template<typename> class IsSecondaryCore, typename... Ts>
     struct AllArePeripherals<IsSecondaryCore, brigand::list<Ts...>>
-      : std::bool_constant<((isPeripheral<Ts> || IsSecondaryCore<Ts>::value) && ...)> {
-        using NotAPeripheral =
-          typename Detail::FirstWhere<Detail::NotAPeripheral<IsSecondaryCore>, Ts...>::type;
-    };
+      : std::bool_constant<
+          Diagnostics::none<NotPeripherals<IsSecondaryCore, brigand::list<Ts...>>>> {};
 
     template<template<typename> class IsSecondaryCore, typename List>
     struct AtMostOneSecondary;
 
     template<template<typename> class IsSecondaryCore, typename... Ts>
     struct AtMostOneSecondary<IsSecondaryCore, brigand::list<Ts...>>
-      : std::bool_constant<((std::size_t{0} + ... + std::size_t{IsSecondaryCore<Ts>::value})
-                            <= 1)> {};
+      : std::bool_constant<
+          Diagnostics::none<ExtraSecondaries<IsSecondaryCore, brigand::list<Ts...>>>> {};
 
     template<template<typename> class IsSecondaryCore, typename List>
     struct NoSecondaryIn;
 
     template<template<typename> class IsSecondaryCore, typename... Ts>
     struct NoSecondaryIn<IsSecondaryCore, brigand::list<Ts...>>
-      : std::bool_constant<(!IsSecondaryCore<Ts>::value && ...)> {};
+      : std::bool_constant<Diagnostics::none<Secondaries<IsSecondaryCore, brigand::list<Ts...>>>> {
+    };
+
+    namespace Detail {
+        struct WrongHookShape {
+            template<typename T>
+            static constexpr bool holds
+              = !::Kvasir::Startup::Detail::RuntimeHook::ShapesOk<T>::value;
+        };
+
+        // the first hook of T with the wrong shape
+        template<typename T, typename Hooks>
+        struct FirstWrongHook;
+
+        template<typename T>
+        struct FirstWrongHook<T, brigand::list<>> {
+            using type = void;
+        };
+
+        template<typename T, typename H, typename... Hs>
+        struct FirstWrongHook<T, brigand::list<H, Hs...>>
+          : std::conditional_t<H::template shapeOk<T>(),
+                               FirstWrongHook<T, brigand::list<Hs...>>,
+                               std::type_identity<H>> {};
+    }   // namespace Detail
+
+    template<typename List>
+    struct HookShapesHold;
+
+    // Every entry that declares a hook of the wrong shape.
+    template<typename List>
+    using WrongHookShapes = MPL::Filter<Detail::WrongHookShape, List>;
+
+    template<typename... Ts>
+    struct HookShapesHold<brigand::list<Ts...>>
+      : std::bool_constant<Diagnostics::none<WrongHookShapes<brigand::list<Ts...>>>> {};
+
+    // The message, built only when the rule fails (KVASIR_STATIC_ASSERT): the entry, the hook, the signature.
+    template<typename Offender>
+    struct HookShapeText {
+        consteval Kvasir::Diagnostic::Text operator()() const {
+            using H =
+              typename Detail::FirstWrongHook<Offender,
+                                              ::Kvasir::Startup::Detail::RuntimeHook::All>::type;
+            Kvasir::Diagnostic::Text t;
+            t << "Startup entry ";
+            Kvasir::Diagnostic::appendType<Offender>(t);
+            t << ": its " << H::name << " must be `" << H::signature
+              << "` (it returns another type, is not static, or takes parameters) - Startup would "
+                 "never "
+                 "call it; on a Startup entry the hook names are reserved";
+            return t;
+        }
+    };
 
     template<typename List>
     struct NoLaunchTimeoutIn;
 
     template<typename... Ts>
     struct NoLaunchTimeoutIn<brigand::list<Ts...>>
-      : std::bool_constant<(!requires {
-        Ts::isLaunchTimeout; } && ...)> {
-        using LaunchTimeout = typename Detail::FirstWhere<Detail::IsLaunchTimeout, Ts...>::type;
-    };
+      : std::bool_constant<Diagnostics::none<LaunchTimeouts<brigand::list<Ts...>>>> {};
 
     template<typename List>
     struct NoClockSettingsIn;
 
     template<typename... Ts>
     struct NoClockSettingsIn<brigand::list<Ts...>>
-      : std::bool_constant<(
-          !(requires {
-        Ts::coreClockInit(); } || requires {
-            Ts::peripheryClockInit(); })
-          && ...)> {
-        using ClockSettings = typename Detail::FirstWhere<Detail::IsClockSettings, Ts...>::type;
-    };
-
-    // Traits: the chip's InterruptOffsetTraits (begin, end, disabled); IsrList: Nvic::Isr
-    // types, each with an IType::value.
-    template<typename Traits, typename IsrList>
-    struct IsrIndexesValid;
-
-    template<typename Traits, typename... Is>
-    struct IsrIndexesValid<Traits, brigand::list<Is...>>
-      : std::bool_constant<(Detail::isrIndexInTable<Traits, Is::IType::value>() && ...)> {};
+      : std::bool_constant<Diagnostics::none<ClockSettingsEntries<brigand::list<Ts...>>>> {};
 
     namespace Detail {
         // The X of a ListedOn<X, 0> claim; void for any other resource.
@@ -255,63 +355,57 @@ namespace Kvasir { namespace Startup { namespace ListRules {
             return -1;
         }
 
-        // An X that is not in the primary list at all is dependenciesListed's finding, not
-        // this one's, so -1 passes here.
-        template<int Launch,
-                 typename... Ts,
-                 typename... Rs>
-        constexpr bool claimsPrecede(brigand::list<Rs...>) {
-            return ((std::is_void_v<typename ListedOnCore0<Rs>::type>
-                     || positionOf<typename ListedOnCore0<Rs>::type, Ts...>() < Launch)
-                    && ...);
-        }
+        // A SecondaryCore's ListedOn<X, 0> claim whose X is listed at or after it (Launch is the
+        // SecondaryCore's position): Pair<X, the SecondaryCore>. An X that is not in the primary
+        // list at all is dependenciesListed's finding, not this one's, so -1 passes here.
+        template<int Launch, typename Secondary, typename Claims, typename... Ts>
+        struct LateClaims;
+
+        template<int Launch, typename Secondary, typename... Rs, typename... Ts>
+        struct LateClaims<Launch, Secondary, brigand::list<Rs...>, Ts...> {
+            using type = brigand::flatten<brigand::list<std::conditional_t<
+              (!std::is_void_v<typename ListedOnCore0<Rs>::type>
+               && positionOf<typename ListedOnCore0<Rs>::type, Ts...>() >= Launch),
+              brigand::list<Diagnostics::Pair<typename ListedOnCore0<Rs>::type, Secondary>>,
+              brigand::list<>>...>>;
+        };
 
         template<template<typename> class IsSecondaryCore,
                  template<typename> class SecondaryPeripherals,
                  typename List,
                  typename Seq>
-        struct DependenciesPrecedeLaunchImpl;
+        struct LateDependenciesImpl;
 
         template<template<typename> class IsSecondaryCore,
                  template<typename> class SecondaryPeripherals,
                  typename... Ts,
                  std::size_t... Is>
-        struct DependenciesPrecedeLaunchImpl<IsSecondaryCore,
-                                             SecondaryPeripherals,
-                                             brigand::list<Ts...>,
-                                             std::index_sequence<Is...>>
-          : std::bool_constant<((!IsSecondaryCore<Ts>::value
-                                 || claimsPrecede<static_cast<int>(Is), Ts...>(
-                                   typename Kvasir::Startup::Detail::ClaimsIn<
-                                     typename SecondaryPeripherals<Ts>::type>::type{}))
-                                && ...)> {};
+        struct LateDependenciesImpl<IsSecondaryCore,
+                                    SecondaryPeripherals,
+                                    brigand::list<Ts...>,
+                                    std::index_sequence<Is...>> {
+            using type = brigand::flatten<brigand::list<std::conditional_t<
+              IsSecondaryCore<Ts>::value,
+              typename LateClaims<static_cast<int>(Is),
+                                  Ts,
+                                  typename Kvasir::Startup::Detail::ClaimsIn<
+                                    typename SecondaryPeripherals<Ts>::type>::type,
+                                  Ts...>::type,
+              brigand::list<>>...>>;
+        };
     }   // namespace Detail
 
     // ---- enabled without a handler --------------------------------------------------------
     namespace Detail {
+        // A peripheral's interrupt-config and periphery-enable actions (Entry.hpp).
         template<typename T>
-        struct InterruptConfigOf {
-            using type = brigand::list<>;
-        };
+        using InterruptConfigOf
+          = ::Kvasir::Startup::Detail::PhaseActionsOf<T,
+                                                      ::Kvasir::Startup::Detail::Phase::Interrupts>;
 
         template<typename T>
-            requires requires { T::initStepInterruptConfig; }
-        struct InterruptConfigOf<T> {
-            using type = typename Kvasir::Startup::Detail::AsList<
-              std::remove_cvref_t<decltype(T::initStepInterruptConfig)>>::type;
-        };
-
-        template<typename T>
-        struct PeripheryEnableOf {
-            using type = brigand::list<>;
-        };
-
-        template<typename T>
-            requires requires { T::initStepPeripheryEnable; }
-        struct PeripheryEnableOf<T> {
-            using type = typename Kvasir::Startup::Detail::AsList<
-              std::remove_cvref_t<decltype(T::initStepPeripheryEnable)>>::type;
-        };
+        using PeripheryEnableOf
+          = ::Kvasir::Startup::Detail::PhaseActionsOf<T, ::Kvasir::Startup::Detail::Phase::Enable>;
 
         template<typename List>
         struct InterruptsOfActions;
@@ -344,15 +438,6 @@ namespace Kvasir { namespace Startup { namespace ListRules {
         using type
           = brigand::flatten<brigand::list<typename Detail::EnabledInterruptsOf<Ts>::type...>>;
     };
-
-    // Enabled: std::integral_constant<int, I> per enabled index (EnabledInterruptsIn);
-    // IsrList: the list's Isr types, each with an IType::value.
-    template<typename Enabled, typename IsrList>
-    struct EnabledLinesHandled;
-
-    template<typename... Es, typename IsrList>
-    struct EnabledLinesHandled<brigand::list<Es...>, IsrList>
-      : std::bool_constant<(Detail::anyIsrOn<Es::value>(IsrList{}) && ...)> {};
 
     // ---- the offending indexes of the interrupt rules, for the reports ----------------------
     // Each is a brigand::list<std::integral_constant<int, I>...>, empty when the rule holds.
@@ -396,6 +481,18 @@ namespace Kvasir { namespace Startup { namespace ListRules {
         using type = brigand::flatten<
           brigand::list<Detail::IndexIf<!Detail::anyIsrOn<Es::value>(IsrList{}), Es::value>...>>;
     };
+
+    // The interrupt rules as views of the offending indexes above.
+    // Traits: the chip's InterruptOffsetTraits (begin, end, disabled); IsrList: Nvic::Isr
+    // types, each with an IType::value.
+    template<typename Traits, typename IsrList>
+    struct IsrIndexesValid
+      : std::bool_constant<Diagnostics::none<typename InvalidIsrIndexes<Traits, IsrList>::type>> {};
+
+    // Enabled: std::integral_constant<int, I> per enabled index (EnabledInterruptsIn).
+    template<typename Enabled, typename IsrList>
+    struct EnabledLinesHandled
+      : std::bool_constant<Diagnostics::none<typename UnhandledIndexes<Enabled, IsrList>::type>> {};
 
     // ---- interrupt priorities ---------------------------------------------------------------
     namespace Detail {
@@ -486,34 +583,6 @@ namespace Kvasir { namespace Startup { namespace ListRules {
         using type = typename Detail::WithLevels<Enabled, Set>::type;
     };
 
-    // Silent: a std::array<int, N> of the levels that do not count; Prios: an IsrPrioritiesIn
-    // result (one core's, or several cores' appended). Unknown levels are IsrLevelsKnown's.
-    template<auto Silent, typename Prios>
-    struct SingleIsrPriority;
-
-    template<auto Silent, typename... Ps>
-    struct SingleIsrPriority<Silent, brigand::list<Ps...>>
-      : std::bool_constant<(Detail::distinctLevels<Silent>(brigand::list<Ps...>{}) <= 1)> {};
-
-    // Served: a std::array<int, N> of the levels the entry has a context for. Unknown levels
-    // are IsrLevelsKnown's.
-    template<auto Served, auto Silent, typename Prios>
-    struct IsrPrioritiesServed;
-
-    template<auto Served, auto Silent, typename... Ps>
-    struct IsrPrioritiesServed<Served, Silent, brigand::list<Ps...>>
-      : std::bool_constant<((Ps::level == unknownIsrLevel || Detail::inLevelSet<Served>(Ps::level)
-                             || Detail::inLevelSet<Silent>(Ps::level))
-                            && ...)> {};
-
-    // Every enabled index at a level the core layer could read.
-    template<typename Prios>
-    struct IsrLevelsKnown;
-
-    template<typename... Ps>
-    struct IsrLevelsKnown<brigand::list<Ps...>>
-      : std::bool_constant<((Ps::level != unknownIsrLevel) && ...)> {};
-
     // The offending indexes, for the reports: the enabled indexes at a known level that is
     // neither served nor silent, every counted index when more than one counted level is in
     // use (each one is part of the conflict), and the indexes at an unknown level.
@@ -546,6 +615,25 @@ namespace Kvasir { namespace Startup { namespace ListRules {
         using type = brigand::flatten<
           brigand::list<Detail::IndexIf<(Ps::level == unknownIsrLevel), Ps::index>...>>;
     };
+
+    // The level rules as views of the offending indexes above. Silent: a std::array<int, N> of
+    // the levels that do not count; Prios: an IsrPrioritiesIn result (one core's, or several
+    // cores' appended). Unknown levels are IsrLevelsKnown's.
+    template<auto Silent, typename Prios>
+    struct SingleIsrPriority
+      : std::bool_constant<Diagnostics::none<typename MultiLevelIsrIndexes<Silent, Prios>::type>> {
+    };
+
+    // Served: a std::array<int, N> of the levels the entry has a context for.
+    template<auto Served, auto Silent, typename Prios>
+    struct IsrPrioritiesServed
+      : std::bool_constant<
+          Diagnostics::none<typename UnservedIsrIndexes<Served, Silent, Prios>::type>> {};
+
+    // Every enabled index at a level the core layer could read.
+    template<typename Prios>
+    struct IsrLevelsKnown
+      : std::bool_constant<Diagnostics::none<typename UnknownIsrLevelIndexes<Prios>::type>> {};
 
     // The IsrPrioritiesIn lists entry T's contract is held to, from the lists of every core
     // (brigand::list<primary list, each SecondaryCore's list...>): one per core for an entry
@@ -592,14 +680,152 @@ namespace Kvasir { namespace Startup { namespace ListRules {
           !declaresIsrContract<T> || (declaresIsrLevels<T> && declaresSingleIsrLevel<T>)
           || Detail::contractHoldsOnAll<T>(typename IsrPriorityGroupsFor<T, CoreLists>::type{})> {};
 
+    // Pair<X, SecondaryCore> per core 0 peripheral X a SecondaryCore's list needs (ListedOn<X,
+    // 0>) that is listed at or after that SecondaryCore.
+    template<template<typename> class IsSecondaryCore,
+             template<typename> class SecondaryPeripherals,
+             typename List>
+    using LateDependencies = typename Detail::LateDependenciesImpl<
+      IsSecondaryCore,
+      SecondaryPeripherals,
+      List,
+      std::make_index_sequence<brigand::size<List>::value>>::type;
+
     template<template<typename> class IsSecondaryCore,
              template<typename> class SecondaryPeripherals,
              typename List>
     struct DependenciesPrecedeLaunch
-      : Detail::DependenciesPrecedeLaunchImpl<
-          IsSecondaryCore,
-          SecondaryPeripherals,
-          List,
-          std::make_index_sequence<brigand::size<List>::value>> {};
+      : std::bool_constant<
+          Diagnostics::none<LateDependencies<IsSecondaryCore, SecondaryPeripherals, List>>> {};
+
+    // ---- the boot report (Runtime/BootReport.hpp, Runtime/BootGuard.hpp) --------------------------
+    template<typename T>
+    constexpr bool isBootReport = requires { requires T::isBootReport; };
+
+    template<typename T>
+    constexpr bool isBootReportInMain = requires { requires T::bootReportInMain; };
+
+    template<typename T>
+    constexpr bool isBootGuard = requires { requires T::isBootGuard; };
+
+    template<typename T>
+    constexpr bool isHealthService = requires { requires T::isHealthService; };
+
+    template<typename T>
+    constexpr bool isWatchdog = requires { requires T::isWatchdog; };
+
+    template<typename T>
+    constexpr bool isGatedWatchdog = requires { requires T::isGatedWatchdog; };
+
+    namespace Detail {
+        template<bool Reported, typename Out, typename... Ts>
+        struct GuardsAfterReportImpl {
+            using type = Out;
+        };
+
+        template<bool Reported, typename... Os, typename T, typename... Ts>
+        struct GuardsAfterReportImpl<Reported, brigand::list<Os...>, T, Ts...>
+          : GuardsAfterReportImpl<Reported || isBootReport<T>,
+                                  std::conditional_t<Reported && isBootGuard<T>,
+                                                     brigand::list<Os..., T>,
+                                                     brigand::list<Os...>>,
+                                  Ts...> {};
+
+        template<typename List>
+        struct GuardsAfterReportT;
+
+        template<typename... Ts>
+        struct GuardsAfterReportT<brigand::list<Ts...>>
+          : GuardsAfterReportImpl<false, brigand::list<>, Ts...> {};
+
+        // Pending: the services seen since the last report; a report moves them to Out.
+        template<typename Pending, typename Out, typename... Ts>
+        struct ServicesBeforeReportImpl {
+            using type = Out;
+        };
+
+        template<typename... Ps, typename... Os, typename T, typename... Ts>
+        struct ServicesBeforeReportImpl<brigand::list<Ps...>, brigand::list<Os...>, T, Ts...>
+          : ServicesBeforeReportImpl<std::conditional_t<isBootReport<T>,
+                                                        brigand::list<>,
+                                                        std::conditional_t<isHealthService<T>,
+                                                                           brigand::list<Ps..., T>,
+                                                                           brigand::list<Ps...>>>,
+                                     std::conditional_t<isBootReport<T>,
+                                                        brigand::list<Os..., Ps...>,
+                                                        brigand::list<Os...>>,
+                                     Ts...> {};
+
+        template<bool Serviced, typename Out, typename... Ts>
+        struct WatchdogsAfterServiceImpl {
+            using type = Out;
+        };
+
+        template<bool Serviced, typename... Os, typename T, typename... Ts>
+        struct WatchdogsAfterServiceImpl<Serviced, brigand::list<Os...>, T, Ts...>
+          : WatchdogsAfterServiceImpl<
+              Serviced || isHealthService<T>,
+              std::conditional_t<Serviced && isWatchdog<T> && !isGatedWatchdog<T>,
+                                 brigand::list<Os..., T>,
+                                 brigand::list<Os...>>,
+              Ts...> {};
+
+        template<typename List>
+        struct WatchdogsAfterServiceT;
+
+        template<typename... Ts>
+        struct WatchdogsAfterServiceT<brigand::list<Ts...>>
+          : WatchdogsAfterServiceImpl<false, brigand::list<>, Ts...> {};
+
+        template<typename List>
+        struct ServicesBeforeReportT;
+
+        template<typename... Ts>
+        struct ServicesBeforeReportT<brigand::list<Ts...>>
+          : ServicesBeforeReportImpl<brigand::list<>, brigand::list<>, Ts...> {};
+
+        template<typename Backend, typename List>
+        struct UnreportedBackendsT;
+
+        template<typename Backend, typename... Ts>
+        struct UnreportedBackendsT<Backend, brigand::list<Ts...>> {
+            using type
+              = std::conditional_t<(std::is_same_v<Backend, Ts> || ...)
+                                     && !((isBootReport<Ts> || isBootReportInMain<Ts>) || ...),
+                                   brigand::list<Backend>,
+                                   brigand::list<>>;
+        };
+    }   // namespace Detail
+
+    // Every BootGuard::Guard listed after a Boot::Report, in list order.
+    template<typename List>
+    using GuardsAfterReport = typename Detail::GuardsAfterReportT<List>::type;
+
+    template<typename List>
+    struct GuardBeforeReport : std::bool_constant<Diagnostics::none<GuardsAfterReport<List>>> {};
+
+    // Every Health::Service<> listed before a Boot::Report, in list order.
+    template<typename List>
+    using ServicesBeforeReport = typename Detail::ServicesBeforeReportT<List>::type;
+
+    template<typename List>
+    struct HealthServiceAfterReport
+      : std::bool_constant<Diagnostics::none<ServicesBeforeReport<List>>> {};
+
+    // Every chip watchdog listed after a Health::Service<>, in list order.
+    template<typename List>
+    using WatchdogsAfterService = typename Detail::WatchdogsAfterServiceT<List>::type;
+
+    template<typename List>
+    struct WatchdogBeforeHealthService
+      : std::bool_constant<Diagnostics::none<WatchdogsAfterService<List>>> {};
+
+    // The user log backend, when the list names it and no entry is the boot report or says main reports by hand.
+    template<typename Backend, typename List>
+    using UnreportedBackends = typename Detail::UnreportedBackendsT<Backend, List>::type;
+
+    template<typename Backend, typename List>
+    struct BootReportListed
+      : std::bool_constant<Diagnostics::none<UnreportedBackends<Backend, List>>> {};
 
 }}}   // namespace Kvasir::Startup::ListRules

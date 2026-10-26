@@ -139,14 +139,14 @@ bool randomRun(std::uint32_t seed,
 // every sequence of `depth` operations, each with every length
 template<std::size_t Size>
 bool exhaustive(int depth) {
-    constexpr int    Ops = 4;   // reserve(n)+commit(all), reserveMax+commit(n), read(n), write(n)
-    int const        choices = Ops * static_cast<int>(Size + 2);
+    constexpr int    ops = 4;   // reserve(n)+commit(all), reserveMax+commit(n), read(n), write(n)
+    int const        choices = ops * static_cast<int>(Size + 2);
     std::vector<int> seq(static_cast<std::size_t>(depth), 0);
     while(true) {
         Harness<Size> h{};
-        for(int c : seq) {
-            auto const n = static_cast<std::size_t>(c / Ops);
-            switch(c % Ops) {
+        for(int const c : seq) {
+            auto const n = static_cast<std::size_t>(c / ops);
+            switch(c % ops) {
             case 0:
                 h.reserve(n);
                 h.commit(n);
@@ -174,7 +174,7 @@ int main() {
     test("basics: reserve, commit, read in order; empty reserve when it does not fit");
     {
         A::BipBuffer<std::uint8_t, 8> b{};
-        auto                          s = b.writeReserve(6);
+        auto const                    s = b.writeReserve(6);
         CHECK(s.size() == 6);
         for(std::size_t i = 0; i != 6; ++i) { s[i] = static_cast<std::uint8_t>(i + 1); }
         b.writeCommit(6);
@@ -183,7 +183,8 @@ int main() {
         auto r = b.readReserve();
         CHECK(r.size() == 6 && r[0] == 1 && r[5] == 6);
         b.readCommit(4);
-        auto w = b.writeReserve(3);   // 2 left before the end -> [0, 3), below the reader at 4
+        auto const w
+          = b.writeReserve(3);   // 2 left before the end -> [0, 3), below the reader at 4
         CHECK(w.size() == 3 && w.data() == s.data());
         w[0] = 7;
         w[1] = 8;
@@ -239,16 +240,16 @@ int main() {
     test("two threads: length-prefixed frames, random reservations, all in order");
     {
         A::BipBuffer<std::uint8_t, 97, A::SyncThread> b{};
-        constexpr std::uint32_t                       Frames = 200'000;
+        constexpr std::uint32_t                       frames = 200'000;
         bool                                          good   = true;
         // no deadline: a broken buffer that stalls a side hangs until ctest's timeout; a broken
         // frame stops the reader, and `stop` then lets the producer go
         std::atomic<bool> stop{false};
         std::thread       producer{[&] {
             std::mt19937 rng{7};
-            for(std::uint32_t f = 0; f != Frames && !stop.load(std::memory_order_relaxed);) {
+            for(std::uint32_t f = 0; f != frames && !stop.load(std::memory_order_relaxed);) {
                 auto const len = static_cast<std::size_t>(1 + rng() % 20);
-                auto       s   = b.writeReserve(len + 1);
+                auto const s   = b.writeReserve(len + 1);
                 if(s.empty()) { continue; }
                 s[0] = static_cast<std::uint8_t>(len);
                 for(std::size_t i = 0; i != len; ++i) {
@@ -259,8 +260,8 @@ int main() {
             }
         }};
         std::uint32_t     got = 0;
-        while(got != Frames) {
-            auto r = b.readReserve();
+        while(got != frames) {
+            auto const r = b.readReserve();
             if(r.empty()) { continue; }
             // a frame never straddles the wrap: it was reserved contiguously
             auto const len = static_cast<std::size_t>(r[0]);
@@ -276,7 +277,7 @@ int main() {
         }
         stop.store(true, std::memory_order_relaxed);
         producer.join();
-        CHECK(good && got == Frames);
+        CHECK(good && got == frames);
     }
 
     return Kvasir::Test::report();

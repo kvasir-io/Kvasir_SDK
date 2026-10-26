@@ -98,7 +98,7 @@ static_assert(!ResourceCheck<list<Dma0,
                                           Ch<0>>>>::noDoubleClaim);
 
 // ---- rule 2: no resource provided twice -------------------------------------------------
-using Legacy = Provider<Ch<0>, Ch<1>, Ch<2>, Line<0>, Line<1>, Line<2>, Line<3>>;
+using WholeController = Provider<Ch<0>, Ch<1>, Ch<2>, Line<0>, Line<1>, Line<2>, Line<3>>;
 
 // two instances overlapping on a channel
 using DoubleChannel = ResourceCheck<list<Dma0, Provider<Ch<1>, Line<1>>>>;
@@ -111,13 +111,13 @@ static_assert(!ResourceCheck<list<Dma0,
                                   Provider<Ch<5>,
                                            Line<0>>>>::noDoubleProvide);
 
-// a legacy instance owns every line, so any second instance collides with it
-static_assert(!ResourceCheck<list<Legacy,
+// an instance that owns every line collides with any second instance
+static_assert(!ResourceCheck<list<WholeController,
                                   Provider<Ch<5>,
                                            Line<3>>>>::noDoubleProvide);
 
 // ... on the other core too: the controller is one piece of hardware
-static_assert(!ResourceCheck<list<Legacy>,
+static_assert(!ResourceCheck<list<WholeController>,
                              list<Provider<Ch<5>,
                                            Line<3>>>>::noDoubleProvide);
 
@@ -161,7 +161,7 @@ enum class Channel : unsigned { ch3 = 3 };
 static_assert(std::is_same_v<Resource<ChannelTag,
                                       3>,
                              Resource<ChannelTag,
-                                      3u>>);
+                                      3U>>);
 static_assert(std::is_same_v<Resource<ChannelTag,
                                       3>,
                              Resource<ChannelTag,
@@ -170,8 +170,8 @@ static_assert(std::is_same_v<Resource<ChannelTag,
                                       3,
                                       7>,
                              Resource<ChannelTag,
-                                      3u,
-                                      7u>>);
+                                      3U,
+                                      7U>>);
 
 // ---- payload: a resource may carry more than its key ------------------------------------
 // Identity is the whole type; the key is the tag and the first id.
@@ -631,19 +631,21 @@ static_assert(std::is_same_v<Dg::DependencyOffenders<TargetRemote>,
                              list<Pair<Sync,
                                        ListedHere<TargetClock>>>>);
 
-// the message: the rule's text, then the tag's own if it has one
+// the message (built only for an offender): the rule's text, what it is about, the peripheral, then the tag's own
+// note if it has one
 struct TalkativeTag {
     static constexpr char const* message = "one per group";
 };
 
-using TalkativeMsg = Dg::Message<Dg::DoubleProvide, Resource<TalkativeTag, 0>>;
-using PlainMsg     = Dg::Message<Dg::DoubleProvide, Ch<0>>;
-static_assert(std::string_view{TalkativeMsg{}.data(), TalkativeMsg{}.size()}
-              == "a hardware resource is provided (configured, owned) by two peripherals: one "
-                 "per group");
-static_assert(std::string_view{PlainMsg{}.data(),
-                               PlainMsg{}.size()}
-              == Dg::DoubleProvide::message);
+struct Talker {};
+
+using TalkativeMsg = Kvasir::Diagnostic::Message<
+  Dg::ReportText<Dg::DoubleProvide, Talker, Resource<TalkativeTag, 0>>>;
+using PlainMsg = Kvasir::Diagnostic::Message<Dg::ReportText<Dg::DoubleProvide, Talker, Ch<0>>>;
+static_assert(TalkativeMsg{}.view().starts_with(Dg::DoubleProvide::message));
+static_assert(TalkativeMsg{}.view().ends_with("Talker (one per group)"));
+static_assert(PlainMsg{}.view().starts_with(Dg::DoubleProvide::message));
+static_assert(PlainMsg{}.view().ends_with("Talker"));
 
 }   // namespace
 

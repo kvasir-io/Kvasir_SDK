@@ -1,12 +1,12 @@
 #pragma once
 
 #include "kvasir/Atomic/Queue.hpp"
-#include "kvasir/StartUp/Hooks.hpp"
+#include "kvasir/Port/Extends.hpp"
+#include "kvasir/Util/Config.hpp"
 
 #include <array>
 #include <atomic>
 #include <cassert>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -14,31 +14,35 @@
 #include <type_traits>
 #include <utility>
 
-#ifndef __arm__
+#ifdef __arm__
+    #include "core/Barrier.hpp"
+#else
     #include <thread>
 #endif
 
 namespace Kvasir::Multicore {
 
-namespace detail {
-    // The wake-up pair. On the target the event register makes a sev() that lands between
+namespace Detail {
+    // The wake-up pair (Core::sev/wfe on the target). On the target the event register makes a sev() that lands between
     // "check" and "wfe" return immediately, so there is no lost wake-up. On the host (unit
     // tests) a yield is the closest thing.
     //
     // The checks in front of the wfe() loops below (Future::wait, run) are plain loads on
     // purpose: on the RP2350 a successful exclusive store sets this core's own event, so a
     // check that did an RMW or took a lock would make the wfe() return at once and the
-    // loop spin (doc/multicore.md, "An exclusive store sets this core's own event").
+    // loop spin ("Whenever the global monitor state for a PE changes from Exclusive access to
+    // Open access, an event is generated and held in the Event register for that PE",
+    // Armv8-M ARM DDI0553B.y B9.3.1 RNWWH, md l.13038).
 #ifdef __arm__
-    inline void sev() { asm volatile("sev" ::: "memory"); }
+    [[gnu::always_inline]] inline void sev() { Kvasir::Core::sev(); }
 
-    inline void wfe() { asm volatile("wfe" ::: "memory"); }
+    [[gnu::always_inline]] inline void wfe() { Kvasir::Core::wfe(); }
 #else
     inline void sev() {}
 
     inline void wfe() { std::this_thread::yield(); }
 #endif
-}   // namespace detail
+}   // namespace Detail
 
 // Post a callable on one core, run it on the other, get the result back through a future.
 //
@@ -46,7 +50,7 @@ namespace detail {
 //       static constexpr std::size_t slots       = 8;    // tasks in flight
 //       static constexpr std::size_t captureSize = 32;   // bytes a task's captures may occupy
 //       static constexpr std::size_t resultSize  = 16;   // bytes a result may occupy
-//       // optional: using OverflowPolicy = Kvasir::Atomic::OverFlowPolicyIgnore;  (default: assert)
+//       // optional: using OverflowPolicy = Kvasir::Atomic::OverflowPolicyIgnore;  (default: assert)
 //   };
 //   using Core1Tasks = Kvasir::Multicore::TaskQueue<Core1TasksConfig>;
 //
@@ -59,7 +63,7 @@ namespace detail {
 //
 //   // consumer core
 //   [[noreturn]] void core1Main() { Core1Tasks::run(); }       // a dedicated worker
-//   while(true) { ...; Core1Tasks::poll(); ... }               // or one task per loop turn
+//   while(true) { ...; Core1Tasks::turn(); ... }               // or one task per loop turn
 //
 //   using Core1 = SecondaryCore<&core1Main, Core1Tasks, ...>;  // reset on every (re)launch
 //
@@ -70,33 +74,31 @@ namespace detail {
 //
 // One producer core and one consumer core per instance; the other direction is a second
 // instance. Posting from an ISR, or from both thread and ISR on the producer core, needs a
-// CriticalSection around post(): the free-slot scan and the ring push are single-producer.
+// critical section around post() (criticalSection<Tag>): the free-slot scan and the ring push are single-producer.
 //
 // A dropped future does not cancel anything: the task still runs, and the worker frees
 // the slot afterwards. That is the fire-and-forget pattern, not a leak.
 template<typename Config>
 struct TaskQueue {
-    static constexpr std::size_t Slots       = Config::slots;
-    static constexpr std::size_t CaptureSize = Config::captureSize;
-    static constexpr std::size_t ResultSize  = Config::resultSize;
+    static constexpr std::size_t slotsValue  = Config::slots;
+    static constexpr std::size_t captureSize = Config::captureSize;
+    static constexpr std::size_t resultSize  = Config::resultSize;
 
-    static_assert(Slots > 0 && Slots < 255,
+    static_assert(slotsValue > 0 && slotsValue < 255,
                   "1..254 slots; the index is a byte and 255 is 'none'");
 
+    template<typename C>
+    using OverflowPolicyOf = typename C::OverflowPolicy;
+
     // What post() does when every slot is taken, before returning an invalid future.
-    struct DefaultOverflow {
-        using OverflowPolicy = Kvasir::Atomic::OverFlowPolicyAssert;
-    };
+    using OverflowPolicy
+      = ::Kvasir::Config::TypeOr<Config, Kvasir::Atomic::OverflowPolicyAssert, OverflowPolicyOf>;
 
-    static constexpr bool HasOverflowPolicy = requires { typename Config::OverflowPolicy; };
-    using OverflowPolicy =
-      typename std::conditional_t<HasOverflowPolicy, Config, DefaultOverflow>::OverflowPolicy;
+    static constexpr std::uint8_t invalid = 0xFF;
 
-    static constexpr std::uint8_t Invalid = 0xFF;
-
-    // Capture and result storage alignment. Not std::max_align_t: on the ARM target that
-    // is 4 while a double or an int64 wants 8.
-    static constexpr std::size_t SlotAlignment = 8;
+    // Capture and result storage alignment: what a double or an int64 wants (std::max_align_t is 8 on the target
+    // too, lib/libc's stddef.h; spelled out so the slot layout does not depend on the libc).
+    static constexpr std::size_t slotAlignment = 8;
 
     enum State : std::uint8_t { free, posted, running, done, abandoned };
 
@@ -112,12 +114,12 @@ struct TaskQueue {
 
         Future(Future&& other) noexcept
           : index_{std::exchange(other.index_,
-                                 Invalid)} {}
+                                 invalid)} {}
 
         Future& operator=(Future&& other) noexcept {
             if(this != &other) {
                 release();
-                index_ = std::exchange(other.index_, Invalid);
+                index_ = std::exchange(other.index_, invalid);
             }
             return *this;
         }
@@ -125,7 +127,7 @@ struct TaskQueue {
         ~Future() { release(); }
 
         // False for the future post() returns when no slot was free.
-        [[nodiscard]] bool valid() const { return index_ != Invalid; }
+        [[nodiscard]] bool valid() const { return index_ != invalid; }
 
         // The task has run and its result is waiting.
         [[nodiscard]] bool ready() const {
@@ -135,7 +137,7 @@ struct TaskQueue {
         // Sleep until ready(). Every completion is followed by a sev().
         void wait() const {
             assert(valid());
-            while(!ready()) { detail::wfe(); }
+            while(!ready()) { Detail::wfe(); }
         }
 
         // Bounded wait on any clock with a static now(): true when ready before the deadline.
@@ -164,18 +166,18 @@ struct TaskQueue {
         }
 
     private:
-        std::uint8_t index_{Invalid};
+        std::uint8_t index_{invalid};
 
         R take() {
             Slot& s = slots[index_];
             if constexpr(std::is_void_v<R>) {
                 s.state.store(free, std::memory_order_release);
-                index_ = Invalid;
+                index_ = invalid;
             } else {
                 R value;
                 std::memcpy(&value, s.result.data(), sizeof(R));
                 s.state.store(free, std::memory_order_release);
-                index_ = Invalid;
+                index_ = invalid;
                 return value;
             }
         }
@@ -204,7 +206,7 @@ struct TaskQueue {
                 }
                 break;   // free or abandoned: nothing of ours left in it
             }
-            index_ = Invalid;
+            index_ = invalid;
         }
     };
 
@@ -218,17 +220,17 @@ struct TaskQueue {
         static_assert(std::is_trivially_copyable_v<Fn> && std::is_trivially_destructible_v<Fn>,
                       "task captures must be trivially copyable and trivially destructible: pass "
                       "indices or pointers to static objects, not owning handles");
-        static_assert(sizeof(Fn) <= CaptureSize, "task captures do not fit captureSize");
-        static_assert(alignof(Fn) <= SlotAlignment, "task captures are overaligned");
+        static_assert(sizeof(Fn) <= captureSize, "task captures do not fit captureSize");
+        static_assert(alignof(Fn) <= slotAlignment, "task captures are overaligned");
         if constexpr(!std::is_void_v<R>) {
             static_assert(std::is_trivially_copyable_v<R>,
                           "task results must be trivially copyable");
-            static_assert(sizeof(R) <= ResultSize, "task result does not fit resultSize");
-            static_assert(alignof(R) <= SlotAlignment, "task result is overaligned");
+            static_assert(sizeof(R) <= resultSize, "task result does not fit resultSize");
+            static_assert(alignof(R) <= slotAlignment, "task result is overaligned");
         }
 
         auto const index = acquireSlot();
-        if(index == Invalid) {
+        if(index == invalid) {
             OverflowPolicy{}();
             return Future<R>{};
         }
@@ -245,14 +247,14 @@ struct TaskQueue {
             }
         };
         pending.push(index);   // release: everything written above is visible to the worker
-        detail::sev();
+        Detail::sev();
         return Future<R>{index};
     }
 
     // Consumer core: run at most one task. True if one ran.
-    static bool poll() {
+    static bool turn() {
         std::uint8_t index{};
-        if(!pending.pop_into(index)) { return false; }
+        if(!pending.popInto(index)) { return false; }
 
         Slot& s = slots[index];
 
@@ -281,18 +283,18 @@ struct TaskQueue {
                 s.state.store(free, std::memory_order_release);
             }
         }
-        detail::sev();
+        Detail::sev();
         return true;
     }
 
     // once per main-loop turn: Startup::run<Kvasir::Hook::MainLoop>() / SecondaryCore::run calls
-    // it (StartUp/Hooks.hpp); a firmware that runs the hook must not also call it by hand
-    using Extends = Kvasir::Startup::Extend<Kvasir::Hook::MainLoop, &TaskQueue::poll>;
+    // it (Port/Extends.hpp); a firmware that runs the hook must not also call it by hand
+    using Extends = Kvasir::Startup::Extend<Kvasir::Hook::MainLoop, &TaskQueue::turn>;
 
     // Consumer core: a dedicated worker.
     [[noreturn]] static void run() {
         while(true) {
-            if(!poll()) { detail::wfe(); }
+            if(!turn()) { Detail::wfe(); }
         }
     }
 
@@ -323,26 +325,26 @@ struct TaskQueue {
 
 private:
     struct Slot {
-        alignas(SlotAlignment) std::array<std::byte,
-                                          CaptureSize> captures{};
-        alignas(SlotAlignment) std::array<std::byte,
-                                          ResultSize> result{};
+        alignas(slotAlignment) std::array<std::byte,
+                                          captureSize> captures{};
+        alignas(slotAlignment) std::array<std::byte,
+                                          resultSize> result{};
         void (*invoke)(std::byte*,
                        std::byte*){nullptr};
         std::atomic<std::uint8_t> state{free};
     };
 
-    static inline std::array<Slot, Slots> slots{};
+    static inline std::array<Slot, slotsValue> slots{};
 
-    // Capacity of a Queue<T, N> is N - 1.
-    static inline Kvasir::Atomic::Queue<std::uint8_t,
-                                        Slots + 1,
-                                        Kvasir::Atomic::OverFlowPolicyIgnore,
-                                        Kvasir::Atomic::SyncThread>
+    // room for every slot at once
+    static inline Kvasir::Atomic::Fifo<std::uint8_t,
+                                       slotsValue,
+                                       Kvasir::Atomic::OverflowPolicyIgnore,
+                                       Kvasir::Atomic::SyncThread>
       pending{};
 
     static std::uint8_t acquireSlot() {
-        for(std::size_t i = 0; i < Slots; ++i) {
+        for(std::size_t i = 0; i < slotsValue; ++i) {
             std::uint8_t expected = free;
             if(slots[i].state.compare_exchange_strong(expected,
                                                       posted,
@@ -352,7 +354,7 @@ private:
                 return static_cast<std::uint8_t>(i);
             }
         }
-        return Invalid;
+        return invalid;
     }
 };
 

@@ -1,57 +1,31 @@
-# Kvasir Main Configuration Main entry point for Kvasir embedded development framework Configures toolchain selection,
-# git submodules, and build options
+# Kvasir's entry point, included by a firmware before project(): the roots of the SDK, the chip package and the packages
+# next to them, the chip package (kvasir_chip()), the toolchain file (COMPILE_TARGET) and the build options. util.cmake,
+# included after project(), makes the images.
+
+# cmake_parse_arguments(PARSE_ARGV) defines a one-value keyword given "" (as empty; OLD leaves it undefined, and warns).
+# Set at the top of the SDK's two entry files, this one and util.cmake: an include() has a policy scope of its own, and
+# a function runs with the policies of the file that defined it.
+cmake_policy(SET CMP0174 NEW)
 
 set(kvasir_cmake_dir
     ${CMAKE_CURRENT_LIST_DIR}
     CACHE INTERNAL "")
 
-# Detect paths from multiple sources - check each variable independently Priority: 1. CMake variable, 2. Environment
-# variable, 3. Default/computed
+# the package contract: kvasir_resolve_root, kvasir_add_package, kvasir_core, kvasir_chip
+include(${CMAKE_CURRENT_LIST_DIR}/kvasir_chip.cmake)
 
-# Determine KVASIR_ROOT
-if(DEFINED KVASIR_ROOT)
-    set(KVASIR_ROOT_DIR ${KVASIR_ROOT})
-    set(KVASIR_ROOT_SOURCE "CMake variable")
-elseif(DEFINED ENV{KVASIR_ROOT})
-    set(KVASIR_ROOT_DIR $ENV{KVASIR_ROOT})
-    set(KVASIR_ROOT_SOURCE "environment")
-else()
-    set(KVASIR_ROOT_DIR ${CMAKE_CURRENT_LIST_DIR}/..)
-    set(KVASIR_ROOT_SOURCE "submodule mode")
-endif()
-get_filename_component(KVASIR_ROOT_DIR ${KVASIR_ROOT_DIR} ABSOLUTE)
-
-# Determine CHIP_ROOT
-if(DEFINED CHIP_ROOT)
-    set(CHIP_ROOT_DIR ${CHIP_ROOT})
-    set(CHIP_ROOT_SOURCE "CMake variable")
-elseif(DEFINED ENV{CHIP_ROOT})
-    set(CHIP_ROOT_DIR $ENV{CHIP_ROOT})
-    set(CHIP_ROOT_SOURCE "environment")
-else()
-    # Compute from sibling relationship
-    get_filename_component(KVASIR_PARENT_DIR ${KVASIR_ROOT_DIR} DIRECTORY)
-    set(CHIP_ROOT_DIR "${KVASIR_PARENT_DIR}/chip")
-    set(CHIP_ROOT_SOURCE "computed as sibling")
-endif()
-get_filename_component(CHIP_ROOT_DIR ${CHIP_ROOT_DIR} ABSOLUTE)
-
-# Report configuration
-message(STATUS "Kvasir: KVASIR_ROOT=${KVASIR_ROOT_DIR} (from ${KVASIR_ROOT_SOURCE})")
-message(STATUS "Kvasir: CHIP_ROOT=${CHIP_ROOT_DIR} (from ${CHIP_ROOT_SOURCE})")
-
-# Make these available globally
+# KVASIR_ROOT is the SDK this file belongs to; CHIP_ROOT, the chip package, has no default
+get_filename_component(KVASIR_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 set(KVASIR_ROOT
-    ${KVASIR_ROOT_DIR}
+    "${KVASIR_ROOT}"
     CACHE INTERNAL "" FORCE)
-set(CHIP_ROOT
-    ${CHIP_ROOT_DIR}
-    CACHE INTERNAL "" FORCE)
+message(STATUS "Kvasir: KVASIR_ROOT=${KVASIR_ROOT}")
+kvasir_resolve_root(CHIP_ROOT)
 
 # A tree of sibling checkouts can hand FetchContent dependencies (aglio, which uc_log fetches) its own checkouts: a
 # kvasir_fetch_links.cmake next to the SDK sets FETCHCONTENT_SOURCE_DIR_<NAME> for them (a workspace's link step writes
 # it, its unlink empties it). Found with a glob so that a file that appears or goes re-runs cmake.
-get_filename_component(_kvasir_tree_dir "${KVASIR_ROOT_DIR}" DIRECTORY)
+get_filename_component(_kvasir_tree_dir "${KVASIR_ROOT}" DIRECTORY)
 file(GLOB _kvasir_fetch_links CONFIGURE_DEPENDS "${_kvasir_tree_dir}/kvasir_fetch_links.cmake")
 if(_kvasir_fetch_links)
     include("${_kvasir_fetch_links}")
@@ -65,59 +39,21 @@ endif()
 include(${CMAKE_CURRENT_LIST_DIR}/tidy.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/cppcheck.cmake)
 
-find_package(Git QUIET REQUIRED)
-if(GIT_FOUND AND EXISTS "${PROJECT_SOURCE_DIR}/.git")
-    option(GIT_SUBMODULE "Check submodules during build" ON)
-    if(GIT_SUBMODULE)
-        message(STATUS "Submodule update")
-        execute_process(
-            COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive
-            WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
-            RESULT_VARIABLE GIT_SUBMOD_RESULT)
-        if(NOT GIT_SUBMOD_RESULT EQUAL "0")
-            message(
-                FATAL_ERROR "git submodule update --init failed with ${GIT_SUBMOD_RESULT}, please checkout submodules")
-        endif()
-    endif()
-endif()
-
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CROSSCOMPILING True)
 
-# <var> from the CMake variable, the environment, or the sibling directory <sibling> of KVASIR_ROOT
-function(kvasir_resolve_root var sibling)
-    if(DEFINED ${var} AND NOT "${${var}}" STREQUAL "")
-        set(_dir "${${var}}")
-        set(_from "CMake variable")
-    elseif(DEFINED ENV{${var}})
-        set(_dir "$ENV{${var}}")
-        set(_from "environment")
-    else()
-        get_filename_component(_parent "${KVASIR_ROOT}" DIRECTORY)
-        set(_dir "${_parent}/${sibling}")
-        set(_from "computed as sibling")
-    endif()
-    get_filename_component(_dir "${_dir}" ABSOLUTE)
-    message(STATUS "Kvasir: ${var}=${_dir} (from ${_from})")
-    set(${var}
-        "${_dir}"
-        CACHE INTERNAL "" FORCE)
-    set(${var}
-        "${_dir}"
-        PARENT_SCOPE)
-endfunction()
-
-# Registers a package for util.cmake to add after project(), unless <guard_target> already exists
-function(kvasir_add_package source_dir binary_name guard_target)
-    set_property(GLOBAL APPEND PROPERTY KVASIR_PACKAGES "${source_dir}|${binary_name}|${guard_target}")
-endfunction()
-
 add_subdirectory(${KVASIR_ROOT}/svd_converter ${CMAKE_BINARY_DIR}/kvasir_svd_converter)
+# the chip package calls kvasir_chip() (and its core.cmake kvasir_core()): cmake/kvasir_chip.cmake, included above; its
+# SVD, part and generated part SVD go through cmake/chip_package.cmake
+include(${CMAKE_CURRENT_LIST_DIR}/chip_package.cmake)
 include(${CHIP_ROOT}/cmake/chip.cmake)
+if(NOT TARGET kvasir_chip)
+    message(FATAL_ERROR "Kvasir: ${CHIP_ROOT}/cmake/chip.cmake did not call kvasir_chip() (cmake/kvasir_chip.cmake)")
+endif()
 
 set(COMPILE_TARGET
     arm_clang
-    CACHE STRING "Choose the compile target, options are: arm_clang arm_gcc clang gcc")
+    CACHE STRING "Choose the compile target, options are: arm_clang arm_gcc")
 set_property(CACHE COMPILE_TARGET PROPERTY STRINGS arm_clang arm_gcc)
 
 set(SWD_SPEED

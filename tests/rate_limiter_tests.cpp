@@ -1,8 +1,8 @@
 // Tests for Kvasir::RateLimiter / Kvasir::CountLimiter: storm-scoped backoff, one
 // detail line per new key, the burst budget, conserved dropped counts, storm
 // boundaries and the occurrence based variant.
-#include "kvasir/Util/RateLimiter.hpp"
-#include "kvasir_test.hpp"
+#include "kvasir/Log/RateLimiter.hpp"
+#include "test_harness.hpp"
 
 #include <chrono>
 #include <print>
@@ -17,9 +17,10 @@ using namespace std::chrono_literals;
 using tp = FakeClock::time_point;
 using ms = std::chrono::milliseconds;
 
-static tp at(ms t) { return tp{} + t; }
+namespace {
+tp at(ms t) { return tp{} + t; }
 
-static constexpr std::uint32_t K(std::uint32_t i) { return i; }
+constexpr std::uint32_t k(std::uint32_t i) { return i; }
 
 // Runs `keys` round-robin every `step` from 0 until `end` (exclusive), returns the
 // times of the allowed reports and their suppressed counts.
@@ -30,10 +31,10 @@ struct Run {
 };
 
 template<typename L>
-static Run storm(L&                                l,
-                 std::vector<std::uint32_t> const& keys,
-                 ms                                step,
-                 ms                                end) {
+Run storm(L&                                l,
+          std::vector<std::uint32_t> const& keys,
+          ms                                step,
+          ms                                end) {
     Run         r;
     std::size_t i = 0;
     for(ms t{0}; t < end; t += step, ++i) {
@@ -46,35 +47,35 @@ static Run storm(L&                                l,
     return r;
 }
 
-static void firstOccurrenceAtBoot() {
+void firstOccurrenceAtBoot() {
     test("firstOccurrenceAtBoot");
     RateLimiter<FakeClock> l;
 
-    auto const d = l.allow(K(1), at(100ms));
+    auto const d = l.allow(k(1), at(100ms));
     CHECK(d.allowed);
     CHECK_EQ(d.suppressed, 0U);
 }
 
-static void continuousStormBacksOff() {
+void continuousStormBacksOff() {
     test("continuousStormBacksOff");
     RateLimiter<FakeClock> l;
 
-    auto const r = storm(l, {K(1)}, 100ms, 60'000ms);
+    auto const r = storm(l, {k(1)}, 100ms, 60'000ms);
     CHECK(r.reported == std::vector<ms>{0ms, 1000ms, 3000ms, 7000ms, 15000ms, 31000ms});
     CHECK(r.suppressed == std::vector<std::uint32_t>{0, 9, 19, 39, 79, 159});
-    CHECK(!l.allow(K(1), at(62'900ms)));
-    CHECK(l.allow(K(1), at(63'000ms)));   // window capped at 32 s
+    CHECK(!l.allow(k(1), at(62'900ms)));
+    CHECK(l.allow(k(1), at(63'000ms)));   // window capped at 32 s
 }
 
-static void suppressedCountReturnedWithNextReport() {
+void suppressedCountReturnedWithNextReport() {
     test("suppressedCountReturnedWithNextReport");
     RateLimiter<FakeClock> l;
 
-    CHECK_EQ(l.allow(K(1), at(0ms)).suppressed, 0U);
-    for(int i = 0; i < 10; ++i) { (void)l.allow(K(1), at(ms{1 + i})); }
+    CHECK_EQ(l.allow(k(1), at(0ms)).suppressed, 0U);
+    for(int i = 0; i < 10; ++i) { (void)l.allow(k(1), at(ms{1 + i})); }
     CHECK_EQ(l.suppressed(), 10U);
 
-    auto const d = l.allow(K(1), at(1000ms));
+    auto const d = l.allow(k(1), at(1000ms));
     CHECK(d.allowed);
     CHECK_EQ(d.suppressed, 10U);
     CHECK_EQ(l.suppressed(), 0U);
@@ -82,44 +83,44 @@ static void suppressedCountReturnedWithNextReport() {
 
 // The measured failure: one absent device reported under alternating keys must not
 // restart the backoff on every key switch.
-static void alternatingKeysShareBackoff() {
+void alternatingKeysShareBackoff() {
     test("alternatingKeysShareBackoff");
     RateLimiter<FakeClock> l;
 
-    auto const r = storm(l, {K(1), K(2), K(3)}, 100ms, 60'000ms);
+    auto const r = storm(l, {k(1), k(2), k(3)}, 100ms, 60'000ms);
     CHECK(r.reported
           == std::vector<ms>{0ms, 100ms, 200ms, 1000ms, 3000ms, 7000ms, 15000ms, 31000ms});
 }
 
-static void newKeyMidStormOnce() {
+void newKeyMidStormOnce() {
     test("newKeyMidStormOnce");
     RateLimiter<FakeClock> l;
 
     std::vector<ms> reported;
     for(ms t{0}; t < 20'000ms; t += 100ms) {
-        if(l.allow(K(1), at(t))) { reported.push_back(t); }
+        if(l.allow(k(1), at(t))) { reported.push_back(t); }
         if(t == 5000ms || t == 5100ms || t == 9000ms) {
-            if(l.allow(K(2), at(t + 50ms))) { reported.push_back(t + 50ms); }
+            if(l.allow(k(2), at(t + 50ms))) { reported.push_back(t + 50ms); }
         }
     }
     // K(2): one detail line at 5050; the anchor schedule (7000, 15000) is untouched
     CHECK(reported == std::vector<ms>{0ms, 1000ms, 3000ms, 5050ms, 7000ms, 15000ms});
 }
 
-static void burstBudgetCapsDetails() {
+void burstBudgetCapsDetails() {
     test("burstBudgetCapsDetails");
     RateLimiter<FakeClock> l;
 
     int allowed = 0;
     for(std::uint32_t i = 1; i <= 6; ++i) {
-        if(l.allow(K(i), at(ms{i * 10}))) { ++allowed; }
+        if(l.allow(k(i), at(ms{i * 10}))) { ++allowed; }
     }
     CHECK_EQ(allowed, 4);
     CHECK_EQ(l.suppressed(), 2U);
-    CHECK(l.allow(K(5), at(1000ms)));   // budget refilled (and the anchor is due)
+    CHECK(l.allow(k(5), at(1000ms)));   // budget refilled (and the anchor is due)
 }
 
-static void detailsAreExactUpToSeenKeys() {
+void detailsAreExactUpToSeenKeys() {
     test("detailsAreExactUpToSeenKeys");
     RateLimiter<FakeClock, RateLimiterConfig{.burst = 8}> l;
 
@@ -140,86 +141,86 @@ static void detailsAreExactUpToSeenKeys() {
     CHECK(!l.allow(ks[3], at(230ms)));
 }
 
-static void quietGapResetsBackoff() {
+void quietGapResetsBackoff() {
     test("quietGapResetsBackoff");
     RateLimiter<FakeClock> l;
 
-    (void)storm(l, {K(1)}, 100ms, 8000ms);   // anchors 0, 1, 3, 7 -> backoff 3
-    CHECK(l.allow(K(1), at(72'000ms)));      // > 64 s quiet: a new storm
-    CHECK(!l.allow(K(1), at(72'900ms)));
-    CHECK(l.allow(K(1), at(73'000ms)));   // window is 1 s again
+    (void)storm(l, {k(1)}, 100ms, 8000ms);   // anchors 0, 1, 3, 7 -> backoff 3
+    CHECK(l.allow(k(1), at(72'000ms)));      // > 64 s quiet: a new storm
+    CHECK(!l.allow(k(1), at(72'900ms)));
+    CHECK(l.allow(k(1), at(73'000ms)));   // window is 1 s again
 }
 
-static void shortGapKeepsBackoff() {
+void shortGapKeepsBackoff() {
     test("shortGapKeepsBackoff");
     RateLimiter<FakeClock> l;
 
-    (void)storm(l, {K(1)}, 100ms, 8000ms);   // backoff 3, last anchor at 7000
-    CHECK(l.allow(K(1), at(30'000ms)));      // due (>= 8 s since 7000) -> backoff 4
-    CHECK(!l.allow(K(1), at(31'000ms)));
-    CHECK(!l.allow(K(1), at(45'900ms)));
-    CHECK(l.allow(K(1), at(46'000ms)));   // 16 s window
+    (void)storm(l, {k(1)}, 100ms, 8000ms);   // backoff 3, last anchor at 7000
+    CHECK(l.allow(k(1), at(30'000ms)));      // due (>= 8 s since 7000) -> backoff 4
+    CHECK(!l.allow(k(1), at(31'000ms)));
+    CHECK(!l.allow(k(1), at(45'900ms)));
+    CHECK(l.allow(k(1), at(46'000ms)));   // 16 s window
 }
 
-static void takeSummarySilentDuringStorm() {
+void takeSummarySilentDuringStorm() {
     test("takeSummarySilentDuringStorm");
     RateLimiter<FakeClock> l;
 
-    (void)storm(l, {K(1), K(2)}, 100ms, 10'000ms + 100ms);   // last occurrence at 10000
+    (void)storm(l, {k(1), k(2)}, 100ms, 10'000ms + 100ms);   // last occurrence at 10000
     CHECK_EQ(l.takeSummary(at(10'500ms)), 0U);
     CHECK_EQ(l.takeSummary(at(17'900ms)), 0U);   // repeat window is 8 s now
     CHECK(l.takeSummary(at(18'000ms)) > 0U);
     CHECK_EQ(l.takeSummary(at(18'001ms)), 0U);
 }
 
-static void countsConserved() {
+void countsConserved() {
     test("countsConserved");
     RateLimiter<FakeClock> l;
 
-    auto const    r         = storm(l, {K(1), K(2), K(3)}, 100ms, 60'000ms);
+    auto const    r         = storm(l, {k(1), k(2), k(3)}, 100ms, 60'000ms);
     std::uint32_t accounted = static_cast<std::uint32_t>(r.reported.size());
-    for(auto s : r.suppressed) { accounted += s; }
+    for(auto const s : r.suppressed) { accounted += s; }
     accounted += l.takeSummary(at(200'000ms));
     CHECK_EQ(accounted, r.occurrences);
 }
 
-static void resetIsFresh() {
+void resetIsFresh() {
     test("resetIsFresh");
     RateLimiter<FakeClock> l;
 
-    (void)storm(l, {K(1)}, 100ms, 8000ms);
+    (void)storm(l, {k(1)}, 100ms, 8000ms);
     l.reset();
-    CHECK(l.allow(K(1), at(8000ms)));
-    CHECK(!l.allow(K(1), at(8900ms)));
-    CHECK(l.allow(K(1), at(9000ms)));
+    CHECK(l.allow(k(1), at(8000ms)));
+    CHECK(!l.allow(k(1), at(8900ms)));
+    CHECK(l.allow(k(1), at(9000ms)));
 }
 
-static void customConfig() {
+void customConfig() {
     test("customConfig");
     RateLimiter<FakeClock, RateLimiterConfig{.windowMs = 100, .burst = 2, .maxBackoff = 1}> l;
 
-    CHECK(l.allow(K(1), at(0ms)));
-    CHECK(l.allow(K(2), at(1ms)));     // detail
-    CHECK(!l.allow(K(3), at(2ms)));    // burst 2
-    CHECK(l.allow(K(1), at(100ms)));   // anchor: window 100 ms -> backoff 1 (200 ms)
-    CHECK(!l.allow(K(1), at(299ms)));
-    CHECK(l.allow(K(1), at(300ms)));   // capped at 200 ms, not 400
-    CHECK(!l.allow(K(1), at(499ms)));
-    CHECK(l.allow(K(1), at(500ms)));
+    CHECK(l.allow(k(1), at(0ms)));
+    CHECK(l.allow(k(2), at(1ms)));     // detail
+    CHECK(!l.allow(k(3), at(2ms)));    // burst 2
+    CHECK(l.allow(k(1), at(100ms)));   // anchor: window 100 ms -> backoff 1 (200 ms)
+    CHECK(!l.allow(k(1), at(299ms)));
+    CHECK(l.allow(k(1), at(300ms)));   // capped at 200 ms, not 400
+    CHECK(!l.allow(k(1), at(499ms)));
+    CHECK(l.allow(k(1), at(500ms)));
 }
 
-static void allowWithoutTimeUsesClock() {
+void allowWithoutTimeUsesClock() {
     test("allowWithoutTimeUsesClock");
     RateLimiter<FakeClock> l;
 
     FakeClock::current = at(5000ms);
-    CHECK(l.allow(K(1)));
-    CHECK(!l.allow(K(1)));
+    CHECK(l.allow(k(1)));
+    CHECK(!l.allow(k(1)));
     FakeClock::current = at(6000ms);
-    CHECK(l.allow(K(1)));
+    CHECK(l.allow(k(1)));
 }
 
-static void keyMixing() {
+void keyMixing() {
     test("keyMixing");
     enum class Kind : std::uint8_t { a, b };
 
@@ -231,7 +232,7 @@ static void keyMixing() {
     static_assert(rateLimitKey(1, 2, 3) != 0);
 }
 
-static void countLimiterDoublingGaps() {
+void countLimiterDoublingGaps() {
     test("countLimiterDoublingGaps");
     CountLimiter<> l;
 
@@ -249,7 +250,7 @@ static void countLimiterDoublingGaps() {
     CHECK(d.allowed && d.suppressed == 4);
 }
 
-static void countLimiterGapCaps() {
+void countLimiterGapCaps() {
     test("countLimiterGapCaps");
     CountLimiter<CountLimiterConfig{.maxGap = 4}> l;
 
@@ -260,6 +261,8 @@ static void countLimiterGapCaps() {
     CHECK_EQ(reported, 5);   // 1st, +1, +2, +4, +4 ; the trailing +1 is still pending
     CHECK_EQ(l.suppressed(), 1U);
 }
+
+}   // namespace
 
 int main() {
     firstOccurrenceAtBoot();
@@ -280,10 +283,5 @@ int main() {
     countLimiterDoublingGaps();
     countLimiterGapCaps();
 
-    if(failures == 0) {
-        std::print("all rate limiter tests passed\n");
-    } else {
-        std::print("{} failure(s)\n", failures);
-    }
-    return failures == 0 ? 0 : 1;
+    return Kvasir::Test::report();
 }

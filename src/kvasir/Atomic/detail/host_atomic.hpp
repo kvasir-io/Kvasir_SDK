@@ -1,50 +1,43 @@
 #pragma once
 
-namespace Kvasir::Nvic {
-[[nodiscard]] inline bool primask() {
-    unsigned result = 0;
-    return result;
-}
+#include <cstdint>
 
-inline void disable_all() {}
+// The target's PRIMASK API (core/InterruptMask.hpp) as no-ops: the same names and shape - constexpr, IrqGuard neither
+// copied nor moved, IrqState a plain word (0: never masked) - so code written against it compiles on the host; there
+// is no interrupt to mask here. Pinned by tests/critical_section_tests.cpp (the target's twin of those asserts:
+// core_cortex_common tests/irq_state_syntax.cpp).
+namespace Kvasir::Core {
+[[nodiscard]] constexpr bool irqsMasked() { return false; }
 
-[[nodiscard]] inline bool disable_all_and_get_old_state() {
-    bool p = primask();
-    disable_all();
-    return !p;
-}
+constexpr void maskIrqs() {}
 
-inline void enable_all() {}
+constexpr void unmaskIrqs() {}
 
-struct Global {};
+struct IrqState {
+    std::uint32_t primask;
 
-// The target's shape (arm_Common_atomic.hpp), so code written against it compiles on the host;
-// there is no interrupt to mask here.
-template<typename T>
-struct InterruptGuard {
-private:
-    bool oldState;
+    [[nodiscard]] static constexpr IrqState saveAndMask() { return IrqState{0U}; }
 
-public:
-    InterruptGuard() { oldState = disable_all_and_get_old_state(); }
+    constexpr void restore() const {}
 
-    InterruptGuard(InterruptGuard const&)            = delete;
-    InterruptGuard& operator=(InterruptGuard const&) = delete;
-
-    ~InterruptGuard() {
-        if(oldState) { enable_all(); }
-    }
+    [[nodiscard]] constexpr bool wasMasked() const { return primask != 0U; }
 };
 
-struct InterruptGuardAlwaysUnlock {
+class IrqGuard {
+    IrqState state_;
+
 public:
-    InterruptGuardAlwaysUnlock() { disable_all(); }
+    constexpr IrqGuard() : state_{IrqState::saveAndMask()} {}
 
-    ~InterruptGuardAlwaysUnlock() { enable_all(); }
+    constexpr ~IrqGuard() { state_.restore(); }
+
+    IrqGuard(IrqGuard const&)            = delete;
+    IrqGuard& operator=(IrqGuard const&) = delete;
+
+    [[nodiscard]] constexpr bool wasMasked() const { return state_.primask != 0U; }
 };
-
-}   // namespace Kvasir::Nvic
+}   // namespace Kvasir::Core
 
 namespace Kvasir::Atomic {
-inline void onSecondaryCoreReset() {}
+inline void onOtherCoreStopped() {}
 }   // namespace Kvasir::Atomic

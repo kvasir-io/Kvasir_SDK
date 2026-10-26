@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <type_traits>
 
 namespace Kvasir::Multicore {
 
@@ -35,22 +36,26 @@ namespace Kvasir::Multicore {
 // tens of nanoseconds.
 template<typename Reference, typename Target>
 struct ClockSync {
+    // primarySync()'s best bracket starts at -1, "none yet": a tick type without a sign would make every round lose.
+    static_assert(std::is_signed_v<typename Reference::rep>,
+                  "ClockSync: the Reference clock's rep must be a signed type");
+
     // Startup: the Reference must be in core 0's list (and before the SecondaryCore, so it
     // is counting at launch), the Target in this list - a SysTick read from the other core
     // is silently that core's.
     using Claims = brigand::list<Startup::ListedOn<Reference, 0>, Startup::ListedHere<Target>>;
 
-    static constexpr int Rounds = 8;
+    static constexpr int rounds = 8;
     // Both sides bounded on their own clock: core 0 on Reference, core 1 on Target's raw
     // counter, which is running by the time secondarySync() is reached (its Startup entry
     // precedes this one). Generous, because core 1 may be bringing a display up first.
-    static constexpr auto PrimaryTimeout   = std::chrono::seconds{2};
-    static constexpr auto SecondaryTimeout = std::chrono::seconds{2};
+    static constexpr auto primaryTimeout   = std::chrono::seconds{2};
+    static constexpr auto secondaryTimeout = std::chrono::seconds{2};
 
     // Per round r the phase runs 4r+1 (core 1 arrived), 4r+2 (core 0 stamped), 4r+3
     // (core 1 answered), 4r+4 (core 0 closed the round: only then may core 1 open the
     // next, or core 0 could miss the answer). Final follows the last close.
-    static constexpr std::uint32_t Final = 4U * Rounds + 1U;
+    static constexpr std::uint32_t finalPhase = 4U * rounds + 1U;
 
     // Core 0, before the bootrom handshake: nothing else can be touching this.
     static void primaryPrepare() {
@@ -60,7 +65,7 @@ struct ClockSync {
 
     // Core 0, while core 1 runs its Startup list.
     [[nodiscard]] static bool primarySync() {
-        auto const deadline = Reference::now() + PrimaryTimeout;
+        auto const deadline = Reference::now() + primaryTimeout;
         auto const waitFor  = [&](std::uint32_t value) {
             while(phase.load(std::memory_order_acquire) != value) {
                 if(Reference::now() > deadline) { return false; }
@@ -69,7 +74,7 @@ struct ClockSync {
         };
 
         typename Reference::rep bestWidth = -1;
-        for(std::uint32_t r = 0; r < static_cast<std::uint32_t>(Rounds); ++r) {
+        for(std::uint32_t r = 0; r < static_cast<std::uint32_t>(rounds); ++r) {
             if(!waitFor(4U * r + 1U)) { return false; }
             auto const t0 = Reference::now().time_since_epoch().count();
             phase.store(4U * r + 2U, std::memory_order_release);
@@ -84,14 +89,14 @@ struct ClockSync {
             phase.store(4U * r + 4U, std::memory_order_release);
         }
         halfWidth = bestWidth / 2;
-        phase.store(Final, std::memory_order_release);
+        phase.store(finalPhase, std::memory_order_release);
         return true;
     }
 
     // Core 1, after its runtime inits: its clock is counting by now.
     [[nodiscard]] static bool secondarySync() {
         auto const deadline
-          = Target::raw() + std::chrono::duration_cast<typename Target::duration>(SecondaryTimeout);
+          = Target::raw() + std::chrono::duration_cast<typename Target::duration>(secondaryTimeout);
         auto const waitFor = [&](std::uint32_t value) {
             while(phase.load(std::memory_order_acquire) != value) {
                 if(Target::raw() > deadline) { return false; }
@@ -99,14 +104,14 @@ struct ClockSync {
             return true;
         };
 
-        for(std::uint32_t r = 0; r < static_cast<std::uint32_t>(Rounds); ++r) {
+        for(std::uint32_t r = 0; r < static_cast<std::uint32_t>(rounds); ++r) {
             if(r != 0 && !waitFor(4U * r)) { return false; }   // previous round closed
             phase.store(4U * r + 1U, std::memory_order_release);
             if(!waitFor(4U * r + 2U)) { return false; }
             raw[r] = Target::raw().count();
             phase.store(4U * r + 3U, std::memory_order_release);
         }
-        if(!waitFor(Final)) { return false; }
+        if(!waitFor(finalPhase)) { return false; }
         Target::syncTo(std::chrono::duration_cast<typename Target::duration>(
                          typename Reference::duration{refMid}),
                        typename Target::duration{raw[bestRound]});
@@ -123,7 +128,7 @@ struct ClockSync {
 private:
     static inline std::atomic<std::uint32_t>               phase{0};
     static inline std::atomic<bool>                        met{false};
-    static inline std::array<typename Target::rep, Rounds> raw{};
+    static inline std::array<typename Target::rep, rounds> raw{};
     static inline typename Reference::rep                  refMid{};
     static inline typename Reference::rep                  halfWidth{};
     static inline std::uint32_t                            bestRound{};

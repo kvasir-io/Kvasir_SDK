@@ -6,14 +6,6 @@
 
 using namespace Kvasir::Register;
 using namespace Kvasir::Test;
-using R = Recorder::Read;
-using W = Recorder::Write;
-
-template<typename T,
-         unsigned V>
-constexpr auto ctv() {
-    return Kvasir::Register::value<T, static_cast<T>(V)>();
-}
 
 // compile-time checks of the mask helpers
 static_assert(maskFromRange(7,
@@ -31,11 +23,10 @@ static_assert(maskFromRange(7,
                             12)
               == 0xF0FFU);
 static_assert(Kvasir::Register::Detail::maskStartsAt(0xFF00U) == 8U);
-static_assert(Kvasir::Register::Detail::onlyOneBitSet(0x200U));
-static_assert(!Kvasir::Register::Detail::onlyOneBitSet(0x300U));
 
+namespace {
 // set on a single read-write bit: RMW that only sets this bit
-static void setSingleBit() {
+void setSingleBit() {
     test("setSingleBit");
 
     recorder.setReadValue(CtrlReg::Addr::value, 0xAC);
@@ -49,7 +40,7 @@ static void setSingleBit() {
 }
 
 // clear on a single read-write bit: RMW that only clears this bit
-static void clearSingleBit() {
+void clearSingleBit() {
     test("clearSingleBit");
 
     recorder.setReadValue(CtrlReg::Addr::value, 0xFF);
@@ -63,7 +54,7 @@ static void clearSingleBit() {
 }
 
 // reset on a write-one-to-clear bit writes a one to exactly that bit
-static void resetWriteOneToClearBit() {
+void resetWriteOneToClearBit() {
     test("resetWriteOneToClearBit");
 
     recorder.setReadValue(CtrlReg::Addr::value, 0xF0);
@@ -77,14 +68,14 @@ static void resetWriteOneToClearBit() {
 }
 
 // set, clear and a field write to the same register merge into a single RMW
-static void setClearWriteMerge() {
+void setClearWriteMerge() {
     test("setClearWriteMerge");
 
-    using divT = typename decltype(CtrlReg::div)::DataType;
+    using DivT = typename decltype(CtrlReg::div)::DataType;
 
     recorder.setReadValue(CtrlReg::Addr::value, 0xFFFF);
 
-    apply(set(CtrlReg::en), clear(CtrlReg::irq), write(CtrlReg::div, ctv<divT, 0x7F>()));
+    apply(set(CtrlReg::en), clear(CtrlReg::irq), write(CtrlReg::div, ctv<DivT, 0x7F>()));
 
     // en=1, irq=0, div=0x7F, flag (bit 3) and bits 15..12 preserved
     checkActions({
@@ -95,7 +86,7 @@ static void setClearWriteMerge() {
 
 // covering all normal RW bits of MaskedReg: no read needed even for runtime values,
 // write-ignored-if-one bits are written as ones, write-ignored-if-zero bits as zeros
-static void maskedRegNoRmwWhenRwBitsCovered() {
+void maskedRegNoRmwWhenRwBitsCovered() {
     test("maskedRegNoRmwWhenRwBitsCovered");
 
     recorder.setReadValue(MaskedReg::Addr::value, 0xDEADBEEF);
@@ -109,7 +100,7 @@ static void maskedRegNoRmwWhenRwBitsCovered() {
 }
 
 // a partial write reads the register and only preserves the normal RW bits
-static void maskedRegPartialWrite() {
+void maskedRegPartialWrite() {
     test("maskedRegPartialWrite");
 
     recorder.setReadValue(MaskedReg::Addr::value, 0xDEADBEEF);
@@ -117,37 +108,37 @@ static void maskedRegPartialWrite() {
     apply(write(MaskedReg::low, runtimeValue(3)));
 
     // low=3, high preserved from the read (0xEF -> bits 3..2 = 0b11), bits 7..4 write
-    // one, everything above (including the w1c done flag) writes zero
+    // one, the w1c done flag writes zero, the reserved bits above go back as read
     checkActions({
       R{MaskedReg::Addr::value, 0xDEADBEEF},
-      W{MaskedReg::Addr::value,       0xFF}
+      W{MaskedReg::Addr::value, 0xDEADBEFF}
     });
 }
 
 // reset of a w1c flag inside the write-ignored-if-zero area: only that flag gets a one,
 // the normal RW bits are preserved via RMW
-static void maskedRegResetW1cFlag() {
+void maskedRegResetW1cFlag() {
     test("maskedRegResetW1cFlag");
 
     recorder.setReadValue(MaskedReg::Addr::value, 0xABCD);
 
     apply(reset(MaskedReg::done));
 
-    // done=1 (bit 8), low/high preserved (0xD), bits 7..4 write one
+    // done=1 (bit 8), low/high preserved (0xD), bits 7..4 write one, the reserved bits 31..9 as read
     checkActions({
       R{MaskedReg::Addr::value, 0xABCD},
-      W{MaskedReg::Addr::value,  0x1FD}
+      W{MaskedReg::Addr::value, 0xABFD}
     });
 }
 
 // compile-time writes to all RW bits of MaskedReg: single write, fixed bits filled in
-static void maskedRegCompileTimeWrite() {
+void maskedRegCompileTimeWrite() {
     test("maskedRegCompileTimeWrite");
 
-    using lowT  = typename decltype(MaskedReg::low)::DataType;
-    using highT = typename decltype(MaskedReg::high)::DataType;
+    using LowT  = typename decltype(MaskedReg::low)::DataType;
+    using HighT = typename decltype(MaskedReg::high)::DataType;
 
-    apply(write(MaskedReg::low, ctv<lowT, 1>()), write(MaskedReg::high, ctv<highT, 2>()));
+    apply(write(MaskedReg::low, ctv<LowT, 1>()), write(MaskedReg::high, ctv<HighT, 2>()));
 
     // low=1, high=2 -> bits 3..0 = 0b1001, bits 7..4 write one
     checkActions({
@@ -157,7 +148,7 @@ static void maskedRegCompileTimeWrite() {
 
 // clear on a oneToToggle bit must write the bit's current value back: 1 toggles the
 // bit to 0, 0 leaves it at 0 - either way the bit ends up cleared
-static void clearToggleBitThatIsSet() {
+void clearToggleBitThatIsSet() {
     test("clearToggleBitThatIsSet");
 
     recorder.setReadValue(ToggleReg::Addr::value, 1U << 5);
@@ -170,7 +161,7 @@ static void clearToggleBitThatIsSet() {
     });
 }
 
-static void clearToggleBitThatIsClear() {
+void clearToggleBitThatIsClear() {
     test("clearToggleBitThatIsClear");
 
     recorder.setReadValue(ToggleReg::Addr::value, 0);
@@ -185,7 +176,7 @@ static void clearToggleBitThatIsClear() {
 
 // clearing two toggle bits merges into a single read+write; the untouched toggle bits
 // of the register are written as zero (no change)
-static void clearTwoToggleBitsMerge() {
+void clearTwoToggleBitsMerge() {
     test("clearTwoToggleBitsMerge");
 
     // pin5 set, pin6 clear, unrelated toggle bit 0 set
@@ -202,7 +193,7 @@ static void clearTwoToggleBitsMerge() {
 
 // in a register without write-ignored masks the plain read-write neighbors are written
 // back unchanged
-static void clearTogglePreservesPlainNeighbors() {
+void clearTogglePreservesPlainNeighbors() {
     test("clearTogglePreservesPlainNeighbors");
 
     recorder.setReadValue(PlainToggleReg::Addr::value, 0xE3);   // tgl=1, plain bits 0xC3
@@ -217,7 +208,7 @@ static void clearTogglePreservesPlainNeighbors() {
 }
 
 // reset on a two-bit flag field clears both bits: every bit of the field written as 1
-static void resetMultiBitFlag() {
+void resetMultiBitFlag() {
     test("resetMultiBitFlag");
 
     recorder.setReadValue(FlagPairReg::Addr::value, 0x53);
@@ -232,48 +223,50 @@ static void resetMultiBitFlag() {
 
 // the identity table (svd_converter's identityOf is the same)
 namespace IdentityTable {
-using Kvasir::Register::AccessType;
-using Kvasir::Register::ModifiedWriteValueType;
-using Kvasir::Register::Detail::Identity;
-using Kvasir::Register::Detail::identityOf;
-static_assert(identityOf(AccessType::readOnly,
-                         ModifiedWriteValueType::normal)
-              == Identity::zero);
-static_assert(identityOf(AccessType::readWrite,
-                         ModifiedWriteValueType::oneToClear)
-              == Identity::zero);
-static_assert(identityOf(AccessType::writeOnly,
-                         ModifiedWriteValueType::oneToToggle)
-              == Identity::zero);
-static_assert(identityOf(AccessType::readWrite,
-                         ModifiedWriteValueType::zeroToClear)
-              == Identity::one);
-static_assert(identityOf(AccessType::readWrite,
-                         ModifiedWriteValueType::normal)
-              == Identity::none);
-static_assert(identityOf(AccessType::writeOnly,
-                         ModifiedWriteValueType::normal)
-              == Identity::none);
-static_assert(
-  Kvasir::Register::Detail::identityOfAccess<std::remove_cvref_t<decltype(CtrlReg::flag)>::Access>
-  == Identity::zero);
+    using Kvasir::Register::AccessType;
+    using Kvasir::Register::Identity;
+    using Kvasir::Register::identityOf;
+    using Kvasir::Register::ModifiedWriteValueType;
+    static_assert(identityOf(AccessType::readOnly,
+                             ModifiedWriteValueType::normal)
+                  == Identity::zero);
+    static_assert(identityOf(AccessType::readWrite,
+                             ModifiedWriteValueType::oneToClear)
+                  == Identity::zero);
+    static_assert(identityOf(AccessType::writeOnly,
+                             ModifiedWriteValueType::oneToToggle)
+                  == Identity::zero);
+    static_assert(identityOf(AccessType::readWrite,
+                             ModifiedWriteValueType::zeroToClear)
+                  == Identity::one);
+    static_assert(identityOf(AccessType::readWrite,
+                             ModifiedWriteValueType::normal)
+                  == Identity::none);
+    static_assert(identityOf(AccessType::writeOnly,
+                             ModifiedWriteValueType::normal)
+                  == Identity::none);
+    static_assert(
+      Kvasir::Register::identityOfAccess<std::remove_cvref_t<decltype(CtrlReg::flag)>::Access>
+      == Identity::zero);
 
-// MaskedReg's masks follow from its fields when bits 7..4 are a zero-to-* field (identity one);
-// as a plain field they do not
-constexpr std::array<unsigned, 4> maskedFields{0x3, 0xC, 0xF0, 0x100};
-constexpr std::array<Identity, 4> maskedIds{Identity::none,
-                                            Identity::none,
-                                            Identity::one,
-                                            Identity::zero};
-constexpr std::array<Identity, 4> maskedIdsPlain{Identity::none,
-                                                 Identity::none,
-                                                 Identity::none,
-                                                 Identity::zero};
-static_assert(Kvasir::Register::Detail::masksMatchFields<MaskedReg::Addr>(maskedFields,
-                                                                          maskedIds));
-static_assert(!Kvasir::Register::Detail::masksMatchFields<MaskedReg::Addr>(maskedFields,
-                                                                           maskedIdsPlain));
+    // MaskedReg's masks follow from its fields when bits 7..4 are a zero-to-* field (identity one);
+    // as a plain field they do not
+    constexpr std::array<unsigned, 4> maskedFields{0x3, 0xC, 0xF0, 0x100};
+    constexpr std::array<Identity, 4> maskedIds{Identity::none,
+                                                Identity::none,
+                                                Identity::one,
+                                                Identity::zero};
+    constexpr std::array<Identity, 4> maskedIdsPlain{Identity::none,
+                                                     Identity::none,
+                                                     Identity::none,
+                                                     Identity::zero};
+    static_assert(Kvasir::Register::masksMatchFields<MaskedReg::Addr>(maskedFields,
+                                                                      maskedIds));
+    static_assert(!Kvasir::Register::masksMatchFields<MaskedReg::Addr>(maskedFields,
+                                                                       maskedIdsPlain));
 }   // namespace IdentityTable
+
+}   // namespace
 
 int main() {
     setSingleBit();
@@ -290,9 +283,5 @@ int main() {
     maskedRegCompileTimeWrite();
     resetMultiBitFlag();
 
-    if(Kvasir::Test::failures != 0) {
-        std::print("{} checks failed\n", Kvasir::Test::failures);
-        return 1;
-    }
-    return 0;
+    return Kvasir::Test::report();
 }

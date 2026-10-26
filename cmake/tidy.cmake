@@ -1,117 +1,59 @@
-# Clang-Tidy Static Analysis Configuration Configures clang-tidy static analysis tool integration Provides functions to
-# enable modern C++ linting on targets
+# clang-tidy while compiling (USE_TIDY=ON): kvasir_add_tidy_flags(<target> <variant>) sets CXX_CLANG_TIDY on the images
+# of one variant (USE_TIDY_VARIANT, default debug) to the SDK's configuration file plus the firmware-only checks of
+# tools/tidy_firmware_checks.txt - the file and list tools/tidy.py uses. Findings are warnings in the build output of
+# the objects that are rebuilt. This is a convenience for the target being worked on, in a tree configured for it; the
+# gate is tools/tidy.py (`just tidy`): it sees every unit, drops findings of excluded headers by their primary location,
+# deduplicates and attributes them. cmake_helpers' target_add_tidy_flags(<target> <scope>) is another function: the host
+# builds of the same configure (uc_log, svd_converter) load it, so the names stay apart.
 
 set(USE_TIDY
-    false
-    CACHE BOOL "clang tidy")
-
-if(NOT DEFINED TIDY_HEADER_FILTER)
-    set(TIDY_HEADER_FILTER ".hpp")
-endif()
+    OFF
+    CACHE BOOL "run clang-tidy on the images of USE_TIDY_VARIANT while compiling them")
+set(USE_TIDY_VARIANT
+    "debug"
+    CACHE STRING "the image variant USE_TIDY tidies")
+get_filename_component(_kvasir_tidy_config "${CMAKE_CURRENT_LIST_DIR}/../.clang-tidy" ABSOLUTE)
+set(TIDY_CONFIG_FILE
+    "${_kvasir_tidy_config}"
+    CACHE FILEPATH "the clang-tidy configuration USE_TIDY passes with --config-file")
 
 if(USE_TIDY)
+    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        message(FATAL_ERROR "USE_TIDY needs a clang tree: clang-tidy cannot read a ${CMAKE_CXX_COMPILER_ID} "
+                            "command line (it would take the host's standard library)")
+    endif()
     find_program(
         CLANG_TIDY_EXE
         NAMES "clang-tidy"
         DOC "Path to clang-tidy executable")
-
     mark_as_advanced(FORCE CLANG_TIDY_EXE)
-
     if(NOT CLANG_TIDY_EXE)
-        message(FATAL_ERROR "clang-tidy not found.")
-    else()
-        set(common_clang_tidy ${CLANG_TIDY_EXE} -p=.)
-
-        set(common_clang_tidy_disabled_checks ${GLOBAL_COMMON_CLANG_TIDY_DISABLED_CHECKS})
-
-        set(cxx_clang_tidy_disabled_checks
-            cppcoreguidelines-pro-type-reinterpret-cast
-            readability-named-parameter
-            modernize-concat-nested-namespaces
-            modernize-use-trailing-return-type
-            cppcoreguidelines-macro-usage
-            cppcoreguidelines-pro-bounds-constant-array-index
-            cppcoreguidelines-non-private-member-variables-in-classes
-            cppcoreguidelines-pro-bounds-pointer-arithmetic
-            bugprone-reserved-identifier
-            bugprone-incorrect-roundings
-            cppcoreguidelines-c-copy-assignment-signature # already in misc-unconventional-assign-operator
-            cppcoreguidelines-avoid-c-arrays # already in modernize-avoid-c-arrays
-            cppcoreguidelines-avoid-magic-numbers # already in readability-magic-numbers
-            readability-misleading-indentation # TODO remove when constexpr bug is fixed
-            readability-braces-around-statements # TODO remove when constexpr bug is fixed
-            bugprone-suspicious-semicolon # TODO remove when constexpr bug is fixed
-            cppcoreguidelines-pro-type-member-init # TODO remove when template delegation constructor bug is fixed
-            modernize-avoid-c-arrays # TODO remove when template function to get size is fixed
-            readability-magic-numbers # TODO improve
-            cppcoreguidelines-pro-type-vararg # TODO improve
-            modernize-use-nodiscard # TODO improve
-            bugprone-dynamic-static-initializers
-            cppcoreguidelines-avoid-non-const-global-variables
-            readability-qualified-auto
-            readability-identifier-length
-            performance-enum-size
-            modernize-use-constraints
-            readability-function-cognitive-complexity
-            cppcoreguidelines-avoid-do-while
-            readability-redundant-casting
-            fuchsia-multiple-inheritance
-            cppcoreguidelines-pro-bounds-constant-array-index
-            modernize-type-traits
-            readability-duplicate-include
-            cppcoreguidelines-macro-to-enum
-            modernize-macro-to-enum
-            readability-convert-member-functions-to-static
-            readability-implicit-bool-conversion
-            bugprone-easily-swappable-parameters
-            cppcoreguidelines-avoid-const-or-ref-data-members
-            cppcoreguidelines-pro-type-const-cast
-            readability-redundant-inline-specifier
-            modernize-use-auto
-            cppcoreguidelines-rvalue-reference-param-not-moved
-            performance-no-int-to-ptr
-            bugprone-crtp-constructor-accessibility
-            readability-redundant-declaration
-            cppcoreguidelines-pro-bounds-array-to-pointer-decay
-            bugprone-forwarding-reference-overload
-            bugprone-branch-clone
-            bugprone-macro-parentheses
-            readability-simplify-boolean-expr
-            readability-function-size
-            ${GLOBAL_CXX_CLANG_TIDY_DISABLED_CHECKS})
-
-        set(enabled_clang_tidy_checks bugprone* clang-analyzer* cppcoreguidelines* modernize* performance* readability*)
-
-        list(JOIN enabled_clang_tidy_checks "," enabled_clang_tidy_checks_)
-
-        set(c_clang_tidy_disabled_checks ${GLOBAL_C_CLANG_TIDY_DISABLED_CHECKS})
-
-        list(TRANSFORM common_clang_tidy_disabled_checks PREPEND "-")
-        list(JOIN common_clang_tidy_disabled_checks "," common_clang_tidy_disabled_checks_)
-
-        list(TRANSFORM cxx_clang_tidy_disabled_checks PREPEND "-")
-        list(JOIN cxx_clang_tidy_disabled_checks "," cxx_clang_tidy_disabled_checks_)
-
-        list(TRANSFORM c_clang_tidy_disabled_checks PREPEND "-")
-        list(JOIN c_clang_tidy_disabled_checks "," c_clang_tidy_disabled_checks_)
-
-        list(JOIN common_clang_tidy ";" clang_tidy)
-        set(DO_CLANG_TIDY_CXX
-            ${clang_tidy}
-            -header-filter=${TIDY_HEADER_FILTER}
-            -checks=-*,${enabled_clang_tidy_checks_},${common_clang_tidy_disabled_checks_},${cxx_clang_tidy_disabled_checks_}
-            ${TIDY_EXTRA_ARGS})
-        set(DO_CLANG_TIDY_C
-            ${clang_tidy}
-            -header-filter=${TIDY_HEADER_FILTER}
-            -checks=-*,${enabled_clang_tidy_checks_},${common_clang_tidy_disabled_checks_},${c_clang_tidy_disabled_checks_}
-            ${TIDY_EXTRA_ARGS})
+        message(FATAL_ERROR "USE_TIDY: clang-tidy not found")
     endif()
+    if(NOT EXISTS "${TIDY_CONFIG_FILE}")
+        message(FATAL_ERROR "USE_TIDY: no clang-tidy configuration at ${TIDY_CONFIG_FILE}")
+    endif()
+    set(_kvasir_tidy_firmware_list "${CMAKE_CURRENT_LIST_DIR}/../tools/tidy_firmware_checks.txt")
+    set_property(
+        DIRECTORY
+        APPEND
+        PROPERTY CMAKE_CONFIGURE_DEPENDS "${_kvasir_tidy_firmware_list}")
+    file(STRINGS "${_kvasir_tidy_firmware_list}" _kvasir_tidy_lines)
+    set(_kvasir_tidy_firmware_checks)
+    foreach(_line IN LISTS _kvasir_tidy_lines)
+        string(REGEX REPLACE "#.*$" "" _line "${_line}")
+        string(STRIP "${_line}" _line)
+        if(_line)
+            list(APPEND _kvasir_tidy_firmware_checks "${_line}")
+        endif()
+    endforeach()
+    list(JOIN _kvasir_tidy_firmware_checks "," _kvasir_tidy_firmware_checks)
+    set(KVASIR_CLANG_TIDY_CXX "${CLANG_TIDY_EXE}" "--config-file=${TIDY_CONFIG_FILE}" "--quiet"
+                              "--checks=${_kvasir_tidy_firmware_checks}")
 endif()
 
-function(target_add_tidy_flags target)
-    if(USE_TIDY)
-        set_target_properties(${target} PROPERTIES CXX_CLANG_TIDY "${DO_CLANG_TIDY_CXX}")
-        set_target_properties(${target} PROPERTIES C_CLANG_TIDY "${DO_CLANG_TIDY_C}")
+function(kvasir_add_tidy_flags target variant)
+    if(USE_TIDY AND variant STREQUAL USE_TIDY_VARIANT)
+        set_target_properties(${target} PROPERTIES CXX_CLANG_TIDY "${KVASIR_CLANG_TIDY_CXX}")
     endif()
 endfunction()

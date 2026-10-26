@@ -1,25 +1,13 @@
-# Compiler Configuration Finalization Finalizes compiler flag setup by converting lists to CMake flag strings Sets all
-# compiler and linker flags for different build configurations
-
-set(emptylist)
+# The end of both toolchain files: the flag lists joined into CMAKE_<LANG>_FLAGS, and the per-configuration and linker
+# flag strings left empty (a variant's flags come from the variant table, never from CMAKE_BUILD_TYPE).
 
 list(JOIN cxx_flags " " CMAKE_CXX_FLAGS)
 list(JOIN c_flags " " CMAKE_C_FLAGS)
 list(JOIN asm_flags " " CMAKE_ASM_FLAGS)
 
-list(JOIN emptylist " " CMAKE_CXX_FLAGS_DEBUG)
-list(JOIN emptylist " " CMAKE_CXX_FLAGS_RELEASE)
-list(JOIN emptylist " " CMAKE_CXX_FLAGS_RELWITHDEBINFO)
-list(JOIN emptylist " " CMAKE_CXX_FLAGS_MINSIZEREL)
-
-list(JOIN emptylist " " CMAKE_C_FLAGS_DEBUG)
-list(JOIN emptylist " " CMAKE_C_FLAGS_RELEASE)
-list(JOIN emptylist " " CMAKE_C_FLAGS_RELWITHDEBINFO)
-list(JOIN emptylist " " CMAKE_C_FLAGS_MINSIZEREL)
-
-list(JOIN emptylist " " CMAKE_ASM_FLAGS_DEBUG)
-list(JOIN emptylist " " CMAKE_ASM_FLAGS_RELEASE)
-list(JOIN emptylist " " CMAKE_ASM_FLAGS_RELWITHDEBINFO)
-list(JOIN emptylist " " CMAKE_ASM_FLAGS_MINSIZEREL)
-
-list(JOIN emptylist " " CMAKE_EXE_LINKER_FLAGS)
+foreach(_lang CXX C ASM)
+    foreach(_config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+        set(CMAKE_${_lang}_FLAGS_${_config} "")
+    endforeach()
+endforeach()
+set(CMAKE_EXE_LINKER_FLAGS "")

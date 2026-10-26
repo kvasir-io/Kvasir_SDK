@@ -4,8 +4,8 @@
 Reads ELF files that are already built (llvm-readelf, llvm-objdump); builds nothing, touches no
 tree.
 
-  size_report.py snapshot -o before.json  fw_a/build_pico            fw_b/build
-  size_report.py snapshot -o after.json   pico=<scratch>/fw_a_pico  fw_b=<scratch>/fw_b
+  size_report.py snapshot -o before.json  fw_a/build_m0             fw_b/build
+  size_report.py snapshot -o after.json   m0=<scratch>/fw_a_m0      fw_b=<scratch>/fw_b
   size_report.py report   before.json                     # one markdown row per image
   size_report.py diff     before.json after.json          # per image, totals, symbols that moved
   size_report.py symbols  before.json 'fw_b/build/release' --top 40
@@ -37,6 +37,11 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+# importing a sibling tool writes no tools/__pycache__
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cxx_names import plain_name  # noqa: E402  the one C++-name shortener of the tools
 
 SKIP_DIRS = ("CMakeFiles", "_deps", "host_build", "__pycache__")
 RAM_SECTIONS = re.compile(r"^\.(data|bss|noInit\w*)$")
@@ -73,6 +78,8 @@ CALLS = (
     ("memmove", re.compile(r"^(memmove|__aeabi_memmove[48]?)$")),
     ("outlined", re.compile(r"^OUTLINED_FUNCTION_\d+$")),
 )
+# every count parse_calls writes (all of CALLS, then canary_functions): diff's call column
+CALL_COLUMNS = tuple(name for name, _ in CALLS) + ("canary_functions",)
 
 
 def tool(name: str) -> str:
@@ -83,50 +90,7 @@ def tool(name: str) -> str:
 
 
 def run(*cmd: str) -> str:
-    return subprocess.run(cmd, check=True, capture_output=True, text=True,
-                          errors="replace").stdout
-
-
-# spellings with <, > or ( that are part of a name, not template arguments or parameters
-KEPT_TOKENS = (("(anonymous namespace)", "\x01"), ("operator()", "operator\x02"),
-               ("operator<=>", "operator\x03"), ("operator<<", "operator\x04"),
-               ("operator>>", "operator\x05"), ("operator->", "operator\x06"),
-               ("operator<", "operator\x07"), ("operator>", "operator\x08"))
-
-
-def plain_name(name: str) -> str:
-    """`void a::B<c<int>, 3>::f<x>(d<e>, int) const` -> `a::B::f`: no template arguments, no
-    parameters, no return type. `(anonymous namespace)`, `operator()` and lambdas stay."""
-    for keep, token in KEPT_TOKENS:
-        name = name.replace(keep, token)
-    out, angle = [], 0
-    for c in name:
-        if c == "<":
-            angle += 1
-        elif c == ">":
-            angle = max(0, angle - 1)
-        elif angle == 0:
-            out.append(c)
-    name = "".join(out)
-    # parameters: cut at the first '(' that is not a lambda's `{lambda(...)#1}`
-    depth_brace = 0
-    for i, c in enumerate(name):
-        if c == "{":
-            depth_brace += 1
-        elif c == "}":
-            depth_brace -= 1
-        elif c == "(" and depth_brace == 0:
-            name = name[:i]
-            break
-    name = name.strip()
-    if " " in name and not name.startswith("operator"):
-        # a return type in front (`void f`), but not `operator new` / `unsigned int` casts
-        head, _, tail = name.rpartition(" ")
-        if not head.endswith("operator"):
-            name = tail
-    for keep, token in KEPT_TOKENS:
-        name = name.replace(token, keep)
-    return name
+    return subprocess.run(cmd, check=True, capture_output=True, text=True, errors="replace").stdout
 
 
 def bucket_of(name: str) -> str:
@@ -349,8 +313,7 @@ def cmd_diff(args: argparse.Namespace) -> None:
         total_b += ib["flash"]
         delta = ib["flash"] - ia["flash"]
         calls = ", ".join(f"{n} {signed(ib['calls'][n] - ia['calls'][n])}"
-                          for n in ("atomic", "unaligned", "div", "memcpy", "memset",
-                                    "outlined", "canary_functions")
+                          for n in CALL_COLUMNS
                           if ib["calls"][n] != ia["calls"][n])
         buckets = ", ".join(f"{n} {signed(bucket_total(ib, n) - bucket_total(ia, n))}"
                             for n in BUCKET_NAMES if bucket_total(ib, n) != bucket_total(ia, n))

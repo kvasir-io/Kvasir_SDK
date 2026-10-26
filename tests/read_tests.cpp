@@ -6,12 +6,11 @@
 
 using namespace Kvasir::Register;
 using namespace Kvasir::Test;
-using R = Recorder::Read;
-using W = Recorder::Write;
 
+namespace {
 template<typename Reg>
-static void singleRead() {
-    test("singleRead");
+void singleRead() {
+    testFor<Reg>("singleRead");
 
     apply(read(Reg::dat));
 
@@ -22,8 +21,8 @@ static void singleRead() {
 
 // multiple fields of the same register merge into a single read
 template<typename Reg>
-static void mergedReadsSameRegister() {
-    test("mergedReadsSameRegister");
+void mergedReadsSameRegister() {
+    testFor<Reg>("mergedReadsSameRegister");
 
     apply(read(Reg::dat, Reg::cmd, Reg::stop));
 
@@ -34,8 +33,8 @@ static void mergedReadsSameRegister() {
 
 // an injected register value must show up masked and shifted in the field result
 template<typename Reg>
-static void readValueInjection() {
-    test("readValueInjection");
+void readValueInjection() {
+    testFor<Reg>("readValueInjection");
 
     recorder.setReadValue(Reg::Addr::value, 0xABCD);
 
@@ -45,14 +44,21 @@ static void readValueInjection() {
     checkActions({
       R{Reg::Addr::value, 0xABCD}
     });
+
+    // the one-field conversion works on a const result too (it only reads the value)
+    recorder.setReadValue(Reg::Addr::value, 0xABCD);
+    auto const     result        = apply(read(Reg::dat));
+    unsigned const viaConversion = result;
+    CHECK_EQ(viaConversion, 0xCDU);
+    CHECK_EQ(static_cast<unsigned>(get(Reg::dat, result)), 0xCDU);
 }
 
 template<typename Reg>
-static void combinedReadsFromSameRegister() {
-    test("combinedReadsFromSameRegister");
+void combinedReadsFromSameRegister() {
+    testFor<Reg>("combinedReadsFromSameRegister");
 
-    using cmdT  = typename decltype(Reg::cmd)::DataType;
-    using stopT = typename decltype(Reg::stop)::DataType;
+    using CmdT  = typename decltype(Reg::cmd)::DataType;
+    using StopT = typename decltype(Reg::stop)::DataType;
 
     recorder.setReadValue(Reg::Addr::value, 0x3AB);   // dat=0xAB, cmd=1, stop=1
 
@@ -62,11 +68,11 @@ static void combinedReadsFromSameRegister() {
       R{Reg::Addr::value, 0x3AB}
     });
     CHECK_EQ(result[Reg::dat], 0xABU);
-    CHECK_EQ(result[Reg::cmd], static_cast<cmdT>(1));
-    CHECK_EQ(result[Reg::stop], static_cast<stopT>(1));
+    CHECK_EQ(result[Reg::cmd], static_cast<CmdT>(1));
+    CHECK_EQ(result[Reg::stop], static_cast<StopT>(1));
 }
 
-static void combinedReadsFromDifferentRegisters() {
+void combinedReadsFromDifferentRegisters() {
     test("combinedReadsFromDifferentRegisters");
 
     recorder.setReadValue(SimpleTestReg::Addr::value, 0x1AB);
@@ -82,7 +88,7 @@ static void combinedReadsFromDifferentRegisters() {
 }
 
 // two separate applies read two registers, each returning its injected value
-static void sequentialReadsFromDifferentRegisters() {
+void sequentialReadsFromDifferentRegisters() {
     test("sequentialReadsFromDifferentRegisters");
 
     recorder.setReadValue(SimpleTestReg::Addr::value, 0xAB);
@@ -100,11 +106,11 @@ static void sequentialReadsFromDifferentRegisters() {
 }
 
 // multiple fields from multiple registers: one read per register, fields merged
-static void complexCombinedReads() {
+void complexCombinedReads() {
     test("complexCombinedReads");
 
-    using cmdT  = typename decltype(SimpleTestReg::cmd)::DataType;
-    using stopT = typename decltype(SimpleTestReg::stop)::DataType;
+    using CmdT  = typename decltype(SimpleTestReg::cmd)::DataType;
+    using StopT = typename decltype(SimpleTestReg::stop)::DataType;
 
     recorder.setReadValue(SimpleTestReg::Addr::value, 0x3FF);   // dat=0xFF, cmd=1, stop=1
     recorder.setReadValue(SecondReg::Addr::value, 0xABCD);      // data=0xCD, status=0xAB
@@ -119,13 +125,13 @@ static void complexCombinedReads() {
     CHECK(readCount(SimpleTestReg::Addr::value) == 1);
     CHECK(readCount(SecondReg::Addr::value) == 1);
     CHECK_EQ(result[SimpleTestReg::dat], 0xFFU);
-    CHECK_EQ(result[SimpleTestReg::cmd], static_cast<cmdT>(1));
-    CHECK_EQ(result[SimpleTestReg::stop], static_cast<stopT>(1));
+    CHECK_EQ(result[SimpleTestReg::cmd], static_cast<CmdT>(1));
+    CHECK_EQ(result[SimpleTestReg::stop], static_cast<StopT>(1));
     CHECK_EQ(result[SecondReg::data], 0xCDU);
     CHECK_EQ(result[SecondReg::status], 0xABU);
 }
 
-static void threeRegisterSimpleReads() {
+void threeRegisterSimpleReads() {
     test("threeRegisterSimpleReads");
 
     recorder.setReadValue(SimpleTestReg::Addr::value, 0x12);
@@ -144,11 +150,11 @@ static void threeRegisterSimpleReads() {
     CHECK_EQ(result[ThirdReg::control], 0x56U);
 }
 
-static void threeRegisterMultipleFieldReads() {
+void threeRegisterMultipleFieldReads() {
     test("threeRegisterMultipleFieldReads");
 
-    using cmdT  = typename decltype(SimpleTestReg::cmd)::DataType;
-    using stopT = typename decltype(SimpleTestReg::stop)::DataType;
+    using CmdT  = typename decltype(SimpleTestReg::cmd)::DataType;
+    using StopT = typename decltype(SimpleTestReg::stop)::DataType;
 
     recorder.setReadValue(SimpleTestReg::Addr::value, 0x3AB);   // dat=0xAB, cmd=1, stop=1
     recorder.setReadValue(SecondReg::Addr::value, 0xCDEF);      // data=0xEF, status=0xCD
@@ -169,14 +175,16 @@ static void threeRegisterMultipleFieldReads() {
     CHECK(readCount(SecondReg::Addr::value) == 1);
     CHECK(readCount(ThirdReg::Addr::value) == 1);
     CHECK_EQ(result[SimpleTestReg::dat], 0xABU);
-    CHECK_EQ(result[SimpleTestReg::cmd], static_cast<cmdT>(1));
-    CHECK_EQ(result[SimpleTestReg::stop], static_cast<stopT>(1));
+    CHECK_EQ(result[SimpleTestReg::cmd], static_cast<CmdT>(1));
+    CHECK_EQ(result[SimpleTestReg::stop], static_cast<StopT>(1));
     CHECK_EQ(result[SecondReg::data], 0xEFU);
     CHECK_EQ(result[SecondReg::status], 0xCDU);
     CHECK_EQ(result[ThirdReg::control], 0x56U);
     CHECK_EQ(result[ThirdReg::config], 0x34U);
     CHECK_EQ(result[ThirdReg::mode], 0x12U);
 }
+
+}   // namespace
 
 int main() {
     singleRead<SimpleTestReg>();
@@ -197,9 +205,5 @@ int main() {
     threeRegisterSimpleReads();
     threeRegisterMultipleFieldReads();
 
-    if(Kvasir::Test::failures != 0) {
-        std::print("{} checks failed\n", Kvasir::Test::failures);
-        return 1;
-    }
-    return 0;
+    return Kvasir::Test::report();
 }

@@ -1,0 +1,84 @@
+name: Package conformance
+
+# Reusable: the conformance tree of a chip or core repository (its tests/conformance, built on this repository's
+# tests/conformance/conformance.cmake), with arm clang and arm gcc, once per variant. The tree is firmware-shaped: it
+# fetches Kvasir_SDK (master, with svd_converter, uc_log, cmake_git_version and the runtime libraries), kvasir_devices
+# and, for a core, a chip of that core (whose `core` becomes the checkout), converts the chip and core SVDs with the
+# write-only guard on, and compiles the contract TU, the driver instantiations and every public header alone for the
+# target. Building is the test; then ctest runs the tree's must-fail sets, if it has any, and clang-tidy reads the tree
+# (clang, first variant). The caller is checked out with its submodules (core, the commons).
+# Callers: the chip and core repositories' ci.yml / tests.yml, job `conformance`; a tree another repository holds (the
+# RP chips' one tree in chip_rp_common) is named by `source-dir` and configured with `cmake-args`.
+
+on:
+    workflow_call:
+        inputs:
+            variants:
+                description: 'JSON list of CONFORMANCE_VARIANT values, e.g. ["RP2350A","RP2350B"]; [""] for none'
+                required: false
+                type: string
+                default: '[""]'
+            source-dir:
+                description: 'the conformance tree: tests/conformance, or e.g. src/chip/rp_common/tests/conformance'
+                required: false
+                type: string
+                default: tests/conformance
+            cmake-args:
+                description: 'more configure arguments, e.g. -DCONFORMANCE_CHIP=rp2040'
+                required: false
+                type: string
+                default: ''
+
+jobs:
+    conformance:
+        name: ${{ matrix.compiler.name }}${{ matrix.variant && format(' {0}', matrix.variant) || '' }}
+        runs-on: ubuntu-latest
+        container:
+            image: archlinux:latest
+        strategy:
+            fail-fast: false
+            matrix:
+                compiler:
+                    - {name: clang, target: arm_clang, packages: clang llvm lld}
+                    - {name: gcc, target: arm_gcc, packages: arm-none-eabi-gcc arm-none-eabi-newlib}
+                variant: ${{ fromJSON(inputs.variants) }}
+
+        steps:
+            - name: Set up the toolchain
+              run: |
+                pacman -Syu --noconfirm --disable-download-timeout
+                pacman -S --noconfirm --disable-download-timeout git cmake ninja base-devel python ${{ matrix.compiler.packages }}
+
+            - name: Checkout repository
+              uses: actions/checkout@v6
+              with:
+                submodules: recursive
+
+            # the checkout belongs to the runner's user, the container runs as root: without this git refuses the
+            # repository ("dubious ownership"), cmake_git_version finds no git, and a TU that prints the version (a
+            # must-fail fixture's boot report) fails on its "git not found" deprecation under -Werror
+            - name: Configure git safe directory
+              run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+            - name: Configure
+              run: >
+                cmake -S ${{ inputs.source-dir }} -B build/conformance -G Ninja
+                -DCOMPILE_TARGET=${{ matrix.compiler.target }} ${{ inputs.cmake-args }}
+                ${{ matrix.variant && format('-DCONFORMANCE_VARIANT={0}', matrix.variant) || '' }}
+
+            - name: Build
+              run: cmake --build build/conformance -j"$(nproc)"
+
+            # a tree's must-fail sets (kvasir_conformance_must_fail: each case must fail with its own diagnostic); a tree
+            # without one has no tests
+            - name: Must-fail cases
+              run: ctest --test-dir build/conformance --output-on-failure
+
+            # clang-tidy (Kvasir_SDK master's tools/tidy.py and .clang-tidy) over the tree, clang and the first variant
+            # only: the package's findings fail, the SDK's and kvasir_devices' are counted as foreign
+            - name: clang-tidy
+              if: matrix.compiler.name == 'clang' && matrix.variant == fromJSON(inputs.variants)[0]
+              uses: kvasir-io/Kvasir_SDK/.github/actions/tidy@master
+              timeout-minutes: 30
+              with:
+                trees: build/conformance

@@ -13,7 +13,7 @@
 ///
 /// In every other variant Kvasir::Coverage is an empty entry: the same Startup list builds everywhere.
 namespace Kvasir {
-#if defined(KVASIR_COVERAGE)
+#ifdef KVASIR_COVERAGE
 namespace Coverage_detail {
     // compiler-rt/lib/profile/InstrProfilingInternal.h: the writer interface of the runtime
     struct IoVec {

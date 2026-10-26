@@ -1,0 +1,40 @@
+# Keep table of tools/compat_check.py for the library repositories (Kvasir_SDK with its submodules, the cores, the
+# chips, the family commons, kvasir_devices): the findings that are no backward compatibility, each with the reason
+# that makes it none. Keys as compat_check.py prints them; reasons are neutral (this file is part of a library).
+# There is no allow-list: a true compat leftover is deleted, every user moved. An entry whose finding is gone is STALE
+# and fails: remove it in the change that removed the finding.
+
+[keep]
+
+# --- [[deprecated]] as a compile-time warning (nothing deprecated: the attribute is the only portable warning) ------
+"chip_atsam_common/GclkIndexed.hpp: deprecated" = "a warning, not an error: a GCLK division above the datasheet's maximum factor is unmeasured silicon; the attribute names Generator and Div in the note"
+"Kvasir_SDK/cmake_git_version/templates/git_version_generated.hpp.in: deprecated" = "the build-time warning that the tree is no git checkout (version strings unknown)"
+
+# --- "old image": the image that ran before a flash or a debugger restart, a runtime fact ---------------------------
+"chip_rp2040/cmake/chip.cmake: old wording: old image" = "the flash sequence: core 1, launched by the image before the flash, runs on through the erase"
+"chip_rp2350/cmake/chip.cmake: old wording: old image" = "the flash sequence: core 1, launched by the image before the flash, runs on through the erase"
+"Kvasir_SDK/src/kvasir/StartUp/SecondaryCore.hpp: old wording: old image" = "a core-0-only debugger restart can meet core 1 still running the image before the restart"
+
+# --- test oracles: the replaced implementation, kept beside the new one as its reference (no product uses it) ------
+"core_cortex_common/tests/fault_decode_legacy.hpp: legacy" = "test oracle: the fault decoder the current one replaced"
+"core_cortex_common/tests/fault_decode_test.cpp: legacy" = "test oracle: compares the fault decoder with the one it replaced"
+
+# --- forwarding headers that are an API, not an old path -----------------------------------------------------------
+"core_cortex_{m0plus,m33,m4}/src/core/*.hpp: forwarding header" = "the per-core spelling core/<X>.hpp of the common implementation: a chip and its firmware include their core's header, the core says where it lives"
+
+# --- names brought into a namespace for its own declarations or as its public face (a second spelling by design) ---
+"chip_atsam_common/DMAC.hpp: alias: using TriggerSource = Sam::Package::Dmac::TriggerSource;" = "the DMAC front's name for the chip's trigger enum, which each chip's traits define"
+"chip_atsamc21/src/chip/Dpll.hpp: alias" = "the DPLL namespace's face of the family FDPLL (Reference) and the NVM wait states on the chip's clock limits (Supply, Rating, waitStates)"
+"chip_atsamd21/src/chip/Dpll.hpp: alias: using Reference = Impl::Reference;" = "the DPLL namespace's face of the family FDPLL"
+"chip_atsamd21/src/chip/ClockTree.hpp: alias" = "the NVM wait states on the chip's clock limits (Supply, Rating, waitStates), spelled in Nvm"
+"chip_atsam{c21,d21,e51}/src/chip/EIC_Traits.hpp: alias" = "the chip's EXTINT table is written with the family's two sentinels (none, notEncoded)"
+"kvasir_devices/src/kvasir/Devices/Display/{Co5300,St7789,St77916}.hpp: alias" = "a panel's command tables spell the shared DCS commands short (Dcs = Display::Dcs)"
+"kvasir_devices/src/kvasir/Devices/Engine/DeviceCore.hpp: alias: using detail::Answer;" = "the engine's public name of a description's answer type"
+"kvasir_devices/src/kvasir/Devices/Gnss/Ubx.hpp: alias" = "the UBX message fields' quantity types, spelled short in Ublox"
+"kvasir_devices/src/kvasir/Devices/I2C/Quantities.hpp: alias" = "the quantity types declared into Kvasir::I2C so a description writes them unqualified (the header's purpose)"
+"kvasir_devices/src/kvasir/Devices/I2C/Adapters/TouchController.hpp: alias" = "the touch controller's public names of the chips' identification and edge types"
+"kvasir_devices/src/kvasir/Devices/Quantities.hpp: alias" = "Kvasir::Units::si, the unit system the quantities are spelled in, and the default temperature and humidity quantity of the bus drivers"
+"Kvasir_SDK/src/kvasir/Atomic/CriticalSection.hpp: alias" = "the build's default policy (one per core configuration), and the documented spelling Kvasir::criticalSection of the function beside its policies in Atomic"
+"Kvasir_SDK/src/kvasir/Atomic/Sync.hpp: alias" = "the build's default queue synchronisation, one per core configuration"
+"Kvasir_SDK/src/kvasir/Register/Diagnostic.hpp: alias: using ::Kvasir::Diagnostic::Text;" = "the register diagnostics build their messages from Diagnostic::Text"
+"Kvasir_SDK/src/kvasir/StartUp/Checks.hpp: alias" = "the Startup checks build their reports from the resource diagnostics' pieces"

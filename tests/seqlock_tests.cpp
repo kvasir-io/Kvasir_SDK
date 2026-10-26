@@ -1,4 +1,4 @@
-#include "multicore_test.hpp"
+#include "test_harness.hpp"
 
 #include <array>
 #include <cstdint>
@@ -10,7 +10,7 @@ struct Probe {
     std::array<std::uint32_t, 64> words{};
 };
 
-constexpr std::uint32_t Publishes = 200'000;
+constexpr std::uint32_t publishes = 200'000;
 
 void noTornReads() {
     Kvasir::Test::test("reader never sees a torn snapshot");
@@ -29,10 +29,10 @@ void noTornReads() {
                     break;
                 }
             }
-            if(p.words[0] == Publishes - 1) { break; }
+            if(p.words[0] == publishes - 1) { break; }
         }
     }};
-    for(std::uint32_t i = 0; i < Publishes; ++i) {
+    for(std::uint32_t i = 0; i < publishes; ++i) {
         Probe p{};
         p.words.fill(i);
         box.publish(p);
@@ -57,5 +57,5 @@ void versionAndTryRead() {
 int main() {
     noTornReads();
     versionAndTryRead();
-    return Kvasir::Test::finish();
+    return Kvasir::Test::report();
 }

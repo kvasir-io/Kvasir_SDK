@@ -1,8 +1,8 @@
 // Kvasir::Control averages, median, ramp and tables.
-#include "kvasir/Util/Control/Average.hpp"
-#include "kvasir/Util/Control/Interpolate.hpp"
-#include "kvasir/Util/Control/Median.hpp"
-#include "kvasir/Util/Control/Ramp.hpp"
+#include "kvasir/Control/Average.hpp"
+#include "kvasir/Control/Interpolate.hpp"
+#include "kvasir/Control/Median.hpp"
+#include "kvasir/Control/Ramp.hpp"
 #include "test_harness.hpp"
 
 #include <array>
@@ -79,7 +79,7 @@ static_assert([] {
 static_assert(
   [] {
       Ctl::MedianOf<int, 5> m;
-      for(auto v : {3, 1000, 4, -900, 5}) { m.push(v); }
+      for(auto const v : {3, 1000, 4, -900, 5}) { m.push(v); }
       return m.value() == 4;
   }(),
   "outliers do not move the median");
@@ -117,69 +117,69 @@ static_assert(
   }(),
   "Ramp reaches the target exactly, never overshoots, up and down rates apart");
 
-constexpr float MinFadeStep{1.0f / 2048.0f};
+constexpr float minFadeStep{1.0f / 2048.0f};
 static_assert(Ctl::approach(0.5f,
                             0.5001f,
                             0.005f,
-                            MinFadeStep)
+                            minFadeStep)
                 == 0.5001f,
               "lands on the target");
 static_assert(Ctl::approach(0.5f,
                             0.5f,
                             0.005f,
-                            MinFadeStep)
+                            minFadeStep)
               == 0.5f);
 static_assert(Ctl::approach(0.2f,
                             0.9f,
                             1.0f,
-                            MinFadeStep)
+                            minFadeStep)
                 == 0.9f,
               "rate 1: no fade");
 static_assert(Ctl::approach(0.0f,
                             1.0f,
                             0.5f,
-                            MinFadeStep)
+                            minFadeStep)
               == 0.5f);
 static_assert(Ctl::approach(1.0f,
                             0.0f,
                             0.5f,
-                            MinFadeStep)
+                            minFadeStep)
               == 0.5f);
 
 // ---- interpolation -----------------------------------------------------------------------------
-constexpr std::array<Ctl::Point<std::int16_t, std::int16_t>, 4> Ntc{
+constexpr std::array<Ctl::Point<std::int16_t, std::int16_t>, 4> ntc{
   {{-400, 3900}, {0, 3100}, {250, 2048}, {1000, 380}}
 };
-static_assert(Ctl::interpolate<Ntc>(-400) == 3900 && Ctl::interpolate<Ntc>(0) == 3100
-                && Ctl::interpolate<Ntc>(250) == 2048 && Ctl::interpolate<Ntc>(1000) == 380,
+static_assert(Ctl::interpolate<ntc>(-400) == 3900 && Ctl::interpolate<ntc>(0) == 3100
+                && Ctl::interpolate<ntc>(250) == 2048 && Ctl::interpolate<ntc>(1000) == 380,
               "every knot");
-static_assert(Ctl::interpolate<Ntc>(-200) == 3500 && Ctl::interpolate<Ntc>(625) == 1214,
+static_assert(Ctl::interpolate<ntc>(-200) == 3500 && Ctl::interpolate<ntc>(625) == 1214,
               "between knots");
-static_assert(Ctl::interpolate<Ntc>(-1000) == 3900 && Ctl::interpolate<Ntc>(5000) == 380,
+static_assert(Ctl::interpolate<ntc>(-1000) == 3900 && Ctl::interpolate<ntc>(5000) == 380,
               "clamped outside");
 
-constexpr std::array<Ctl::Point<float, float>, 3> Curve{
+constexpr std::array<Ctl::Point<float, float>, 3> curve{
   {{0.0f, 0.0f}, {1.0f, 10.0f}, {3.0f, 30.0f}}
 };
-static_assert(Ctl::interpolate<Curve>(0.5f) == 5.0f && Ctl::interpolate<Curve>(2.0f) == 20.0f);
+static_assert(Ctl::interpolate<curve>(0.5f) == 5.0f && Ctl::interpolate<curve>(2.0f) == 20.0f);
 
-constexpr Ctl::UniformTable<float, 6> Horizontal{
+constexpr Ctl::UniformTable<float, 6> horizontal{
   0.0f,
   10.0f,
   {100.0f, 179.0f, 157.0f, 113.0f, 102.0f, 100.0f}
 };
-static_assert(Horizontal(0.0f) == 100.0f && Horizontal(10.0f) == 179.0f
-              && Horizontal(5.0f) == 139.5f);
-static_assert(Horizontal(-5.0f) == 100.0f && Horizontal(50.0f) == 100.0f
-                && Horizontal(70.0f) == 100.0f,
+static_assert(horizontal(0.0f) == 100.0f && horizontal(10.0f) == 179.0f
+              && horizontal(5.0f) == 139.5f);
+static_assert(horizontal(-5.0f) == 100.0f && horizontal(50.0f) == 100.0f
+                && horizontal(70.0f) == 100.0f,
               "clamped at both ends");
-static_assert(Horizontal(45.0f) == 101.0f);
+static_assert(horizontal(45.0f) == 101.0f);
 }   // namespace
 
 int main() {
     Kvasir::Test::test("filters at run time");
     Ctl::MedianOf<int, 3> m;
-    int volatile v = 7;
+    int const volatile v = 7;
     m.push(v);
     m.push(1);
     m.push(9);

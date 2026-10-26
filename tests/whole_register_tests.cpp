@@ -5,24 +5,23 @@
 
 #include <cstdint>
 #include <print>
+#include <type_traits>
 
 using namespace Kvasir::Register;
 using namespace Kvasir::Test;
-using R = Recorder::Read;
-using W = Recorder::Write;
 
 namespace {
 // a register whose upper bits are a key (as SCB AIRCR): writeWhole writes the word as given, nothing added
 struct KeyedReg {
     using Addr
-      = Address<0x40, 0x00000000, 0x00000000, std::uint32_t, RmwHazard<0xFFFF0000U, false>>;
+      = Address<0x120, 0x00000000, 0x00000000, std::uint32_t, Mode<{.mustSupply = 0xFFFF0000U}>>;
 
     static constexpr FieldLocation<Addr, maskFromRange(31, 0), ReadWriteAccess, std::uint32_t>
       FULLREGISTER{};
 };
 
 struct ReadOnlyReg {
-    using Addr = Address<0x44, 0x00000000, 0x00000000, std::uint32_t>;
+    using Addr = Address<0x124, 0x00000000, 0x00000000, std::uint32_t>;
 
     static constexpr FieldLocation<Addr, maskFromRange(31, 0), ReadOnlyAccess, std::uint32_t>
       FULLREGISTER{};
@@ -46,6 +45,17 @@ void writesAsGiven() {
     writeWhole(KeyedReg::FULLREGISTER, v);
     checkActions({
       W{KeyedReg::Addr::value, 0x05FA'0004U}
+    });
+}
+
+void wholeWriteOnlyAndReadOnly() {
+    test("writeWhole of a write-only FULLREGISTER, readWhole of a read-only one: one access each");
+    recorder.setReadValues(WholeReadOnlyReg::Addr::value, {0x0BADC0DEU});
+    writeWhole(WholeWriteOnlyReg::FULLREGISTER, runtimeValue(0x55U));
+    CHECK(readWhole(WholeReadOnlyReg::FULLREGISTER) == 0x0BADC0DEU);
+    checkActions({
+      W{WholeWriteOnlyReg::Addr::value,       0x55U},
+      R{ WholeReadOnlyReg::Addr::value, 0x0BADC0DEU}
     });
 }
 
@@ -97,9 +107,13 @@ static_assert(extract(SimpleTestReg::cmd,
 // bit<N>: one bit of a multi-bit field, a one-bit field of the same register and access. SM_ENABLE 3:0 read-write,
 // RESTART 7:4 write-one-to-set (writes of 0 ignored), everything else reserved.
 struct SmReg {
-    using Addr = Address<0x80, 0xFFFFFFF0U, 0x00000000, std::uint32_t, WriteBackActs<0x000000F0U>>;
+    using Addr = Address<0x128,
+                         0xFFFFFFF0U,
+                         0x00000000,
+                         std::uint32_t,
+                         Mode<{.writeBackActs = 0x000000F0U}>>;
     static constexpr FieldLocation<Addr, maskFromRange(3, 0), ReadWriteAccess, std::uint32_t>
-      sm_enable{};
+      smEnable{};
     static constexpr FieldLocation<
       Addr,
       maskFromRange(7, 4),
@@ -108,30 +122,30 @@ struct SmReg {
       restart{};
 };
 
-static_assert(decltype(bit<2>(SmReg::sm_enable))::Mask == 0x4U
-              && decltype(bit<3>(SmReg::restart))::Mask == 0x80U);
+static_assert(decltype(bit<2>(SmReg::smEnable))::mask == 0x4U
+              && decltype(bit<3>(SmReg::restart))::mask == 0x80U);
 static_assert(std::is_same_v<decltype(bit<1>(SmReg::restart))::Access,
                              decltype(SmReg::restart)::Access>,
               "bit<N> keeps the field's write semantics");
 
 void bitOfAField() {
     test("bit<N>: set/clear one bit of a field; a one-to-set bit is never written back");
-    constexpr unsigned V
+    constexpr unsigned v
       = 0xAB00'00F9U;   // reserved bits set, a restart bit reads 1, SM_ENABLE 0b1001
-    recorder.setReadValues(SmReg::Addr::value, {V, V, V, V});
-    apply(set(bit<1>(SmReg::sm_enable)));
-    apply(clear(bit<3>(SmReg::sm_enable)));
+    recorder.setReadValues(SmReg::Addr::value, {v, v, v, v});
+    apply(set(bit<1>(SmReg::smEnable)));
+    apply(clear(bit<3>(SmReg::smEnable)));
     apply(
       set(bit<2>(SmReg::restart)));   // keeps SM_ENABLE: a read, the other restart bits written 0
-    CHECK(get<0>(apply(read(bit<0>(SmReg::sm_enable)))) == 1U);
+    CHECK(get<0>(apply(read(bit<0>(SmReg::smEnable)))) == 1U);
     checkActions({
-      R{SmReg::Addr::value,                    V},
-      W{SmReg::Addr::value,  (V & ~0xF0U) | 0x2U},
-      R{SmReg::Addr::value,                    V},
-      W{SmReg::Addr::value,   V & ~0xF0U & ~0x8U},
-      R{SmReg::Addr::value,                    V},
-      W{SmReg::Addr::value, (V & ~0xF0U) | 0x40U},
-      R{SmReg::Addr::value,                    V}
+      R{SmReg::Addr::value,                    v},
+      W{SmReg::Addr::value,  (v & ~0xF0U) | 0x2U},
+      R{SmReg::Addr::value,                    v},
+      W{SmReg::Addr::value,   v & ~0xF0U & ~0x8U},
+      R{SmReg::Addr::value,                    v},
+      W{SmReg::Addr::value, (v & ~0xF0U) | 0x40U},
+      R{SmReg::Addr::value,                    v}
     });
 }
 
@@ -151,18 +165,64 @@ void arrayIndexedAtRunTime() {
       R{0x118, 0xAB}
     });
 }
+
+// RegisterTraits: the same facts from an Address, a FieldLocation of it and an Action on it
+struct HalfReg {
+    using Addr = Address<0x12C, 0x0000FF00, 0x00000000, std::uint16_t>;
+
+    static constexpr FieldLocation<Addr, maskFromRange(7, 0), ReadWriteAccess, std::uint8_t> low{};
+};
+
+using HalfField = std::remove_cvref_t<decltype(HalfReg::low)>;
+static_assert(distinctFromShared<KeyedReg,
+                                 ReadOnlyReg,
+                                 ArrayReg<0>,
+                                 ArrayReg<1>,
+                                 ArrayReg<2>,
+                                 ArrayReg<3>,
+                                 SmReg,
+                                 HalfReg>);
+static_assert(RegisterTraits<HalfReg::Addr>::address == 0x12CU);
+static_assert(RegisterTraits<HalfField>::address == 0x12CU);
+static_assert(RegisterTraits<decltype(read(HalfReg::low))>::address == 0x12CU);
+static_assert(std::is_same_v<RegisterTraits<HalfReg::Addr>::RegType,
+                             std::uint16_t>);
+static_assert(std::is_same_v<RegisterTraits<HalfField>::RegType,
+                             std::uint16_t>);
+static_assert(std::is_same_v<RegisterTraits<decltype(read(HalfReg::low))>::RegType,
+                             std::uint16_t>);
+static_assert(RegisterTraits<HalfField>::writeIgnoredIfZeroMask == 0x0000FF00U);
+static_assert(RegisterTraits<HalfField>::allBitsSetMask == 0xFFFFU);
+static_assert(std::is_same_v<decltype(RegisterTraits<HalfField>::read()),
+                             std::uint16_t>);
+
+// a register picked at run time: fold over the candidates, read the match, one read of it
+template<typename... Regs>
+std::uint32_t readPicked(unsigned which) {
+    std::uint32_t word = 0;
+    unsigned      i    = 0;
+    (void)((i++ == which && (word = RegisterTraits<typename Regs::Addr>::read(), true)) || ...);
+    return word;
+}
+
+void registerPickedAtRunTime() {
+    test("RegisterTraits: a register picked at run time is one read of it");
+    recorder.setReadValues(HalfReg::Addr::value, {0xBEEFU});
+    CHECK(readPicked<ReadOnlyReg, HalfReg>(runtimeValue(1U)) == 0xBEEFU);
+    checkActions({
+      R{HalfReg::Addr::value, 0xBEEFU}
+    });
+}
 }   // namespace
 
 int main() {
     readsOnce();
     writesAsGiven();
+    wholeWriteOnlyAndReadOnly();
     writesOneLane();
     arrayIndexedAtRunTime();
     bitOfAField();
+    registerPickedAtRunTime();
 
-    if(Kvasir::Test::failures != 0) {
-        std::print("{} checks failed\n", Kvasir::Test::failures);
-        return 1;
-    }
-    return 0;
+    return Kvasir::Test::report();
 }

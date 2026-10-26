@@ -3,12 +3,12 @@
 #include <algorithm>
 
 namespace Kvasir {
-template<typename ValueType, ValueType min, ValueType max>
+template<typename ValueType, ValueType Min, ValueType Max>
 struct SaturatingValue {
 private:
     ValueType v{};
 
-    static constexpr ValueType clamped(ValueType vv) { return std::clamp(vv, min, max); }
+    static constexpr ValueType clamped(ValueType vv) { return std::clamp(vv, Min, Max); }
 
 public:
     constexpr auto operator<=>(SaturatingValue const&) const = default;
@@ -19,15 +19,15 @@ public:
 
     constexpr operator ValueType() const { return v; }
 
-    constexpr ValueType value() const { return v; }
+    [[nodiscard]] constexpr ValueType value() const { return v; }
 
     constexpr SaturatingValue& operator++() {
-        if(v != max) { ++v; }
+        if(v != Max) { ++v; }
         return *this;
     }
 
     constexpr SaturatingValue& operator--() {
-        if(v != min) { --v; }
+        if(v != Min) { --v; }
         return *this;
     }
 
@@ -35,9 +35,9 @@ public:
     constexpr SaturatingValue& operator+=(U vv) {
         if(__builtin_add_overflow(v, vv, &v)) {
             if(vv > 0) {
-                v = max;
+                v = Max;
             } else {
-                v = min;
+                v = Min;
             }
         } else {
             v = clamped(v);
@@ -49,9 +49,9 @@ public:
     constexpr SaturatingValue& operator-=(U vv) {
         if(__builtin_sub_overflow(v, vv, &v)) {
             if(vv < 0) {
-                v = max;
+                v = Max;
             } else {
-                v = min;
+                v = Min;
             }
         } else {
             v = clamped(v);

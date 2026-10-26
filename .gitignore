@@ -1,4 +1,8 @@
 # Build directories (any depth, any suffix, e.g. build/, build_tsan/, build-debug/)
 [Bb]uild*/
-justfile
 __pycache__/
+.pytest_cache/
+# shell logs
+*.log
+# written into the working directory by uc_log/jlink/tests/jlink_tests.cpp
+jlink_test_ram_image.hex

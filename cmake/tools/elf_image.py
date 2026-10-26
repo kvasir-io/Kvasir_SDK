@@ -2,7 +2,7 @@
 """Flash artefacts of a Kvasir image from its load view: what the ELF's program headers say is loaded.
 
     elf_image.py <elf> --out-prefix <dir>/<target> [--uf2-family 0xE48BFF59] [--objcopy llvm-objcopy]
-                 [--eeprom-section .eeprom] [--list]
+                 [--eeprom-section .eeprom] [--list] [--delete-on-failure]
 
 Selection (elf2bin's "load view", arm-toolchain arm-software/shared/elf2bin): every SHF_ALLOC section with file
 contents (not NOBITS, size > 0) that lies inside a PT_LOAD segment with p_filesz > 0 is part of the image, at its load
@@ -20,6 +20,13 @@ e_entry != 0, then EOF. The .uf2 is a 256-byte page grid, uncovered bytes 0x00 (
 every block page aligned). _flash.elf is `objcopy --only-section` with the selected names, no empty PT_LOAD left
 (picotool rejects those) and no PT_LOAD with a hole between two sections larger than the second one's alignment
 (picotool seal rejects those). --list prints the selected sections and exits.
+
+The image end check: `_LINKER_image_end_flash_` (Kvasir_SDK linker/common.ld, the end of the flash image that Kvasir
+code reads) is wrong when a selected section other than the EEPROM one ends past it in flash - its load address below
+`_LINKER_INTERN_rom_end_` (common_flash.ld): the chip's linker script loads a section after .data without moving
+`_LINKER_INTERN_image_end_flash_`. Exit code 1, nothing written. A RAM-only image has the symbol 0 and is not checked.
+Exit code 2: not a linked ELF32 file, or one without the symbols (its linker script does not include common.ld).
+--delete-on-failure removes the ELF on exit 1 and 2, as the other post-link checks do.
 """
 
 import argparse
@@ -28,59 +35,37 @@ import subprocess
 import sys
 from pathlib import Path
 
-PT_LOAD = 1
-SHT_NOBITS = 8
-SHF_WRITE = 0x1
-SHF_ALLOC = 0x2
+sys.dont_write_bytecode = True      # no __pycache__ in cmake/tools
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from kvasir_elf import PT_LOAD, SHF_ALLOC, SHT_NOBITS, Elf  # noqa: E402
+
+IMAGE_END = '_LINKER_image_end_flash_'
+ROM_END = '_LINKER_INTERN_rom_end_'
 
 
-class Elf:
-    def __init__(self, data):
-        if data[:4] != b'\x7fELF' or data[4] != 1 or data[5] != 1:
-            raise ValueError('not a little-endian ELF32 file')
-        self.data = data
-        (self.entry, phoff, shoff) = struct.unpack_from('<III', data, 24)
-        (phentsize, phnum, shentsize, shnum,
-         shstrndx) = struct.unpack_from('<HHHHH', data, 42)
-        if phnum == 0:
-            raise ValueError('no program headers: not a linked image')
-        self.segments = [struct.unpack_from(
-            '<IIIIIIII', data, phoff + i * phentsize) for i in range(phnum)]
-        raw = [struct.unpack_from(
-            '<IIIIIIIIII', data, shoff + i * shentsize) for i in range(shnum)]
-        names_off = raw[shstrndx][4] if shnum else 0
-        self.sections = []
-        for (name, type_, flags, addr, offset, size, _link, _info, align, _entsize) in raw:
-            end = data.index(b'\0', names_off + name)
-            self.sections.append({'name': data[names_off + name:end].decode(), 'type': type_, 'flags': flags,
-                                  'addr': addr, 'offset': offset, 'size': size, 'align': align})
+def required_symbol(elf, name):
+    found = elf.symbol(name)
+    if found is None:
+        raise ValueError(
+            f'no {name} symbol: the linker script does not include Kvasir_SDK linker/common.ld')
+    return found[0]
 
-    def _loaded(self):
-        """(section, load address, bytes) of every section the image carries, by load address."""
-        out = []
-        for sec in self.sections:
-            if not (sec['flags'] & SHF_ALLOC) or sec['type'] == SHT_NOBITS or sec['size'] == 0:
-                continue
-            for (p_type, p_offset, _vaddr, p_paddr, p_filesz, *_rest) in self.segments:
-                if p_type == PT_LOAD and p_filesz and p_offset <= sec['offset'] \
-                        and sec['offset'] + sec['size'] <= p_offset + p_filesz:
-                    lma = p_paddr + sec['offset'] - p_offset
-                    out.append(
-                        (sec, lma, self.data[sec['offset']:sec['offset'] + sec['size']]))
-                    break
-        return sorted(out, key=lambda piece: piece[1])
 
-    def loaded(self):
-        """(name, load address, bytes) of every section the image carries, by load address."""
-        return [(sec['name'], lma, data) for (sec, lma, data) in self._loaded()]
-
-    def resident(self):
-        """(name, address, bytes) of every loaded section that runs where it is loaded (address == load address)
-        and is not writable (SHF_WRITE clear): what a running target holds there is exactly these bytes. A section
-        copied elsewhere at boot (.data, code run from RAM) or one the program may write is left out, whatever its
-        address."""
-        return [(sec['name'], lma, data) for (sec, lma, data) in self._loaded()
-                if sec['addr'] == lma and not sec['flags'] & SHF_WRITE]
+def past_image_end(elf, pieces):
+    """The messages for every piece (name, load address, bytes) that ends past _LINKER_image_end_flash_ in flash; none
+    when the symbol is 0 (RAM only). ValueError when the image lacks the symbols."""
+    limit = required_symbol(elf, IMAGE_END)
+    if not limit:
+        return []
+    rom_end = required_symbol(elf, ROM_END)
+    out = []
+    for (name, addr, data) in pieces:
+        end = addr + len(data)
+        if end > limit and addr < rom_end:
+            out.append(f'section {name} is loaded at {addr:#010x}..{end:#010x}, {end - limit} bytes past {IMAGE_END} '
+                       f'({limit:#010x}): the linker script loads it into flash after the image end; define '
+                       f'_LINKER_INTERN_image_end_flash_ past it before INCLUDE common.ld')
+    return out
 
 
 def ihex_line(type_, addr, payload):
@@ -152,56 +137,48 @@ def to_uf2(pieces, family):
     return b''.join(blocks)
 
 
-def strip_empty_segments(path):
-    """Drop the PT_LOADs objcopy --only-section left without a section: picotool rejects them."""
-    data = bytearray(Path(path).read_bytes())
-    (phoff, shoff) = struct.unpack_from('<II', data, 28)
-    (phentsize, phnum, shentsize, shnum) = struct.unpack_from('<HHHH', data, 42)
-    allocated = []
-    for i in range(shnum):
-        (_n, type_, flags, addr, _o, size) = struct.unpack_from(
-            '<IIIIII', data, shoff + i * shentsize)
-        if type_ != 0 and flags & SHF_ALLOC:
-            allocated.append((addr, addr + size))
+def strip_empty_segments(data, elf):
+    """Drop the PT_LOADs objcopy --only-section left without a section: picotool rejects them. `elf` reads `data` (a
+    bytearray), both changed in place: elf.segments is the kept list afterwards."""
+    (phoff,) = struct.unpack_from('<I', data, 28)
+    (phentsize, phnum) = struct.unpack_from('<HH', data, 42)
+    allocated = [(s['addr'], s['addr'] + s['size'])
+                 for s in elf.sections if s['type'] != 0 and s['flags'] & SHF_ALLOC]
     kept = []
-    for i in range(phnum):
-        raw = bytes(data[phoff + i * phentsize:phoff + (i + 1) * phentsize])
-        (p_type, _off, vaddr, _paddr, _filesz,
-         memsz) = struct.unpack_from('<IIIIII', raw)
+    for (i, segment) in enumerate(elf.segments):
+        (p_type, _off, vaddr, _paddr, _filesz, memsz, *_rest) = segment
         if p_type != PT_LOAD or any(start < vaddr + memsz and end > vaddr for (start, end) in allocated):
-            kept.append(raw)
+            kept.append(
+                bytes(data[phoff + i * phentsize:phoff + (i + 1) * phentsize]))
     if len(kept) == phnum:
         return
     for i in range(phnum):
         data[phoff + i * phentsize:phoff +
              (i + 1) * phentsize] = kept[i] if i < len(kept) else bytes(phentsize)
     struct.pack_into('<H', data, 44, len(kept))
-    Path(path).write_bytes(data)
+    elf.segments = [struct.unpack('<IIIIIIII', header) for header in kept]
 
 
-def split_segments_at_holes(path):
+def split_segments_at_holes(data, elf):
     """Split a PT_LOAD where picotool seal cannot plug the hole between two of its sections: one larger than the next
     section's alignment ("Cannot plug gap greater than alignment"). GNU ld puts a RAM-only image's .vectors, .text
     and .data into one segment, with the NOLOAD .noInitLowRam (between .vectors and .text) and .ramExec (between .text
     and .data, 256 bytes) as holes in it (common_ram_only.ld); lld writes a segment per section already. A hole up to
     the alignment stays in its segment, as picotool would plug it. Every byte stays at its address and a split-off
-    hole stays unloaded; the last part keeps the segment's zero-filled tail (p_memsz past p_filesz)."""
-    data = bytearray(Path(path).read_bytes())
+    hole stays unloaded; the last part keeps the segment's zero-filled tail (p_memsz past p_filesz). `data` (a bytearray)
+    is changed in place, `elf` (reading it) is not."""
     (phoff, shoff) = struct.unpack_from('<II', data, 28)
-    (phentsize, phnum, shentsize, shnum) = struct.unpack_from('<HHHH', data, 42)
+    phnum = len(elf.segments)
     sections = []
-    used = [shoff] if shnum else []
-    for i in range(shnum):
-        (_n, type_, flags, _a, offset, size, _l, _i, align) = struct.unpack_from(
-            '<IIIIIIIII', data, shoff + i * shentsize)
-        if type_ not in (0, SHT_NOBITS) and size:
-            used.append(offset)
-            if flags & SHF_ALLOC:
-                sections.append((offset, size, align))
+    used = [shoff] if elf.sections else []
+    for s in elf.sections:
+        if s['type'] not in (0, SHT_NOBITS) and s['size']:
+            used.append(s['offset'])
+            if s['flags'] & SHF_ALLOC:
+                sections.append((s['offset'], s['size'], s['align']))
     sections.sort()
     segments = []
-    for i in range(phnum):
-        segment = struct.unpack_from('<IIIIIIII', data, phoff + i * phentsize)
+    for segment in elf.segments:
         (p_type, p_offset, vaddr, paddr, filesz, memsz, p_flags, p_align) = segment
         inside = [s for s in sections if p_offset <= s[0]
                   and s[0] + s[1] <= p_offset + filesz]
@@ -224,11 +201,25 @@ def split_segments_at_holes(path):
     # the longer table in place: a linked image keeps its first bytes on a page boundary, kilobytes past the headers
     room = min(t for t in used + [len(data)] if t > phoff) - phoff
     if len(table) > room:
-        raise ValueError(f'{path}: {len(segments)} program headers do not fit into the {room} bytes before the next '
-                         'contents')
+        raise ValueError(
+            f'{len(segments)} program headers do not fit into the {room} bytes before the next contents')
     data[phoff:phoff + len(table)] = table
     struct.pack_into('<H', data, 44, len(segments))
-    Path(path).write_bytes(data)
+
+
+def fix_flash_elf(path):
+    """objcopy's _flash.elf made acceptable to picotool: read and parsed once, both fixes on that buffer, written once
+    when one of them changed it."""
+    data = bytearray(Path(path).read_bytes())
+    original = bytes(data)
+    elf = Elf(data)
+    strip_empty_segments(data, elf)
+    try:
+        split_segments_at_holes(data, elf)
+    except ValueError as error:
+        raise ValueError(f'{path}: {error}') from error
+    if data != original:
+        Path(path).write_bytes(data)
 
 
 def main():
@@ -240,38 +231,63 @@ def main():
     parser.add_argument('--objcopy')
     parser.add_argument('--eeprom-section', default='.eeprom')
     parser.add_argument('--list', action='store_true')
+    parser.add_argument('--delete-on-failure', action='store_true')
     args = parser.parse_args()
+
+    def malformed(error):
+        print(f'{args.elf}: {error}', file=sys.stderr)
+        if args.delete_on_failure:
+            args.elf.unlink(missing_ok=True)
+        return 2
 
     try:
         elf = Elf(args.elf.read_bytes())
+        pieces = elf.loaded()
     except ValueError as error:
-        print(f'{args.elf}: {error}', file=sys.stderr)
-        return 2
-    pieces = elf.loaded()
-    flash = [p for p in pieces if p[0] != args.eeprom_section]
-    eeprom = [p for p in pieces if p[0] == args.eeprom_section]
+        return malformed(error)
     if args.list:
         for (name, addr, data) in pieces:
             print(f'{name:20} {addr:#010x} {len(data):#8x}')
         return 0
     if args.out_prefix is None:
         parser.error('--out-prefix is required (or --list)')
+    code = run(elf, args.elf, args.out_prefix, args.uf2_family,
+               args.objcopy, args.eeprom_section)
+    if code and args.delete_on_failure:
+        args.elf.unlink(missing_ok=True)
+    return code
 
-    prefix = str(args.out_prefix)
+
+def run(elf, path, out_prefix, uf2_family=None, objcopy=None, eeprom_section='.eeprom'):
+    """The artefacts of an Elf already read from `path` (objcopy reads the file itself: it must hold elf's bytes): 0,
+    1 (past the image end) or 2 (not a linked image), messages printed."""
+    try:
+        pieces = elf.loaded()
+        flash = [p for p in pieces if p[0] != eeprom_section]
+        eeprom = [p for p in pieces if p[0] == eeprom_section]
+        problems = past_image_end(elf, flash)
+    except ValueError as error:
+        print(f'{path}: {error}', file=sys.stderr)
+        return 2
+    if problems:
+        for problem in problems:
+            print(f'{path}: error: {problem}', file=sys.stderr)
+        return 1
+
+    prefix = str(out_prefix)
     outputs = {'_flash.bin': to_bin(flash), '_flash.hex': to_ihex(flash, elf.entry),
                '_eeprom.bin': to_bin(eeprom), '_eeprom.hex': to_ihex(eeprom, elf.entry),
                '_eeprom_flash.hex': to_ihex(pieces, elf.entry)}
-    if args.uf2_family is not None:
-        outputs.update({'_flash.uf2': to_uf2(flash, args.uf2_family), '_eeprom.uf2': to_uf2(eeprom, args.uf2_family),
-                        '_eeprom_flash.uf2': to_uf2(pieces, args.uf2_family)})
+    if uf2_family is not None:
+        outputs.update({'_flash.uf2': to_uf2(flash, uf2_family), '_eeprom.uf2': to_uf2(eeprom, uf2_family),
+                        '_eeprom_flash.uf2': to_uf2(pieces, uf2_family)})
     for (suffix, content) in outputs.items():
         Path(prefix + suffix).write_bytes(content)
-    if args.objcopy:
+    if objcopy:
         only = [f'--only-section={name}' for (name, _a, _d) in flash]
-        subprocess.run([args.objcopy, *only, str(args.elf),
+        subprocess.run([objcopy, *only, str(path),
                        prefix + '_flash.elf'], check=True)
-        strip_empty_segments(prefix + '_flash.elf')
-        split_segments_at_holes(prefix + '_flash.elf')
+        fix_flash_elf(prefix + '_flash.elf')
     return 0
 
 

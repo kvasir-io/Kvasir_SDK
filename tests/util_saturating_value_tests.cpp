@@ -56,7 +56,8 @@ static_assert(U8{20} < U8{21});
 static_assert(U8{0} == U8{10});      // both clamped to the minimum
 static_assert(U8{255} == U8{200});   // both clamped to the maximum
 
-static void increments() {
+namespace {
+void increments() {
     Kvasir::Test::test("increments");
 
     U8 v{198};
@@ -71,7 +72,7 @@ static void increments() {
     CHECK_EQ((++f).value(), 255);
 }
 
-static void decrements() {
+void decrements() {
     Kvasir::Test::test("decrements");
 
     U8 v{12};
@@ -89,7 +90,7 @@ static void decrements() {
     CHECK((--s).value() == -50);
 }
 
-static void addAssign() {
+void addAssign() {
     Kvasir::Test::test("addAssign");
 
     U8 v{100};
@@ -114,7 +115,7 @@ static void addAssign() {
     CHECK_EQ(w.value(), 10);
 }
 
-static void addAssignOverflow() {
+void addAssignOverflow() {
     Kvasir::Test::test("addAssignOverflow");
 
     // the addition itself overflows the underlying type: the builtin overflow path must
@@ -138,7 +139,7 @@ static void addAssignOverflow() {
     CHECK_EQ(u.value(), 0);
 }
 
-static void subAssign() {
+void subAssign() {
     Kvasir::Test::test("subAssign");
 
     U8 v{100};
@@ -159,7 +160,7 @@ static void subAssign() {
     CHECK_EQ(w.value(), 200);
 }
 
-static void subAssignOverflow() {
+void subAssignOverflow() {
     Kvasir::Test::test("subAssignOverflow");
 
     FullU8 v{10};
@@ -193,6 +194,8 @@ static_assert([] {
     v += 250;
     return v.value();
 }() == 255);
+
+}   // namespace
 
 int main() {
     increments();

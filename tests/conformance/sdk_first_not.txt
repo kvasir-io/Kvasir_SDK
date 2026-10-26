@@ -1,0 +1,8 @@
+# SDK headers (path below src/kvasir; a trailing / is a directory) that the chip conformance trees do not compile
+# before chip/chip.hpp (conformance.cmake, _kvasir_conformance_sdk_first), one reason each
+Atomic/detail/host_atomic.hpp   # the host's atomic stand-in: no target TU includes it
+StartUp/Runtime/                # fragments of StartUp.hpp's main TU (strong library definitions), never included alone
+Runtime/BootLog.hpp             # needs the image's project version (cmake_git_version): a conformance tree has none
+Runtime/BootReport.hpp          # includes Runtime/BootLog.hpp
+Runtime/Standard.hpp            # includes Runtime/BootReport.hpp
+Log/RttSink.hpp                 # an image config header's backend: names the chip's DebuggerPresent, which comes first

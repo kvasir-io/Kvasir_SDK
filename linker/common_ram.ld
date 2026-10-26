@@ -21,14 +21,7 @@ SECTIONS {
     } > ram
     _LINKER_INTERN_data_end_flash_ = _LINKER_INTERN_data_start_flash_ + SIZEOF(.data);
 
-    /* Code written at run time and then executed (chip bootrom_functions.hpp: the bootrom's XIP setup function, copied
-       out of BOOTRAM): the image's one writable and executable range, an MPU region of its own (chip Mpu.hpp) */
-    .ramExec (NOLOAD) : AT(ADDR(.ramExec)) ALIGN(32) {
-        _LINKER_INTERN_ramExec_start_ = .;
-        *(.ramExec*)
-        . = ALIGN(32);
-        _LINKER_INTERN_ramExec_end_ = .;
-    } > ram
+    INCLUDE common_ramExec.inc.ld
 
     .bss (NOLOAD) : AT(ADDR(.bss)) ALIGN(32) {
         INCLUDE common_bss_body.inc.ld

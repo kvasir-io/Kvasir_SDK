@@ -1,90 +1,42 @@
 #pragma once
-
-#include "kvasir/Mpl/Utility.hpp"
+#include "kvasir/Atomic/Sync.hpp"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <bit>
 #include <cassert>
+#include <concepts>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <new>
 #include <ranges>
 #include <type_traits>
 
 namespace Kvasir { namespace Atomic {
 
-    // OverFlowPolicyAssert is the default action which is taken if
-    // an overflow occurs. The user is encurraged to provide their
-    // own policy which call reset or some other error handler
-    struct OverFlowPolicyAssert {
-        [[noreturn]] void operator()() { assert(false); }
+    // The default action on a push into a full queue. It never returns: an assertion failure in a
+    // build with asserts, a trap with NDEBUG (returning from a [[noreturn]] function would be
+    // undefined behaviour). The trap is not a Kvasir panic because Atomic does not depend on Util; on a
+    // target it ends in the fault handler. A policy of your own may log, count or reset instead.
+    struct OverflowPolicyAssert {
+        [[noreturn]] void operator()() {
+#ifdef NDEBUG
+            __builtin_trap();
+#else
+            assert(false);
+#endif
+        }
     };
 
-    struct OverFlowPolicyIgnore {
+    struct OverflowPolicyIgnore {
         void operator()() {}
     };
 
-    // How a Queue orders its commit against the data it commits.
-    //
-    // SyncSignal is the original: relaxed index accesses and a compiler-only fence. Exact
-    // for one core (the producer and consumer are the same core's thread and ISR, and a
-    // core never reorders its own memory accesses against an interrupt). Free.
-    //
-    // SyncThread makes the commit a release and the peek an acquire, one dmb each on
-    // Armv8-M, so a consumer on the other core sees the data the index promises.
-    //
-    // fence() goes between the data and the commit that publishes it (or frees it), acquire()
-    // between reading an index and the data it covers. The relaxed index loads order nothing by
-    // themselves: without acquire() the compiler may read a slot before the index that says it
-    // is filled (it may always load data_[head]; nothing makes that load wait for tail_).
-    struct SyncSignal {
-        static constexpr auto load_memory_order{std::memory_order_relaxed};
-        static constexpr auto store_memory_order{std::memory_order_relaxed};
-
-        static void fence() { std::atomic_signal_fence(std::memory_order_release); }
-
-        static void acquire() { std::atomic_signal_fence(std::memory_order_acquire); }
-    };
-
-    struct SyncThread {
-        static constexpr auto load_memory_order{std::memory_order_acquire};
-        static constexpr auto store_memory_order{std::memory_order_release};
-
-        static void fence() { std::atomic_signal_fence(std::memory_order_release); }
-
-        static void acquire() { std::atomic_signal_fence(std::memory_order_acquire); }
-    };
-
-    // A multicore build (CORE1_STACK_SIZE set, KVASIR_MULTICORE defined) gets cross-core
-    // correct queues by default; a single-core build keeps its exact old code.
-#if defined(KVASIR_MULTICORE) && KVASIR_MULTICORE
-    using DefaultSync = SyncThread;
-#else
-    using DefaultSync = SyncSignal;
-#endif
+    // How a Queue orders its commit against the data it commits: SyncSignal, SyncThread, DefaultSync (Sync.hpp).
 
     namespace Detail {
-        using namespace MPL;
-
-        template<std::size_t Size, typename = void>
-        struct GetIndexType {
-            using type = std::uint32_t;
-        };
-
-        template<std::size_t Size>
-        struct GetIndexType<Size, EnableIfT<(Size <= 255)>> {
-            using type = std::uint8_t;
-        };
-
-        template<std::size_t Size>
-        struct GetIndexType<Size, EnableIfT<(Size > 255 && Size <= 65535)>> {
-            using type = std::uint16_t;
-        };
-
-        template<std::size_t Size>
-        using GetIndexTypeT = typename GetIndexType<Size, void>::type;
-
         // The slots of a queue of trivially copyable elements: plain bytes, all zero at start.
         // A slot holds an element only between its push and its pop, so it needs no initial
         // value - but as a std::array<T> the slots are value-initialised, and a T with default
@@ -100,14 +52,12 @@ namespace Kvasir { namespace Atomic {
             // through void*: a reinterpret_cast from std::byte* is gcc's -Wcast-align, though `bytes` is alignas(T)
             T* data() { return std::launder(static_cast<T*>(static_cast<void*>(bytes.data()))); }
 
-            T const* data() const {
+            [[nodiscard]] T const* data() const {
                 return std::launder(static_cast<T const*>(static_cast<void const*>(bytes.data())));
             }
 
-            //NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
             T& operator[](std::size_t i) { return data()[i]; }
 
-            //NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
             T const& operator[](std::size_t i) const { return data()[i]; }
 
             // byte for byte, as two std::array<T> of trivially copyable elements compare in a test
@@ -123,16 +73,29 @@ namespace Kvasir { namespace Atomic {
 
     }   // namespace Detail
 
+    // A single producer / single consumer ring. It keeps one slot free to tell full from empty, so a
+    // Queue<T, Size> holds Size - 1 elements (capacity()); Fifo<T, Capacity> below is the same queue
+    // named by what it holds. The members follow std naming (popInto, max_size); BipBuffer and
+    // Seqlock follow Kvasir's.
     template<typename TDataType,
              std::size_t Size,
-             typename TOverflowPolicy = OverFlowPolicyAssert,
+             typename TOverflowPolicy = OverflowPolicyAssert,
              typename TSync           = DefaultSync>
     struct Queue {
-        using IndexType = Detail::GetIndexTypeT<Size>;
-        static_assert(std::numeric_limits<IndexType>::max() > Size,
-                      "Size to big");
-        static constexpr auto          load_memory_order{TSync::load_memory_order};
-        static constexpr auto          store_memory_order{TSync::store_memory_order};
+        // indices 0 .. Size - 1: u8 up to Size 256, u16 up to 65536
+        using IndexType = Detail::IndexFor<Size - 1>;
+        static_assert(Size >= 1,
+                      "a Queue needs at least one slot");
+        // every stored index is in 0 .. Size - 1 (next, advanced, distance); comparisons with Size are
+        // done in std::size_t
+        static_assert(Size - 1 <= std::numeric_limits<IndexType>::max(),
+                      "Size too big for the index type");
+
+    private:
+        friend struct QueueTestAccess;   // the host tests compare the raw state of two queues
+
+        static constexpr auto          loadMemoryOrder{TSync::loadMemoryOrder};
+        static constexpr auto          storeMemoryOrder{TSync::storeMemoryOrder};
         std::atomic<IndexType>         head_{};
         std::atomic<IndexType>         tail_{};
         Detail::Slots<TDataType, Size> data_{};
@@ -145,7 +108,9 @@ namespace Kvasir { namespace Atomic {
         }
 
         // An index is always below Size, so the wrap is one compare: `% Size` was a division on every
-        // push and pop (a call into the RP2040's divider, software on the SAM D21). A
+        // push and pop (a call into the RP2040's divider, software on the SAM D21: the Cortex-M0+ has no divide
+        // instruction, DDI0484C Table 3-1, md l.813-930; the RP2040's SIO divider, its datasheet 2.3.1.5, md l.1519,
+        // behind chip_rp2040's divider.S). A
         // power of two keeps its mask: clang does not find it from the compare.
         static constexpr IndexType next(IndexType in) {
             std::size_t const n = static_cast<std::size_t>(in) + 1;
@@ -158,7 +123,7 @@ namespace Kvasir { namespace Atomic {
 
         // contiguous trivially copyable ranges are copied in at most two runs instead of per element
         template<typename TRange>
-        static constexpr bool CopiesInRuns
+        static constexpr bool copiesInRuns
           = std::ranges::contiguous_range<TRange> && std::is_trivially_copyable_v<TDataType>;
 
         static constexpr IndexType advanced(IndexType   index,
@@ -167,28 +132,28 @@ namespace Kvasir { namespace Atomic {
             return IndexType(end >= Size ? end - Size : end);
         }
 
+    public:
         void push(TDataType in) {
-            auto const tail     = tail_.load(load_memory_order);
-            auto const head     = head_.load(load_memory_order);
-            auto       nextTail = next(tail);
+            auto const tail     = tail_.load(loadMemoryOrder);
+            auto const head     = head_.load(loadMemoryOrder);
+            auto const nextTail = next(tail);
             if(head != nextTail) {
-                data_[tail] = in;   //NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
+                data_[tail] = in;
                 TSync::fence();
-                tail_.store(nextTail, store_memory_order);   // commit
+                tail_.store(nextTail, storeMemoryOrder);   // commit
             } else {
                 TOverflowPolicy{}();
             }
         }
 
-        template<typename TRange,
-                 typename = std::enable_if_t<
-                   std::is_same<std::decay_t<decltype(*std::declval<TRange>().begin())>,
-                                TDataType>::value>>
+        template<std::ranges::range TRange>
+            requires std::same_as<std::ranges::range_value_t<TRange>,
+                                  TDataType>
         void push(TRange const& range) {
-            auto       tail = tail_.load(load_memory_order);
-            auto const head = head_.load(load_memory_order);
+            auto       tail = tail_.load(loadMemoryOrder);
+            auto const head = head_.load(loadMemoryOrder);
             if(range.size() < Size - distance(head, tail)) {
-                if constexpr(CopiesInRuns<TRange const>) {
+                if constexpr(copiesInRuns<TRange const>) {
                     std::size_t const count = range.size();
                     std::size_t const first = std::min<std::size_t>(count, Size - tail);
                     std::copy_n(std::ranges::data(range), first, data_.data() + tail);
@@ -198,53 +163,49 @@ namespace Kvasir { namespace Atomic {
                     auto       begin = range.begin();
                     auto const end   = range.end();
                     while(begin != end) {
-                        data_[tail]
-                          = *begin++;   //NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                        tail = next(tail);
+                        data_[tail] = *begin++;
+                        tail        = next(tail);
                     }
                 }
                 TSync::fence();
-                tail_.store(tail, store_memory_order);   // commit
+                tail_.store(tail, storeMemoryOrder);   // commit
             } else {
                 TOverflowPolicy{}();
             }
         }
 
-        // Visit every queued element, oldest first, by reference (a cancellable bus marks one cancelled in place).
+        // Visit every queued element, oldest first, by reference (a bus that can cancel marks one cancelled in place).
         // Only with the producer and the consumer both excluded (the bus's interrupt masked): it reads head and tail
         // once and walks between them.
         template<typename F>
         void forEachQueued(F&& f) {
-            auto const tail = tail_.load(load_memory_order);
-            auto const head = head_.load(load_memory_order);
+            auto const tail = tail_.load(loadMemoryOrder);
+            auto const head = head_.load(loadMemoryOrder);
             TSync::acquire();
-            for(auto i = head; i != tail; i = next(i)) {
-                f(data_[i]);   //NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-            }
+            for(auto i = head; i != tail; i = next(i)) { f(data_[i]); }
         }
 
-        bool pop_into(TDataType& out) {
-            auto const tail = tail_.load(load_memory_order);
-            auto const head = head_.load(load_memory_order);
+        bool popInto(TDataType& out) {
+            auto const tail = tail_.load(loadMemoryOrder);
+            auto const head = head_.load(loadMemoryOrder);
             if(head == tail) { return false; }
             TSync::acquire();
-            out = data_[head];   //NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
+            out = data_[head];
             TSync::fence();
-            head_.store(next(head), store_memory_order);   // commit
+            head_.store(next(head), storeMemoryOrder);   // commit
             return true;
         }
 
-        template<typename TRange,
-                 typename = std::enable_if_t<
-                   std::is_same<std::decay_t<decltype(*std::declval<TRange>().begin())>,
-                                TDataType>::value>>
-        bool pop_into(TRange& range) {
-            auto const tail  = tail_.load(load_memory_order);
-            auto       head  = head_.load(load_memory_order);
+        template<std::ranges::range TRange>
+            requires std::same_as<std::ranges::range_value_t<TRange>,
+                                  TDataType>
+        bool popInto(TRange& range) {
+            auto const tail  = tail_.load(loadMemoryOrder);
+            auto       head  = head_.load(loadMemoryOrder);
             auto const lsize = distance(head, tail);
             if(lsize < range.size()) { return false; }
             TSync::acquire();
-            if constexpr(CopiesInRuns<TRange>) {
+            if constexpr(copiesInRuns<TRange>) {
                 std::size_t const count = range.size();
                 std::size_t const first = std::min<std::size_t>(count, Size - head);
                 std::copy_n(data_.data() + head, first, std::ranges::data(range));
@@ -254,46 +215,68 @@ namespace Kvasir { namespace Atomic {
                 auto       begin = range.begin();
                 auto const end   = range.end();
                 while(begin != end) {
-                    *begin++
-                      = data_[head];   //NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                    head = next(head);
+                    *begin++ = data_[head];
+                    head     = next(head);
                 }
             }
             TSync::fence();
-            head_.store(head, store_memory_order);   // commit
+            head_.store(head, storeMemoryOrder);   // commit
             return true;
         }
 
         void pop() {
-            auto const tail = tail_.load(load_memory_order);
-            auto const head = head_.load(load_memory_order);
+            auto const tail = tail_.load(loadMemoryOrder);
+            auto const head = head_.load(loadMemoryOrder);
             if(head == tail) { return; }
             TSync::fence();   // a front() read of the slot before the producer may reuse it
-            head_.store(next(head), store_memory_order);   // commit
+            head_.store(next(head), storeMemoryOrder);   // commit
         }
 
-        TDataType const& front() const {
-            auto const head = head_.load(load_memory_order);
-            if(head == tail_.load(load_memory_order)) { TOverflowPolicy{}(); }
+        // The oldest element. Precondition: !empty(). On an empty queue it calls the overflow policy
+        // and, if that returns (OverflowPolicyIgnore, a counting policy), hands out a stale slot -
+        // check empty() first, or use peek().
+        [[nodiscard]] TDataType const& front() const {
+            auto const head = head_.load(loadMemoryOrder);
+            if(head == tail_.load(loadMemoryOrder)) { TOverflowPolicy{}(); }
             TSync::acquire();
-            TDataType const& ret
-              = data_[head];   //NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
+            TDataType const& ret = data_[head];
             return ret;
         }
 
-        std::size_t size() const {
-            return distance(head_.load(load_memory_order), tail_.load(load_memory_order));
+        // The oldest element, or nullptr when the queue is empty: front() without its precondition.
+        // The pointer stays valid until the consumer's next pop.
+        [[nodiscard]] TDataType const* peek() const {
+            auto const head = head_.load(loadMemoryOrder);
+            if(head == tail_.load(loadMemoryOrder)) { return nullptr; }
+            TSync::acquire();
+            return &data_[head];
         }
 
-        bool empty() const { return size() == 0; }
+        [[nodiscard]] std::size_t size() const {
+            return distance(head_.load(loadMemoryOrder), tail_.load(loadMemoryOrder));
+        }
 
-        constexpr std::size_t max_size() const { return Size - 1; }
+        [[nodiscard]] bool empty() const { return size() == 0; }
+
+        [[nodiscard]] constexpr std::size_t max_size() const { return Size - 1; }
+
+        // how many elements fit at once: Size - 1 (one slot stays free)
+        static constexpr std::size_t capacity() { return Size - 1; }
 
         // Drop everything. Not concurrency-safe: for a producer or consumer that is provably
         // stopped (a SecondaryCore's primaryPrepare()), never while both are live.
         void clear() {
-            head_.store(0, store_memory_order);
-            tail_.store(0, store_memory_order);
+            head_.store(0, storeMemoryOrder);
+            tail_.store(0, storeMemoryOrder);
         }
     };
+
+    // A Queue named by how many elements it holds: Fifo<T, 8> takes 8 (a Queue<T, 9>), so a user
+    // does not write the free slot's "+ 1" itself.
+    template<typename TDataType,
+             std::size_t Capacity,
+             typename TOverflowPolicy = OverflowPolicyAssert,
+             typename TSync           = DefaultSync>
+        requires(Capacity >= 1)   // a Fifo that holds nothing
+    using Fifo = Queue<TDataType, Capacity + 1, TOverflowPolicy, TSync>;
 }}   // namespace Kvasir::Atomic

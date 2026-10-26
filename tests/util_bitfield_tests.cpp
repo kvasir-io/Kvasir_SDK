@@ -5,7 +5,7 @@
 // start or end on a byte boundary, so the tests check it against an independent reference
 // implementation over a wide sweep of (High, Low) pairs rather than against hand written
 // expected values.
-#include "kvasir/Util/BitField.hpp"
+#include "kvasir/Register/BitField.hpp"
 #include "test_harness.hpp"
 
 #include <array>
@@ -101,11 +101,11 @@ void checkField() {
         CHECK(Field::isValid(p));
 
         // combine
-        for(auto raw : rawValues) {
+        for(auto const raw : rawValues) {
             auto const value = raw & widthMask(High - Low + 1);
 
             auto array = p;
-            Field{static_cast<typename Field::value_Type>(value)}.combineInto(array);
+            Field{static_cast<typename Field::value_type>(value)}.combineInto(array);
 
             auto const expectedArray = referenceCombine<High, Low>(p, value);
             CHECK(array == expectedArray);
@@ -131,39 +131,37 @@ void checkWidth() {
     checkWidthImpl<Width, N>(std::make_index_sequence<LowCount>{});
 }
 
-}   // namespace
-
 // ---------------------------------------------------------------------------
 // the value type is picked from the field width
 static_assert(std::is_same_v<Kvasir::BitField<0,
-                                              0>::value_Type,
+                                              0>::value_type,
                              std::uint8_t>);
 static_assert(std::is_same_v<Kvasir::BitField<7,
-                                              0>::value_Type,
+                                              0>::value_type,
                              std::uint8_t>);
 static_assert(std::is_same_v<Kvasir::BitField<8,
-                                              0>::value_Type,
+                                              0>::value_type,
                              std::uint16_t>);
 static_assert(std::is_same_v<Kvasir::BitField<15,
-                                              0>::value_Type,
+                                              0>::value_type,
                              std::uint16_t>);
 static_assert(std::is_same_v<Kvasir::BitField<16,
-                                              0>::value_Type,
+                                              0>::value_type,
                              std::uint32_t>);
 static_assert(std::is_same_v<Kvasir::BitField<31,
-                                              0>::value_Type,
+                                              0>::value_type,
                              std::uint32_t>);
 // the width is what matters, not the absolute position
 static_assert(std::is_same_v<Kvasir::BitField<20,
-                                              13>::value_Type,
+                                              13>::value_type,
                              std::uint8_t>);
 static_assert(std::is_same_v<Kvasir::BitField<20,
-                                              12>::value_Type,
+                                              12>::value_type,
                              std::uint16_t>);
 
 // ---------------------------------------------------------------------------
 // a few fully worked out cases, so a failure points at a concrete number
-static void handWorkedCases() {
+void handWorkedCases() {
     Kvasir::Test::test("handWorkedCases");
 
     // a nibble inside a single byte
@@ -220,7 +218,7 @@ static void handWorkedCases() {
 }
 
 // combining must leave every bit outside the field alone
-static void combinePreservesNeighbours() {
+void combinePreservesNeighbours() {
     Kvasir::Test::test("combinePreservesNeighbours");
 
     using Straddle = Kvasir::BitField<11, 4>;
@@ -242,7 +240,7 @@ static void combinePreservesNeighbours() {
 }
 
 // Min/Max clamp on construction and drive isValid
-static void minMaxClamping() {
+void minMaxClamping() {
     Kvasir::Test::test("minMaxClamping");
 
     using Clamped = Kvasir::BitField<7, 0, 10, 200>;
@@ -264,15 +262,15 @@ static void minMaxClamping() {
     CHECK_EQ(Clamped{Bytes<1>{std::byte{0}}}.asValue(), 10U);
 }
 
-// the assignType parameter changes the type the field converts to and from
-static void assignTypeConversion() {
-    Kvasir::Test::test("assignTypeConversion");
+// the Assign parameter changes the type the field converts to and from
+void assignConversion() {
+    Kvasir::Test::test("assignConversion");
 
     enum class Mode : std::uint8_t { off = 0, slow = 1, fast = 2 };
 
     using ModeField = Kvasir::BitField<3, 2, 0, 3, Mode>;
 
-    Bytes<1> a{std::byte{0b0000'1000}};
+    Bytes<1> const a{std::byte{0b0000'1000}};
     CHECK(static_cast<Mode>(ModeField{a}) == Mode::fast);
 
     Bytes<1> b{};
@@ -285,7 +283,7 @@ static void assignTypeConversion() {
     CHECK_EQ(v, 0x42U);
 }
 
-static void equality() {
+void equality() {
     Kvasir::Test::test("equality");
 
     using Field = Kvasir::BitField<7, 4>;
@@ -304,11 +302,13 @@ static_assert([] {
     return Kvasir::BitField<19, 4>{a}.asValue() == 0xCAB3U && a[1] == std::byte{0xAB};
 }());
 
+}   // namespace
+
 int main() {
     handWorkedCases();
     combinePreservesNeighbours();
     minMaxClamping();
-    assignTypeConversion();
+    assignConversion();
     equality();
 
     // exhaustive sweeps: every field width against every start offset that fits

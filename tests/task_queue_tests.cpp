@@ -1,4 +1,4 @@
-#include "multicore_test.hpp"
+#include "test_harness.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -11,7 +11,7 @@ struct Config {
     static constexpr std::size_t slots       = 4;
     static constexpr std::size_t captureSize = 32;
     static constexpr std::size_t resultSize  = 16;
-    using OverflowPolicy                     = Kvasir::Atomic::OverFlowPolicyIgnore;
+    using OverflowPolicy                     = Kvasir::Atomic::OverflowPolicyIgnore;
 };
 
 using Tasks = Kvasir::Multicore::TaskQueue<Config>;
@@ -21,9 +21,9 @@ struct Worker {
     std::atomic<bool> stop{false};
     std::thread       thread{[this] {
         while(!stop.load(std::memory_order_acquire)) {
-            if(!Tasks::poll()) { std::this_thread::yield(); }
+            if(!Tasks::turn()) { std::this_thread::yield(); }
         }
-        while(Tasks::poll()) {}
+        while(Tasks::turn()) {}
     }};
 
     ~Worker() {
@@ -34,7 +34,7 @@ struct Worker {
 
 void resultsComeBack() {
     Kvasir::Test::test("posted tasks return their results");
-    Worker        worker{};
+    Worker const  worker{};
     std::uint32_t errors = 0;
     for(std::uint32_t i = 0; i < 20'000; ++i) {
         Tasks::Future<std::uint64_t> f{};
@@ -49,10 +49,10 @@ void resultsComeBack() {
 
 void manyInFlight() {
     Kvasir::Test::test("several futures in flight, collected out of order");
-    Worker worker{};
-    auto   a = Tasks::post([] { return 1; });
-    auto   b = Tasks::post([] { return 2; });
-    auto   c = Tasks::post([] { return 3; });
+    Worker const worker{};
+    auto         a = Tasks::post([] { return 1; });
+    auto         b = Tasks::post([] { return 2; });
+    auto         c = Tasks::post([] { return 3; });
     CHECK(a.valid() && b.valid() && c.valid());
     CHECK(c.get() == 3);
     CHECK(a.get() == 1);
@@ -62,7 +62,7 @@ void manyInFlight() {
 
 void voidAndAbandoned() {
     Kvasir::Test::test("a dropped future still runs its task and frees its slot");
-    Worker           worker{};
+    Worker const     worker{};
     std::atomic<int> ran{0};
     auto*            counter = &ran;
     for(int i = 0; i < 1000; ++i) {
@@ -94,11 +94,11 @@ void fullQueue() {
         f = Tasks::post([] { return 0; });
         CHECK(f.valid());
     }
-    auto extra = Tasks::post([] { return 0; });
+    auto const extra = Tasks::post([] { return 0; });
     CHECK(!extra.valid());
     CHECK(Tasks::freeSlots() == 0);
     {
-        Worker worker{};
+        Worker const worker{};
         for(auto& f : keep) { CHECK(f.get() == 0); }
     }
     CHECK(Tasks::freeSlots() == Config::slots);
@@ -106,9 +106,9 @@ void fullQueue() {
 
 void mutableAndAligned() {
     Kvasir::Test::test("mutable lambdas and 8-byte-aligned captures");
-    Worker worker{};
-    double x = 2.5;
-    auto   f = Tasks::post([x, n = 0]() mutable {
+    Worker const worker{};
+    double const x = 2.5;
+    auto         f = Tasks::post([x, n = 0]() mutable {
         ++n;
         return x * 2 + n;
     });
@@ -136,7 +136,7 @@ void boundedWait() {
     CHECK(!f.waitUntil(start + std::chrono::microseconds{20}));
     CHECK(TickClock::now() - start > std::chrono::microseconds{20});
     {
-        Worker worker{};
+        Worker const worker{};
         // a deadline that never comes: true as soon as the worker has run it
         CHECK(f.waitUntil(TickClock::time_point::max()));
     }
@@ -151,5 +151,5 @@ int main() {
     fullQueue();
     mutableAndAligned();
     boundedWait();
-    return Kvasir::Test::finish();
+    return Kvasir::Test::report();
 }

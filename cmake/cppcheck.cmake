@@ -1,5 +1,6 @@
-# CPPCheck Static Analysis Configuration Configures cppcheck static analysis tool integration Provides functions to
-# enable static analysis on targets
+# cppcheck over the images (USE_CPPCHECK=ON): kvasir_add_cppcheck_flags(<target>) sets the target's C/CXX_CPPCHECK.
+# Extra suppressions: GLOBAL_{COMMON,CXX,C}_CPPCHECK_DISABLED_CHECKS. The SDK's own name beside cmake_helpers'
+# target_add_cppcheck_flags, which the host builds of the same configure load (as tidy.cmake).
 
 set(USE_CPPCHECK
     false
@@ -35,15 +36,15 @@ if(USE_CPPCHECK)
 
         list(JOIN common_cppcheck ";" cppcheck)
 
-        set(DO_CPPCHECK_CXX ${cppcheck} ${common_cppcheck_disabled_checks_} ${cxx_cppcheck_disabled_checks_})
+        set(KVASIR_CPPCHECK_CXX ${cppcheck} ${common_cppcheck_disabled_checks_} ${cxx_cppcheck_disabled_checks_})
 
-        set(DO_CPPCHECK_C ${cppcheck} ${common_cppcheck_disabled_checks_} ${c_cppcheck_disabled_checks_})
+        set(KVASIR_CPPCHECK_C ${cppcheck} ${common_cppcheck_disabled_checks_} ${c_cppcheck_disabled_checks_})
     endif()
 endif()
 
-function(target_add_cppcheck_flags target)
+function(kvasir_add_cppcheck_flags target)
     if(USE_CPPCHECK)
-        set_target_properties(${target} PROPERTIES CXX_CPPCHECK "${DO_CPPCHECK_CXX}")
-        set_target_properties(${target} PROPERTIES C_CPPCHECK "${DO_CPPCHECK_C}")
+        set_target_properties(${target} PROPERTIES CXX_CPPCHECK "${KVASIR_CPPCHECK_CXX}")
+        set_target_properties(${target} PROPERTIES C_CPPCHECK "${KVASIR_CPPCHECK_C}")
     endif()
 endfunction()

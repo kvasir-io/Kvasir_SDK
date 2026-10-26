@@ -1,14 +1,14 @@
-// Kvasir::Executor (Util/Executor.hpp) and Startup::runTurn (StartUp/Hooks.hpp) on the host, with a fake clock, a
+// Kvasir::Executor (Runtime/Executor.hpp) and Startup::runTurn (Port/Extends.hpp) on the host, with a fake clock, a
 // fake wake source and a "sleep" that moves the clock to the armed time: due order, equal times in arming order,
-// once/cancel, cancel and re-arm from the own callback; catchUp after a stall runs every missed period (MaxPerTurn
+// once/cancel, cancel and re-arm from the own callback; catchUp after a stall runs every missed period (maxPerTurn
 // per turn), skip once with missed(), rebase from now - each as Every::due/dueCount/skipTo; turn() says when it needs
 // the loop; a Deferred posted three times runs once, posted from its own callback it runs next turn, posts from two
-// threads all arrive; adopt() links Hook::Every entries with their phase and ignores the rest; sleep() arms the
-// earliest of hint, head and MaxSleep, sleeps through to it and not at all when busy or kicked; lateness and the
+// threads all arrive; adopt() links Hook::Periodic entries with their phase and ignores the rest; sleep() arms the
+// earliest of hint, head and maxSleep, sleeps through to it and not at all when busy or kicked; lateness and the
 // statistics; runTurn folds void/bool/Turn, earliest wins, and run<Hook>() still takes Turn-returning functions.
-#include "kvasir/Util/Executor.hpp"
+#include "kvasir/Runtime/Executor.hpp"
 
-#include "kvasir/StartUp/Hooks.hpp"
+#include "kvasir/Port/Extends.hpp"
 #include "support/FakeClock.hpp"
 #include "support/FakeWake.hpp"
 #include "test_harness.hpp"
@@ -41,21 +41,21 @@ using SExec = Kvasir::Executor<SleepingConfig>;
 
 std::vector<int> order;
 
-constexpr auto TickPeriod = 250ms;
-constexpr auto TickPhase  = 3ms;
+constexpr auto tickPeriod = 250ms;
+constexpr auto tickPhase  = 3ms;
 int            ticks      = 0;
 
 struct Ticker {
     static void tick() { ++ticks; }
 
     using Extends
-      = Kvasir::Startup::Extend<Kvasir::Hook::Every<TickPeriod, TickPhase>, &Ticker::tick>;
+      = Kvasir::Startup::Extend<Kvasir::Hook::Periodic<tickPeriod, tickPhase>, &Ticker::tick>;
 };
 
 struct Busy {
-    static void handler() {}
+    static void turn() {}
 
-    using Extends = Kvasir::Startup::Extend<Kvasir::Hook::MainLoop, &Busy::handler>;
+    using Extends = Kvasir::Startup::Extend<Kvasir::Hook::MainLoop, &Busy::turn>;
 };
 
 struct FakeStartup {
@@ -81,7 +81,8 @@ using On = Kvasir::Startup::Extend<Main, F>;
 
 template<typename... Es>
 Kvasir::Turn fold() {
-    return Kvasir::Startup::Detail::runTurn<Main>(static_cast<brigand::list<Es...>*>(nullptr));
+    return Kvasir::Startup::Detail::callEntries<Main, Kvasir::Turn>(
+      static_cast<brigand::list<Es...>*>(nullptr));
 }
 
 // the callbacks' state (a callback is a plain function)
@@ -118,14 +119,16 @@ int main() {
     CHECK(fold<>().isIdle());
     CHECK(Turn::within(0ms).isBusy() && Turn::within(-3ms).isBusy()
           && Turn::within(1ns) == Turn::within(1us));
-    Kvasir::Startup::Detail::runHook<Main>(
+    Kvasir::Startup::Detail::callEntries<Main, void>(
       static_cast<brigand::list<On<&in5>, On<&voidFn>>*>(nullptr));
     CHECK(voidRuns == 3);   // run<Hook>() takes a Turn-returning function and drops the value
 
     test("order: due order, equal times in arming order; once unlinks; cancel");
     reboot();
-    Exec::Timer a{[] { order.push_back(1); }}, b{[] { order.push_back(2); }},
-      c{[] { order.push_back(3); }}, d{[] { order.push_back(4); }};
+    Exec::Timer a{[] { order.push_back(1); }};
+    Exec::Timer b{[] { order.push_back(2); }};
+    Exec::Timer c{[] { order.push_back(3); }};
+    Exec::Timer d{[] { order.push_back(4); }};
     Exec::in(a, 30ms);
     Exec::in(b, 10ms);
     Exec::in(c, 10ms);
@@ -158,18 +161,39 @@ int main() {
       "catchUp after a 4-period stall: every missed period runs, MaxPerTurn a turn, on the old "
       "grid");
     reboot();
-    SExec::Timer up{[] { ++ups; }}, skip{[] { ++skipsRun; }}, re{[] { ++rebases; }};
+    SExec::Timer up{[] { ++ups; }};
+    SExec::Timer skip{[] { ++skipsRun; }};
+    SExec::Timer re{[] { ++rebases; }};
     SExec::every(up, 10ms, Kvasir::Repeat::catchUp);
     SExec::every(skip, 10ms, Kvasir::Repeat::skip);
     SExec::every(re, 10ms, Kvasir::Repeat::rebase);
     (void)SExec::turn();   // the first runs at once
     CHECK(ups == 1 && skipsRun == 1 && rebases == 1);
     Clock::advance(43ms);            // due at 10, 20, 30, 40
-    CHECK(SExec::turn().isBusy());   // 4 callbacks: MaxPerTurn
+    CHECK(SExec::turn().isBusy());   // 4 callbacks: maxPerTurn
     while(SExec::turn().isBusy()) {}
     CHECK(ups == 5 && skipsRun == 2 && skip.missed() == 3 && rebases == 2);
     CHECK(up.due() == Clock::time_point{50ms} && skip.due() == Clock::time_point{50ms}
           && re.due() == Clock::time_point{53ms});
+
+    test(
+      "Repeat and Every agree after the same stall: catchUp = due(), skip = dueCount(), rebase = "
+      "skipTo()");
+    {
+        // the timers above ran at 0, next due at 10 ms; an Every on the same grid, polled at 43 ms
+        auto const           first = Clock::time_point{10ms};
+        auto const           now   = Clock::time_point{43ms};
+        Kvasir::Every<Clock> eUp{10ms, first};
+        Kvasir::Every<Clock> eSkip{10ms, first};
+        Kvasir::Every<Clock> eRe{10ms, first};
+        int                  n = 0;
+        while(eUp.due(now)) { ++n; }
+        auto const k = eSkip.dueCount(now);
+        eRe.skipTo(now);
+        CHECK(n == 4 && ups - 1 == n && eUp.next() == up.due());
+        CHECK(k == 4 && skip.missed() == k - 1 && eSkip.next() == skip.due());
+        CHECK(eRe.next() == re.due());
+    }
 
     test("Deferred: three posts run once; posted from its own callback it runs next turn");
     reboot();
@@ -185,7 +209,8 @@ int main() {
 
     test("Deferred: posts from two threads all arrive");
     reboot();
-    Exec::Deferred dA{[] { ++seen; }}, dB{[] { ++seen; }};
+    Exec::Deferred dA{[] { ++seen; }};
+    Exec::Deferred dB{[] { ++seen; }};
     int            total = 0;
     std::thread    t1{[&] {
         for(int i = 0; i != 2000; ++i) { Exec::post(dA); }
@@ -199,7 +224,7 @@ int main() {
     total = seen;
     CHECK(total == 2);
 
-    test("adopt: Hook::Every entries, their phase first; other hooks ignored");
+    test("adopt: Hook::Periodic entries, their phase first; other hooks ignored");
     reboot();
     Exec::adopt<FakeStartup>();
     CHECK(Exec::turn() == Turn::within(3ms) && ticks == 0);
@@ -224,7 +249,7 @@ int main() {
     SExec::sleep(Turn::idle());
     CHECK(Clock::now() == Clock::time_point{20ms});
     (void)SExec::turn();
-    SExec::sleep(Turn::idle());   // nothing armed: MaxSleep
+    SExec::sleep(Turn::idle());   // nothing armed: maxSleep
     CHECK(Clock::now() == Clock::time_point{20ms + 1s});
     SExec::Deferred dd{[] {}};
     SExec::post(dd);
@@ -242,6 +267,6 @@ int main() {
     CHECK(st.worstLate == 5ms && st.callbacks == 1 && st.turns == 1);
     CHECK(SExec::takeStats().callbacks == 0);
 
-    static_assert(Kvasir::Detail::typeNameOf<Ticker>().find("Ticker") != std::string_view::npos);
+    static_assert(Kvasir::Diagnostic::typeName<Ticker>().contains("Ticker"));
     return Kvasir::Test::report();
 }

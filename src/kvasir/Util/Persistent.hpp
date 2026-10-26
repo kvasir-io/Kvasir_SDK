@@ -2,20 +2,19 @@
 // A value kept in .noInit across resets, trusted only when its CRC matches. Place the object yourself:
 //
 //     struct CounterTag {
-//         static constexpr std::uint32_t id      = Kvasir::persistentId("KBTG");
-//         static constexpr std::uint16_t version = 1;
+//         static constexpr std::uint32_t id = Kvasir::persistentId("KBTG");   // the validity magic of this kind
 //     };
-//     [[gnu::section(".noInit"), gnu::used]] inline Kvasir::Persistent<Counter, CounterTag> counter;
+//     [[KVASIR_NOINIT]] inline Kvasir::Persistent<Counter, CounterTag> counter;   // Util/attributes.hpp
 //
 //     counter.update([](Counter& c) { ++c.failures; });   // from Counter{} when nothing valid is there
-//     if(auto const c = counter.load()) { ... }            // nullopt: never stored, cleared, another build, corrupt
+//     if(auto const c = counter.load()) { ... }            // nullopt: never stored, cleared, torn, corrupt
 //
-// Layout (what host tools decode, little-endian words):
-//     word 0     Tag::id        (a four-character code, unique per kind of record)
-//     word 1     Tag::version (15:0) | sizeof(T) (31:16)
-//     words 2..  T, sizeof(T) / 4 words
+// Layout (what host tools decode, little-endian words; the record is its symbol's bytes):
+//     word 0     Tag::id        (a four-character code, unique per kind of record: the validity magic)
+//     words 1..  T, sizeof(T) / 4 words
 //     last word  CRC-32/ISO-HDLC (zlib's crc32) over words 0 .. the end of T
-// A header from another build (another id, version or size) fails like garbage does.
+// Valid = the id and the CRC: what tells a written record from power-on RAM, a cleared or a torn one. A record is
+// for the boots of the image that wrote it - nothing tells one image's layout of T from another's.
 //
 // Safe from a fault or panic handler: word loads and stores and the CRC loop, no library calls, no locks.
 // Not safe against two writers at once (two cores, an ISR and main): the writer makes sure there is one.
@@ -37,7 +36,6 @@ namespace PersistentDetail {
     template<typename Tag>
     concept RecordTag = requires {
         { Tag::id } -> std::convertible_to<std::uint32_t>;
-        { Tag::version } -> std::convertible_to<std::uint16_t>;
     };
 }   // namespace PersistentDetail
 
@@ -52,19 +50,28 @@ consteval std::uint32_t persistentId(char const (&s)[5]) {
 }
 
 template<typename T, PersistentDetail::RecordTag Tag>
+class Persistent;
+
+namespace Test {
+    /// Test hook: flips bit `bit` of the stored record (bit 0 is word 0's lowest, the layout above) in place, as a
+    /// stray write or a decayed cell would; for a test that shows load() refuses it. A bit past the record: nothing.
+    template<typename T,
+             PersistentDetail::RecordTag Tag>
+    void corruptStoredRecord(Persistent<T,
+                                        Tag>& record,
+                             std::size_t      bit);
+}   // namespace Test
+
+template<typename T, PersistentDetail::RecordTag Tag>
 class Persistent {
     static_assert(std::is_trivially_copyable_v<T> && std::is_trivially_default_constructible_v<T>,
                   "a Persistent value is read back as raw words after a reset");
     static_assert(sizeof(T) % 4 == 0 && alignof(T) <= 4,
                   "a Persistent value is whole words");
-    static_assert(sizeof(T) <= 0xFFFF,
-                  "the size has 16 bits in the header");
 
 public:
-    static constexpr std::size_t   valueWords = sizeof(T) / 4;
-    static constexpr std::size_t   words      = 2 + valueWords + 1;
-    static constexpr std::uint32_t header1
-      = std::uint32_t{Tag::version} | (static_cast<std::uint32_t>(sizeof(T)) << 16U);
+    static constexpr std::size_t valueWords = sizeof(T) / 4;
+    static constexpr std::size_t words      = 1 + valueWords + 1;
 
 private:
     // volatile: read after a reset, which LTO cannot see (it would narrow or drop the stores). No
@@ -73,7 +80,11 @@ private:
 
     using Raw = std::array<std::uint32_t, words>;
 
-    Raw raw() const {
+    friend void Test::corruptStoredRecord<T,
+                                          Tag>(Persistent&,
+                                               std::size_t);
+
+    [[nodiscard]] Raw raw() const {
         Raw r;
         for(std::size_t i = 0; i != words; ++i) { r[i] = w_[i]; }
         return r;
@@ -90,34 +101,33 @@ private:
 
 public:
     using value_type = T;
-    using tag_type   = Tag;
 
     Persistent()                             = default;   // trivial: nothing stored at static init
     Persistent(Persistent const&)            = delete;
     Persistent& operator=(Persistent const&) = delete;
 
-    /// The value if header and CRC match; nullopt for "never stored", "cleared", "from another
-    /// build" and "corrupt" alike.
+    /// The value if the id and the CRC match; nullopt for "never stored", "cleared", "torn" and
+    /// "corrupt" alike.
     [[nodiscard]] std::optional<T> load() const {
         auto const r = raw();
-        if(r[0] != Tag::id || r[1] != header1 || r[words - 1] != crcOf(r)) { return std::nullopt; }
+        if(r[0] != Tag::id || r[words - 1] != crcOf(r)) { return std::nullopt; }
         std::array<std::uint32_t, valueWords> v;
-        for(std::size_t i = 0; i != valueWords; ++i) { v[i] = r[2 + i]; }
+        for(std::size_t i = 0; i != valueWords; ++i) { v[i] = r[1 + i]; }
         return std::bit_cast<T>(v);
     }
 
     /// Whether load() would give a value, without copying it out.
     [[nodiscard]] bool valid() const {
         auto const r = raw();
-        return r[0] == Tag::id && r[1] == header1 && r[words - 1] == crcOf(r);
+        return r[0] == Tag::id && r[words - 1] == crcOf(r);
     }
 
-    /// The id word cleared first, then the header, the value and the CRC, the id last: a reset
+    /// The id word cleared first, then the value and the CRC, the id last: a reset
     /// anywhere in between leaves a record that fails load(), never a mix of old and new. Word by word
     /// with the CRC computed on the way, so a large T (a stack snapshot) needs no copy on the stack.
     void store(T const& value) {
         storeWords([&value](std::size_t i) {
-            std::uint32_t w;
+            std::uint32_t w{};
             std::memcpy(&w, reinterpret_cast<std::byte const*>(&value) + i * 4, 4);
             return w;
         });
@@ -132,12 +142,10 @@ public:
             for(unsigned b = 0; b != 4; ++b) { e.update(static_cast<std::byte>(v >> (8U * b))); }
         };
         feed(Tag::id);
-        feed(header1);
-        w_[1] = header1;
         for(std::size_t i = 0; i != valueWords; ++i) {
             std::uint32_t const v = word(i);
             feed(v);
-            w_[2 + i] = v;
+            w_[1 + i] = v;
         }
         w_[words - 1] = e.finish();
         w_[0]         = Tag::id;
@@ -151,7 +159,7 @@ public:
         store(v);
     }
 
-    /// Any CRC mismatch will do; the id too, so a dump does not show a stale header.
+    /// Any CRC mismatch will do; the id too, so a dump does not show a stale record.
     void clear() {
         w_[words - 1] = ~w_[words - 1];
         w_[0]         = 0;
@@ -164,4 +172,14 @@ public:
         return v;
     }
 };
+
+template<typename T,
+         PersistentDetail::RecordTag Tag>
+void Test::corruptStoredRecord(Persistent<T,
+                                          Tag>& record,
+                               std::size_t      bit) {
+    if(bit >= Persistent<T, Tag>::words * 32U) { return; }
+    auto const word = bit / 32U;
+    record.w_[word] = record.w_[word] ^ (std::uint32_t{1} << (bit % 32U));
+}
 }   // namespace Kvasir

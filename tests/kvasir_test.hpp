@@ -10,6 +10,7 @@
     #error "the Kvasir register tests must be compiled with KVASIR_REGISTER_MOCK defined"
 #endif
 
+#include "kvasir/Register/Mmio.hpp"   // declares the readAt/writeAt seam defined below
 #include "test_harness.hpp"
 
 #include <cstdint>
@@ -124,15 +125,17 @@ namespace Kvasir { namespace Test {
         // gives the address state from now on (the same model on every call)
         Model& model(unsigned address) { return models[address]; }
 
-        void setReadValue(unsigned address,
-                          unsigned value) {
-            refuseModelled(address);
-            readValues[address] = {value};
+        void setReadValue(unsigned             address,
+                          unsigned             word,
+                          std::source_location loc = std::source_location::current()) {
+            refuseModelled(address, loc);
+            readValues[address] = {word};
         }
 
         void setReadValues(unsigned             address,
-                           std::deque<unsigned> values) {
-            refuseModelled(address);
+                           std::deque<unsigned> values,
+                           std::source_location loc = std::source_location::current()) {
+            refuseModelled(address, loc);
             readValues[address] = std::move(values);
         }
 
@@ -142,67 +145,43 @@ namespace Kvasir { namespace Test {
             models.clear();
         }
 
-        template<typename T,
-                 unsigned A>
-        T read() {
-            return readAt<T>(A);
-        }
-
-        template<typename T,
-                 unsigned A>
-        void write(T v) {
-            writeAt<T>(A, v);
-        }
-
-        // an address known at run time (Register::Array)
+        // every register and memory access (Register::Mmio)
         template<typename T>
         T readAt(unsigned a) {
             unsigned returnedValue = 0;
-            if(auto m = models.find(a); m != models.end()) {
+            if(auto const m = models.find(a); m != models.end()) {
                 returnedValue = m->second.read();
-            } else if(auto it = readValues.find(a); it != readValues.end() && !it->second.empty()) {
+            } else if(auto const it = readValues.find(a);
+                      it != readValues.end() && !it->second.empty())
+            {
                 // the next injected value if available, otherwise 0
                 returnedValue = it->second.front();
                 it->second.pop_front();
             }
-            actions.push_back(Read{a, returnedValue});
+            actions.emplace_back(Read{a, returnedValue});
             return static_cast<T>(returnedValue);
         }
 
         template<typename T>
         void writeAt(unsigned a,
                      T        v) {
-            actions.push_back(Write{a, static_cast<unsigned>(v)});
-            if(auto m = models.find(a); m != models.end()) {
+            actions.emplace_back(Write{a, static_cast<unsigned>(v)});
+            if(auto const m = models.find(a); m != models.end()) {
                 m->second.write(static_cast<unsigned>(v));
             }
         }
 
     private:
         // a queued read value on a modelled address would never be returned: a test bug
-        void refuseModelled(unsigned address) {
+        void refuseModelled(unsigned             address,
+                            std::source_location loc) {
             if(models.contains(address)) {
-                ++failures;
-                std::print("FAIL [{}] setReadValue on 0x{:02X}, which has a model\n",
-                           currentTest,
-                           address);
+                failf(loc, "setReadValue on 0x{:02X}, which has a model", address);
             }
         }
     };
 
     inline Recorder recorder{};
-
-    template<typename TRegType,
-             unsigned Address>
-    TRegType read() {
-        return recorder.read<TRegType, Address>();
-    }
-
-    template<typename TRegType,
-             unsigned Address>
-    void write(TRegType v) {
-        recorder.write<TRegType, Address>(v);
-    }
 
     template<typename TRegType>
     TRegType readAt(unsigned address) {
@@ -240,7 +219,7 @@ namespace Kvasir { namespace Test {
     // launder a value through a volatile so the compiler cannot constant fold it and
     // the runtime (indexed) apply path is exercised
     inline unsigned runtimeValue(unsigned v) {
-        unsigned volatile x = v;
+        unsigned const volatile x = v;
         return x;
     }
 
@@ -248,11 +227,7 @@ namespace Kvasir { namespace Test {
     inline void checkActions(std::vector<Recorder::Action> const& expected,
                              std::source_location loc = std::source_location::current()) {
         if(recorder.actions != expected) {
-            ++failures;
-            std::print("FAIL [{}] recorded actions differ ({}:{})\n",
-                       currentTest,
-                       loc.file_name(),
-                       loc.line());
+            failf(loc, "recorded actions differ");
             std::print("  expected actions:\n");
             for(auto const& action : expected) { printAction(action); }
             printRecordedActions();
@@ -273,12 +248,7 @@ namespace Kvasir { namespace Test {
             }
         }
         if(!ok) {
-            ++failures;
-            std::print("FAIL [{}] expected action kinds \"{}\" ({}:{})\n",
-                       currentTest,
-                       kinds,
-                       loc.file_name(),
-                       loc.line());
+            failf(loc, "expected action kinds \"{}\"", kinds);
             printRecordedActions();
         }
     }
@@ -315,13 +285,7 @@ namespace Kvasir { namespace Test {
             }
         }
         if(count != 1) {
-            ++failures;
-            std::print("FAIL [{}] expected exactly one write to 0x{:02X}, got {} ({}:{})\n",
-                       currentTest,
-                       address,
-                       count,
-                       loc.file_name(),
-                       loc.line());
+            failf(loc, "expected exactly one write to 0x{:02X}, got {}", address, count);
             printRecordedActions();
         }
         return value;
@@ -332,3 +296,53 @@ namespace Kvasir { namespace Test {
 #include "kvasir/Register/Register.hpp"
 #include "kvasir/Register/Types.hpp"
 #include "kvasir/Register/Utility.hpp"
+#include "kvasir/Util/Diagnostic.hpp"
+
+#include <array>
+#include <string>
+
+namespace Kvasir { namespace Test {
+
+    // the recorded actions, as the expected lists spell them
+    using R = Recorder::Read;
+    using W = Recorder::Write;
+
+    // a compile-time constant of a field's value type (the field API's value<T, V>, with V given as unsigned)
+    template<typename T,
+             unsigned V>
+    constexpr auto ctv() {
+        return Kvasir::Register::value<T, static_cast<T>(V)>();
+    }
+
+    // every Reg::Addr differs: two registers of one test at one address share the recorder's read queue and model
+    template<typename... Regs>
+    consteval bool distinctAddresses() {
+        std::array<unsigned, sizeof...(Regs)> const a{Regs::Addr::value...};
+        for(std::size_t i = 0; i < a.size(); ++i) {
+            for(std::size_t j = i + 1; j < a.size(); ++j) {
+                if(a[i] == a[j]) { return false; }
+            }
+        }
+        return true;
+    }
+
+    // a field of bits Hi..Lo, shaped like svd_converter's output, on one line
+    template<typename A,
+             unsigned Hi,
+             unsigned Lo,
+             typename Acc = Kvasir::Register::ReadWriteAccess,
+             typename T   = std::uint32_t>
+    using Field
+      = Kvasir::Register::FieldLocation<A, Kvasir::Register::maskFromRange(Hi, Lo), Acc, T>;
+
+    // begin a test case named after its instantiation: testFor<Reg>("rmw") is "rmw<SimpleTestReg>"
+    template<typename... Ts>
+    void testFor(std::string_view name) {
+        std::string n{name};
+        n += '<';
+        ((n += Kvasir::Diagnostic::typeName<Ts>(), n += ','), ...);
+        n.back() = '>';
+        test(n);
+    }
+
+}}   // namespace Kvasir::Test

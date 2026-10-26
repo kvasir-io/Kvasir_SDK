@@ -72,22 +72,24 @@ public:
     /// \name Size / capacity
     ///@{
 
-    constexpr std::size_t size() const { return data_.size(); }
+    [[nodiscard]] constexpr std::size_t size() const { return data_.size(); }
 
-    constexpr std::size_t max_size() const { return N; }
+    // static, as StaticVector's / StaticMap's / StaticSet's: the bound is part of the type, so aglio counts the string
+    // as a fixed-capacity buffer (fixed_capacity_v) and bounds its wire size (max_serialized_size_v).
+    static constexpr std::size_t max_size() noexcept { return N; }
 
-    constexpr std::size_t capacity() const { return N; }
+    static constexpr std::size_t capacity() noexcept { return N; }
 
-    constexpr bool empty() const { return data_.empty(); }
+    [[nodiscard]] constexpr bool empty() const { return data_.empty(); }
 
-    constexpr bool full() const { return data_.full(); }
+    [[nodiscard]] constexpr bool full() const { return data_.full(); }
 
     ///@}
 
     /// \name Data access
     ///@{
 
-    constexpr char const* data() const { return data_.data(); }
+    [[nodiscard]] constexpr char const* data() const { return data_.data(); }
 
     constexpr char* data() { return data_.data(); }
 
@@ -98,19 +100,23 @@ public:
 
     constexpr iterator begin() { return data_.begin(); }
 
-    constexpr const_iterator begin() const { return data_.begin(); }
+    [[nodiscard]] constexpr const_iterator begin() const { return data_.begin(); }
 
     constexpr iterator end() { return data_.end(); }
 
-    constexpr const_iterator end() const { return data_.end(); }
+    [[nodiscard]] constexpr const_iterator end() const { return data_.end(); }
 
     constexpr reverse_iterator rbegin() { return reverse_iterator{data_.end()}; }
 
-    constexpr const_reverse_iterator rbegin() const { return const_reverse_iterator{data_.end()}; }
+    [[nodiscard]] constexpr const_reverse_iterator rbegin() const {
+        return const_reverse_iterator{data_.end()};
+    }
 
     constexpr reverse_iterator rend() { return reverse_iterator{data_.begin()}; }
 
-    constexpr const_reverse_iterator rend() const { return const_reverse_iterator{data_.begin()}; }
+    [[nodiscard]] constexpr const_reverse_iterator rend() const {
+        return const_reverse_iterator{data_.begin()};
+    }
 
     ///@}
 
@@ -119,11 +125,11 @@ public:
 
     constexpr char& front() { return data_.front(); }
 
-    constexpr char const& front() const { return data_.front(); }
+    [[nodiscard]] constexpr char const& front() const { return data_.front(); }
 
     constexpr char& back() { return data_.back(); }
 
-    constexpr char const& back() const { return data_.back(); }
+    [[nodiscard]] constexpr char const& back() const { return data_.back(); }
 
     ///@}
 
@@ -139,7 +145,7 @@ public:
     }
 
     /// Append \p v as decimal digits, no sign, no padding. Asserts that they fit.
-    constexpr void put_uint(std::uint32_t v) {
+    constexpr void putUint(std::uint32_t v) {
         std::array<char, 10> digits{};   // 4294967295 is ten of them
         std::size_t          n = 0;
         do {
@@ -169,14 +175,14 @@ public:
     /// \name String operations
     ///@{
 
-    constexpr bool starts_with(std::string_view sv) const {
+    [[nodiscard]] constexpr bool starts_with(std::string_view sv) const {
         if(sv.size() > size()) { return false; }
         return std::equal(sv.begin(), sv.end(), data_.begin());
     }
 
-    constexpr bool starts_with(char c) const { return !empty() && front() == c; }
+    [[nodiscard]] constexpr bool starts_with(char c) const { return !empty() && front() == c; }
 
-    StaticString operator+(std::string_view sv) const {
+    constexpr StaticString operator+(std::string_view sv) const {
         auto newS = *this;
         assert(N >= sv.size() + newS.size());
         std::copy(sv.begin(), sv.end(), std::back_inserter(newS));
@@ -188,20 +194,18 @@ public:
     /// \name Comparison operators
     ///@{
 
-    constexpr bool operator==(std::string_view sv) const { return sv == std::string_view{*this}; }
-
-    constexpr bool operator==(StaticString const& other) const {
-        return std::string_view{other} == std::string_view{*this};
+    /// Two hidden friends; C++20's rewritten candidates add either operand order. The string_view one
+    /// covers string literals too. A StaticString on both sides needs its own (exact) overload: through
+    /// the string_view one alone, `a == b` is ambiguous between the call and its reversed form.
+    friend constexpr bool operator==(StaticString const& a,
+                                     std::string_view    b) noexcept {
+        return std::string_view{a} == b;
     }
 
-    template<std::size_t NN>
-    constexpr bool operator==(StaticString<NN> const& other) const {
-        return std::string_view{other} == std::string_view{*this};
-    }
-
-    template<std::size_t NN>
-    constexpr bool operator==(char const (&str)[NN]) const {
-        return std::string_view{str, NN - 1} == std::string_view{*this};
+    template<std::size_t M>
+    friend constexpr bool operator==(StaticString const&    a,
+                                     StaticString<M> const& b) noexcept {
+        return std::string_view{a} == std::string_view{b};
     }
 
     ///@}
@@ -213,12 +217,5 @@ private:
         std::copy(sv.begin(), sv.end(), std::back_inserter(data_));
     }
 };
-
-template<char... chars>
-constexpr StaticString<sizeof...(chars)> operator""_ss() {
-    StaticString<sizeof...(chars)> ret;
-    if constexpr(sizeof...(chars) > 0) { (ret.push_back(chars), ...); }
-    return ret;
-}
 
 }   // namespace Kvasir

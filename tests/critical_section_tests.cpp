@@ -1,7 +1,7 @@
 // criticalSection<Tag>(f [, pred]) under the host policy (a mutex per tag): exact counts from two
 // threads, unrelated tags that do not contend, the predicate form, what the policy concept rejects,
 // and results passed through unchanged. Run it under TSan (config tsan) as the other threaded tests.
-#include "multicore_test.hpp"
+#include "test_harness.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -11,7 +11,39 @@
 
 namespace {
 using Kvasir::criticalSection;
-using Kvasir::Atomic::CriticalSectionPolicy;
+using Kvasir::Atomic::CriticalSectionPolicyShape;
+
+// ---- the PRIMASK API's shape: the host's Core::IrqGuard / IrqState are the target's (core/InterruptMask.hpp; the same
+// asserts for the target in core_cortex_common tests/irq_state_syntax.cpp) ------------------------------------------
+
+using Kvasir::Core::IrqGuard;
+using Kvasir::Core::IrqState;
+static_assert(!std::is_copy_constructible_v<IrqGuard> && !std::is_move_constructible_v<IrqGuard>);
+static_assert(!std::is_copy_assignable_v<IrqGuard> && !std::is_move_assignable_v<IrqGuard>);
+static_assert(std::is_trivially_copyable_v<IrqState> && sizeof(IrqState) == sizeof(std::uint32_t));
+static_assert([] {
+    IrqGuard const g{};
+    return !g.wasMasked();
+}());
+static_assert([] {
+    auto const s = IrqState::saveAndMask();
+    s.restore();
+    return !s.wasMasked() && !Kvasir::Core::irqsMasked();
+}());
+
+// ---- the ABI tag: the policies sit in the inline namespace KVASIR_MULTICORE names (Atomic/Sync.hpp) ------------
+
+#if defined(KVASIR_MULTICORE) && KVASIR_MULTICORE
+static_assert(std::is_same_v<Kvasir::Atomic::Policy::IrqMask,
+                             Kvasir::Atomic::multicore::Policy::IrqMask>);
+static_assert(std::is_same_v<Kvasir::Atomic::SyncThread,
+                             Kvasir::Atomic::multicore::SyncThread>);
+#else
+static_assert(std::is_same_v<Kvasir::Atomic::Policy::IrqMask,
+                             Kvasir::Atomic::singlecore::Policy::IrqMask>);
+static_assert(std::is_same_v<Kvasir::Atomic::SyncThread,
+                             Kvasir::Atomic::singlecore::SyncThread>);
+#endif
 
 // ---- the concept -------------------------------------------------------------------------------
 
@@ -54,12 +86,12 @@ struct NoTag {
     }
 };
 
-static_assert(!CriticalSectionPolicy<Decays>);
-static_assert(!CriticalSectionPolicy<NoPredicate>);
-static_assert(!CriticalSectionPolicy<NoTag>);
-static_assert(CriticalSectionPolicy<Kvasir::Atomic::Policy::MutexPerTag>);
-static_assert(CriticalSectionPolicy<Kvasir::Atomic::Policy::IrqMask>);
-static_assert(CriticalSectionPolicy<Kvasir::Atomic::Policy::IrqMaskAndLock>);
+static_assert(!CriticalSectionPolicyShape<Decays>);
+static_assert(!CriticalSectionPolicyShape<NoPredicate>);
+static_assert(!CriticalSectionPolicyShape<NoTag>);
+static_assert(CriticalSectionPolicyShape<Kvasir::Atomic::Policy::MutexPerTag>);
+static_assert(CriticalSectionPolicyShape<Kvasir::Atomic::Policy::IrqMask>);
+static_assert(CriticalSectionPolicyShape<Kvasir::Atomic::Policy::IrqMaskAndLock>);
 
 // ---- results pass through ----------------------------------------------------------------------
 
@@ -77,14 +109,14 @@ void resultsPassThrough() {
 
 // ---- exclusion -----------------------------------------------------------------------------------
 
-constexpr std::uint32_t Iterations = 100'000;
+constexpr std::uint32_t iterations = 100'000;
 
 template<typename Tag>
 void exactCount(char const* name) {
     Kvasir::Test::test(name);
     std::uint32_t counter = 0;
-    auto          worker  = [&] {
-        for(std::uint32_t i = 0; i < Iterations; ++i) {
+    auto const    worker  = [&] {
+        for(std::uint32_t i = 0; i < iterations; ++i) {
             criticalSection<Tag>([&] { ++counter; });
         }
     };
@@ -92,7 +124,7 @@ void exactCount(char const* name) {
     std::thread b{worker};
     a.join();
     b.join();
-    CHECK(counter == 2 * Iterations);
+    CHECK(counter == 2 * iterations);
 }
 
 struct CountTag {};
@@ -158,5 +190,5 @@ int main() {
     exactCount<CountTag>("exact count, tagged");
     unrelatedTagsDoNotContend();
     predicateWaits();
-    return Kvasir::Test::finish();
+    return Kvasir::Test::report();
 }

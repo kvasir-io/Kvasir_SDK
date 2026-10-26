@@ -85,7 +85,9 @@ template<int N>
 #endif
 
 #if CASE == 8 || CASE == 9
+    #include "kvasir/Register/AtomicFactories.hpp"
     #include "kvasir/Register/Register.hpp"
+    #include "kvasir/Register/Views.hpp"
 
     #include <array>
     #include <cstdint>
@@ -102,7 +104,15 @@ struct RegA {
                                                      Kvasir::Register::maskFromRange(7, 0),
                                                      Kvasir::Register::ReadWriteAccess,
                                                      std::uint32_t>
-      lo{};
+                                   lo{};
+    static constexpr std::uint32_t resetValue = 0x00001200;
+    using fields = Kvasir::Register::Fields<decltype(hi), decltype(lo)>;
+
+    template<typename... Actions>
+    [[gnu::always_inline]] static constexpr auto overrideDefaults(Actions const&... actions) {
+        return Kvasir::Register::overrideDefaults<Kvasir::Register::DefaultValues<RegA>>(
+          actions...);
+    }
 };
 
 struct RegB {
@@ -130,6 +140,12 @@ struct RegB {
     sink                   = int(get<0>(two)) + (get<1>(two) ? 1 : 0);
     apply(write(RegA::lo, std::uint32_t(v)), set(RegB::en));
     apply(clear(RegB::en));
+    apply(RegA::overrideDefaults(
+      write(RegA::lo, std::uint32_t(v))));                 // the bundle: hi from its reset value
+    bool const b3 = apply(read(bit<3, bool>(RegA::lo)));   // one bit of a field, as a bool
+    sink          = b3 ? 1 : 0;
+    apply(write(fieldAt<9>(RegA{}), value<std::uint32_t, 3>()));   // the field holding bit 9 (hi)
+    apply(atomic(set(bit<1>(RegA::hi))));                          // an atomic set of one bit
 }
 #endif
 
@@ -140,6 +156,60 @@ struct RegB {
     KVASIR_RAM_FUNC_MARK();
     std::array<unsigned, 1> a{unsigned(v)};
     sink = int(a[0]);
+}
+#endif
+
+#if CASE == 10
+    #include "kvasir/Register/Memory.hpp"
+
+    #include <cstdint>
+
+// Kvasir::Memory in a RAM function (a flash or OTP word read with XIP off): as CASE 8, nothing may stay a call
+[[KVASIR_RAM_FUNC_ATTRIBUTES]] void memoryAccess(int v) {
+    KVASIR_RAM_FUNC_MARK();
+    std::uint32_t words[3]{};
+    Kvasir::Memory::loadWords(0x10000000U, words, 3);
+    sink = int(words[0] + words[2] + Kvasir::Memory::load<std::uint8_t>(0x10U));
+    Kvasir::Memory::store<std::uint16_t>(0x20000000U, std::uint16_t(v));
+}
+#endif
+
+#if CASE == 11
+    #include "Barrier.hpp"         // core_cortex_common (the test passes its directory)
+    #include "InterruptMask.hpp"   // Core::IrqGuard, IrqState
+
+    #include <cstdint>
+
+// The PRIMASK API and the barriers in a RAM function (XIP-off code masks with them): as CASE 8, nothing may stay a call
+[[KVASIR_RAM_FUNC_ATTRIBUTES]] void irqAccess(int v) {
+    KVASIR_RAM_FUNC_MARK();
+    {
+        Kvasir::Core::IrqGuard const guard{};
+        sink = v + int(guard.wasMasked()) + int(Kvasir::Core::irqsMasked());
+        Kvasir::Core::dsb();
+        Kvasir::Core::isb();
+    }
+    auto const state = Kvasir::Core::IrqState::saveAndMask();
+    Kvasir::Core::dmb();
+    sink = sink + int(state.wasMasked());
+    state.restore();
+    Kvasir::Core::maskIrqs();
+    Kvasir::Core::unmaskIrqs();
+}
+#endif
+
+#if CASE == 12
+    #include "Delay.hpp"   // core_cortex_common (the test passes its directory)
+
+    #include <cstdint>
+
+// The core's counted waits in a RAM function (XipControl's chip-select dwells run with XIP off): as CASE 8, nothing may
+// stay a call
+[[KVASIR_RAM_FUNC_ATTRIBUTES]] void delayAccess(int v) {
+    KVASIR_RAM_FUNC_MARK();
+    Kvasir::Core::spinCycles<64>();
+    Kvasir::Core::spinCycles(static_cast<std::uint32_t>(v));
+    sink = v;
 }
 #endif
 
@@ -168,5 +238,14 @@ extern "C" [[gnu::section(".text.main")]] void entry() {
 #endif
 #if CASE == 9
     stdArrayIndex(sink);
+#endif
+#if CASE == 10
+    memoryAccess(sink);
+#endif
+#if CASE == 11
+    irqAccess(sink);
+#endif
+#if CASE == 12
+    delayAccess(sink);
 #endif
 }

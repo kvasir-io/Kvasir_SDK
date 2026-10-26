@@ -1,19 +1,16 @@
-// Kvasir::Retry (Util/Retry.hpp): the first failure is due after `first`, the pause doubles up to `longest`, a success
-// starts over, and a clock that jumps far makes it due once, not once per missed pause.
+// Kvasir::Retry (Util/Retry.hpp, a Backoff plus the pending value): the first failure is due after `first`, the pause
+// doubles up to `longest`, a success starts over, and a clock that jumps far makes it due once, not once per missed
+// pause.
 #include "kvasir/Util/Retry.hpp"
 
+#include "support/FakeClock.hpp"
 #include "test_harness.hpp"
 
 #include <chrono>
 #include <cstdint>
 
 namespace {
-struct TestClock {
-    using rep        = std::int64_t;
-    using period     = std::milli;
-    using duration   = std::chrono::milliseconds;
-    using time_point = std::chrono::time_point<TestClock>;
-};
+using TestClock = Kvasir::Test::FakeClockT<std::chrono::milliseconds>;
 
 enum class E : std::uint8_t { a, b };
 
@@ -22,7 +19,20 @@ struct Short {
     static constexpr std::chrono::seconds longest{5};
 };
 
+struct One {   // absent after the first failure
+    static constexpr std::chrono::seconds first{1};
+    static constexpr std::chrono::seconds longest{5};
+    static constexpr std::uint16_t        absentAfter = 1;
+};
+
 using ms = std::chrono::milliseconds;
+
+// a Retry is its Backoff plus pending/last, which sit in the Backoff's tail padding: no byte more than the Backoff
+static_assert(sizeof(Kvasir::Retry<TestClock,
+                                   E,
+                                   Short>)
+              == sizeof(Kvasir::Backoff<TestClock,
+                                        Short>));
 }   // namespace
 
 int main() {
@@ -32,7 +42,7 @@ int main() {
 
     {
         test("nothing pending: never due");
-        R r{};
+        R const r{};
         CHECK(!r.pending && !r.due(t) && !r.due(t + std::chrono::hours{1}));
     }
 
@@ -82,10 +92,32 @@ int main() {
     {
         test("the defaults: 1 s, 10 min");
         using D = Kvasir::Retry<TestClock, E>;
-        static_assert(D::First == ms{1000} && D::Longest == ms{600'000});
+        static_assert(D::first == ms{1000} && D::longest == ms{600'000});
         D r{};
         for(int i = 0; i != 20; ++i) { r.failed(E::a, t); }
         CHECK(r.pause == ms{600'000});
+    }
+
+    {
+        test(
+          "linkOf: answering while nothing is pending, starting below absentAfter (3) failures, "
+          "absent from it on");
+        using D = Kvasir::Retry<TestClock, E>;
+        D r{};
+        CHECK(Kvasir::linkOf(r) == Kvasir::Link::answering);
+        r.failed(E::a, t);
+        CHECK(Kvasir::linkOf(r) == Kvasir::Link::starting);
+        r.failed(E::a, t);
+        CHECK(Kvasir::linkOf(r) == Kvasir::Link::starting);
+        r.failed(E::a, t);
+        CHECK(Kvasir::linkOf(r) == Kvasir::Link::absent);
+        r.succeeded();
+        CHECK(Kvasir::linkOf(r) == Kvasir::Link::answering);
+        test("linkOf: a Config's absentAfter");
+        Kvasir::Retry<TestClock, E, One> o{};
+        o.failed(E::a, t);
+        CHECK(Kvasir::linkOf(o) == Kvasir::Link::absent);
+        CHECK(Kvasir::linkOf(R{}) == Kvasir::Link::answering);   // a Config without it: the default
     }
 
     return Kvasir::Test::report();

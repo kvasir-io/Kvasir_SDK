@@ -7,8 +7,9 @@
 #
 # Usage:
 #   ./libcport [options] [components] <llvm-project-repo> <kvasir-sdk-repo>
+#   ./libcport --clear-new-marks [components] <kvasir-sdk-repo>
 #
-#   <llvm-project-repo>  path to an llvm-project checkout (e.g. ~/repos/llvm-project),
+#   <llvm-project-repo>  path to an llvm-project checkout (e.g. ../llvm-project),
 #                        already checked out at the release tag you want to port.
 #   <kvasir-sdk-repo>    path to the Kvasir_SDK repo; files land in <repo>/lib/{libc,libcxx,compiler-rt}.
 #
@@ -46,6 +47,10 @@
 #                         a throwaway dir, never the port's build dir.
 #   --skip-libc-headers   with --check: leave libc's generated headers out (no cmake; seconds). The
 #                         libc include/ files that come from the build are then not checked.
+#   --clear-new-marks     strip the trailing "# NEW" tag a port gives each new entry of a source list
+#                         (every list of the component table below, profile.cmake included), once its
+#                         new entries are reviewed. Only the tag goes; the entry (active or commented)
+#                         stays. Takes only <kvasir-sdk-repo>; needs no llvm-project.
 #   -h, --help            show this help
 #
 # Patch header: every kvasir/<component>/patches/*.patch starts with a block GNU patch ignores
@@ -63,12 +68,15 @@
 #   kvasir/<component>/patches/    one patch per upstream file Kvasir changes, applied after
 #                                  the copy (GNU patch, fuzz 2). A patch that no longer applies
 #                                  leaves a .rej next to the file and a warning.
+#   kvasir/libc-config/            libc only: exclude.txt (targets taken out of upstream's lists),
+#                                  config.json (our LIBC_CONF_* values), OPTIONS.md (generated).
+#   KVASIR_STATE_DIR moves all of it (tests/check_selftest.sh seeds drift into a scratch copy).
 #
 # Knobs (override via environment):
 #   LIBC_CONFIG_DIR    a complete libc config folder (entrypoints.txt/headers.txt/config.json)
 #                      to use as is. Default: derived - upstream's libc/config/baremetal/arm
 #                      entrypoints.txt/headers.txt minus kvasir/libc-config/exclude.txt, plus
-#                      <this script's dir>/libc-config/config.json; written to
+#                      kvasir/libc-config/config.json; written to
 #                      <build dir>/kvasir-libc-config.
 #   LIBC_BUILD_DIR     cmake build dir. Default: <llvm-project-repo>/build
 #   LIBC_TARGET_TRIPLE target triple. Default: armv8-m.main-none-eabihf
@@ -80,6 +88,25 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ---------------------------------------------------------------------------
+# The component table: each component's Kvasir source lists in lib/<component>/, one line per .cmake file:
+#   <cmake file> <source dir its entries are rooted at> <compiled extensions> <list variable>...
+# New upstream sources go to the first variable. The port syncs every line (sync_source_lists, which tags new
+# entries "# NEW"), --clear-new-marks strips the tags from every line's file, and a component is valid when it
+# has lines here.
+# ---------------------------------------------------------------------------
+ALL_COMPONENTS="libc libcxx compiler-rt"
+source_lists() {
+    case "$1" in
+        libc)        echo "libc.cmake src .cpp LIBC_SOURCE_FILES LIBC_MALLOC_SOURCE_FILES" ;;
+        libcxx)      echo "libcxx.cmake src .cpp LIBCXX_SOURCE_FILES" ;;
+        compiler-rt) # .c + .S (+ .cpp since LLVM 23) builtins; the bare-metal profile runtime (coverage images)
+                     echo "compiler-rt.cmake builtins .c,.S,.cpp COMPILER_RT_ALL_SOURCE_FILES"
+                     echo "profile.cmake profile .c COMPILER_RT_PROFILE_SOURCE_FILES" ;;
+        *) return 1 ;;
+    esac
+}
 
 usage() {
     sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
@@ -107,6 +134,7 @@ while [ "$#" -gt 0 ]; do
         --save-patches) MODE=save ;;
         --check)        MODE=check ;;
         --skip-libc-headers) SKIP_LIBC_HEADERS=1 ;;
+        --clear-new-marks) MODE=clear ;;
         -h|--help)     usage; exit 0 ;;
         --) shift; while [ "$#" -gt 0 ]; do POSITIONAL+=("$1"); shift; done; break ;;
         -*) echo "error: unknown option '$1'." >&2; usage >&2; exit 2 ;;
@@ -115,30 +143,52 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
-if [ "${#POSITIONAL[@]}" -ne 2 ]; then
+if [ "$MODE" = clear ] && [ "${#POSITIONAL[@]}" -ne 1 ]; then
+    echo "error: --clear-new-marks expects only <kvasir-sdk-repo>." >&2
+    usage >&2
+    exit 2
+fi
+if [ "$MODE" != clear ] && [ "${#POSITIONAL[@]}" -ne 2 ]; then
     echo "error: expected <llvm-project-repo> and <kvasir-sdk-repo>." >&2
     usage >&2
     exit 2
 fi
 
 # CLI selection wins; otherwise fall back to COMPONENTS env (default all three).
-for c in $SELECTED; do
-    case "$c" in
-        libc|libcxx|compiler-rt) ;;
-        *) echo "error: unknown component '$c' (want: libc, libcxx, compiler-rt)." >&2; exit 2 ;;
-    esac
+COMPONENTS="${SELECTED:-${COMPONENTS:-$ALL_COMPONENTS}}"
+for c in $COMPONENTS; do
+    source_lists "$c" > /dev/null \
+        || { echo "error: unknown component '$c' (want: ${ALL_COMPONENTS// /, })." >&2; exit 2; }
 done
+
+# --clear-new-marks: every source list of the selected components, then done (no llvm-project involved). A file
+# without a mark is not rewritten: lib/*/*.cmake are configure inputs of every firmware tree.
+if [ "$MODE" = clear ]; then
+    KVASIR="$(cd "${POSITIONAL[0]}" && pwd)"
+    total=0
+    for c in $COMPONENTS; do
+        while read -r file _; do
+            f="$KVASIR/lib/$c/$file"
+            [ -f "$f" ] || { echo "   (no $f -- skipping)"; continue; }
+            n=$(grep -cE '# NEW[[:space:]]*$' "$f" || true)
+            [ "$n" -eq 0 ] || sed -i -E 's/[[:space:]]*# NEW[[:space:]]*$//' "$f"
+            echo "   $c/$file: removed $n '# NEW' mark(s)"
+            total=$((total + n))
+        done < <(source_lists "$c")
+    done
+    echo ">> done: $total mark(s) removed."
+    exit 0
+fi
 
 LLVM="$(cd "${POSITIONAL[0]}" && pwd)"
 KVASIR="$(cd "${POSITIONAL[1]}" && pwd)"
 
+KVASIR_STATE_DIR="${KVASIR_STATE_DIR:-$SCRIPT_DIR/kvasir}"   # all of Kvasir's port state, libc-config/ included
 LIBC_CONFIG_DIR="${LIBC_CONFIG_DIR:-}"   # empty: derived from upstream (derive_libc_config)
-LIBC_CONFIG_JSON="${LIBC_CONFIG_DIR:-$SCRIPT_DIR/libc-config}/config.json"
+LIBC_CONFIG_JSON="${LIBC_CONFIG_DIR:-$KVASIR_STATE_DIR/libc-config}/config.json"
 LIBC_BUILD_DIR="${LIBC_BUILD_DIR:-$LLVM/build}"
 LIBC_TARGET_TRIPLE="${LIBC_TARGET_TRIPLE:-armv8-m.main-none-eabihf}"
 EXTRA_CMAKE_FLAGS="${EXTRA_CMAKE_FLAGS:-}"
-COMPONENTS="${SELECTED:-${COMPONENTS:-libc libcxx compiler-rt}}"
-KVASIR_STATE_DIR="${KVASIR_STATE_DIR:-$SCRIPT_DIR/kvasir}"
 SKIP_LIBC_HEADERS="${SKIP_LIBC_HEADERS:-}"
 CHECK_FAILED=0
 
@@ -240,13 +290,8 @@ stage_upstream() {
 # line, relative to <dest>; a trailing / means the whole directory.
 #   args: <component> <top-level dir>
 owned_filter() {
-    local owned="$KVASIR_STATE_DIR/$1/owned.txt" out="$WORK_DIR/$1.$2.filter" p
-    : > "$out"
-    if [ -f "$owned" ]; then
-        while read -r p; do
-            case "$p" in "$2"/*) printf -- '- /%s\n' "${p#"$2"/}" >> "$out" ;; esac
-        done < <(grep -vE '^[[:space:]]*(#|$)' "$owned")
-    fi
+    local out="$WORK_DIR/$1.$2.filter"
+    python3 -B "$SCRIPT_DIR/libcport_lib.py" owned-filter "$KVASIR_STATE_DIR/$1/owned.txt" "$2" > "$out"
     echo "$out"
 }
 
@@ -308,79 +353,23 @@ apply_patches_from() {
 save_patches() {
     local comp="$1" dest="$2" stage="$WORK_DIR/stage/$1"
     local pdir="$KVASIR_STATE_DIR/$1/patches" rec
-    rec="$(cat "$dest/UPSTREAM" 2>/dev/null | head -1 || true)"
-    if [ -n "$rec" ] && [ "${rec%% *}" != "$LLVM_TAG" ]; then
+    rec="$(head -1 "$dest/UPSTREAM" 2>/dev/null || true)"
+    if [ "${rec%% *}" != "$LLVM_TAG" ]; then
         echo "error: $dest/UPSTREAM says '${rec%% *}' but the llvm checkout is at '$LLVM_TAG'." >&2
         echo "       check out the version the submodule was ported from first." >&2
         exit 1
     fi
-    [ -n "$rec" ] || record WARN "$comp: no UPSTREAM file -- trusting that $LLVM_TAG is the version it was ported from"
     if [ -n "$(find "$dest" -name '*.rej' -print -quit)" ]; then
         echo "error: $dest still has .rej files; merge them by hand and delete them first." >&2
         exit 1
     fi
     local committed="$dest" headers="$WORK_DIR/$comp.headers.json"
     # the header block of each patch (everything before the first "--- a/"), carried over to the rewritten patch
-    PDIR="$pdir" OUT="$headers" python3 - <<'PY'
-import json, os
-pdir, out = os.environ["PDIR"], {}
-if os.path.isdir(pdir):
-    for root, _, files in os.walk(pdir):
-        for f in files:
-            if f.endswith(".patch"):
-                text = open(os.path.join(root, f)).read()
-                head = "" if text.startswith("--- a/") else text.split("\n--- a/", 1)[0]
-                if head.strip():
-                    out[os.path.relpath(os.path.join(root, f), pdir)] = head.rstrip("\n") + "\n\n"
-json.dump(out, open(os.environ["OUT"], "w"))
-PY
+    python3 -B "$SCRIPT_DIR/libcport_lib.py" patch-headers "$pdir" "$headers"
     rm -rf "$pdir"; mkdir -p "$pdir"
-    COMP="$comp" STAGE="$stage" COMMITTED="$committed" PDIR="$pdir" HEADERS="$headers" \
-    OWNED="$KVASIR_STATE_DIR/$comp/owned.txt" DIRS="$(mirrored_dirs "$comp" | tr '\n' ' ')" \
-    python3 - <<'PY'
-import os, fnmatch, json, subprocess
-comp, stage, committed, pdir = (os.environ[k] for k in ("COMP", "STAGE", "COMMITTED", "PDIR"))
-headers = json.load(open(os.environ["HEADERS"]))
-dirs = os.environ["DIRS"].split()
-owned = []
-if os.path.exists(os.environ["OWNED"]):
-    owned = [l.strip() for l in open(os.environ["OWNED"]) if l.strip() and not l.lstrip().startswith("#")]
-def is_owned(rel):
-    return any(fnmatch.fnmatch(rel, g) or rel.startswith(g.rstrip("/") + "/") for g in owned)
-written, stale = 0, []
-for d in dirs:
-    for root, _, files in os.walk(os.path.join(committed, d)):
-        for f in files:
-            rel = os.path.relpath(os.path.join(root, f), committed)
-            if is_owned(rel):
-                continue
-            up = os.path.join(stage, rel)
-            if not os.path.isfile(up):
-                stale.append(rel)
-                continue
-            r = subprocess.run(["diff", "-u", "--label", "a/" + rel, "--label", "b/" + rel, up,
-                                os.path.join(committed, rel)], capture_output=True, text=True)
-            if r.returncode == 1:
-                key = rel + ".patch"
-                out = os.path.join(pdir, key)
-                os.makedirs(os.path.dirname(out), exist_ok=True)
-                head = headers.pop(key, None)
-                if head is None:
-                    head = (f"Kvasir patch: {comp} {rel}\nWhy:       TODO\nUpstream:  TODO\n"
-                            f"Proof:     TODO\nDrop when: TODO\n\n")
-                    print(f"   NEW    {rel}  (header block has TODOs - fill it in)")
-                open(out, "w").write(head + r.stdout)
-                written += 1
-                print(f"   patch  {rel}")
-print(f"   {written} patch(es) written to {pdir}")
-for gone in sorted(headers):
-    print(f"   GONE   {gone[:-len('.patch')]}  (no difference left: its header went with it)")
-wf = os.environ.get("WARN_FILE")
-if stale:
-    for s in sorted(stale):
-        print(f"   ?      {s}  (not upstream, not owned: stale, or add it to owned.txt)")
-    open(wf, "a").write(f"NOTE\t{comp}: {len(stale)} committed file(s) neither upstream nor owned -- a port deletes them\n")
-PY
+    # shellcheck disable=SC2046 # the mirrored dirs are words
+    python3 -B "$SCRIPT_DIR/libcport_lib.py" save-patches "$comp" "$stage" "$committed" "$pdir" "$headers" \
+        "$KVASIR_STATE_DIR/$comp/owned.txt" $(mirrored_dirs "$comp")
 }
 
 # ---------------------------------------------------------------------------
@@ -388,124 +377,24 @@ PY
 # prune entries whose .cpp no longer exists, keep existing lines (active or
 # commented) verbatim, and insert new .cpp files commented-out + tagged "# NEW"
 # in alphabetical position.
-#   args: <cmake_file> <dest_dir> <primary_var> [extra_var...]
+#   args: <cmake_file> <dest_dir> <src dir> <extensions, comma separated> <primary_var> [extra_var...]
 #   first var receives new entries; all listed vars are pruned & counted as listed.
 # ---------------------------------------------------------------------------
+# Every source list of the component table for one component (sync_cmake_sources per line).
+#   args: <component> <dest>
+sync_source_lists() {
+    local file srcdir exts vars
+    while read -r file srcdir exts vars; do
+        # shellcheck disable=SC2086 # vars is a word list
+        sync_cmake_sources "$2/$file" "$2" "$srcdir" "$exts" $vars
+    done < <(source_lists "$1")
+}
+
 sync_cmake_sources() {
     [ -f "$1" ] || { echo "   (no $(basename "$1") -- skipping source-list sync)"; return 0; }
-    python3 - "$@" <<'PY'
-import sys, os, re
-
-cmake_file, dest_dir = sys.argv[1], sys.argv[2]
-target_vars = sys.argv[3:]
-primary = target_vars[0]
-srcdir = os.environ.get('SYNC_SRCDIR', 'src')          # source subdir under dest (libc/libcxx: src; compiler-rt: builtins)
-exts = os.environ.get('SYNC_EXTS', '.cpp').split(',')  # compiled extensions (compiler-rt also has .S)
-ext_alt = '|'.join(re.escape(e.lstrip('.')) for e in exts)
-PATH_RE = re.compile(rf'{re.escape(srcdir)}/[A-Za-z0-9_./-]+\.(?:{ext_alt})(?![A-Za-z0-9_])')  # .c must not match .cpp
-
-lines = open(cmake_file).read().split('\n')
-n = len(lines)
-
-# locate set(<VAR> ... ) blocks for our target vars
-var_block = {}
-i = 0
-while i < n:
-    m = re.match(r'\s*set\(\s*([A-Za-z0-9_]+)', lines[i])
-    if m and m.group(1) in target_vars:
-        var = m.group(1)
-        j = i + 1
-        while j < n and ')' not in lines[j].split('#', 1)[0]:  # end line may carry an inline "entry)"
-            j += 1
-        var_block[var] = (i, j)
-        i = j + 1
-    else:
-        i += 1
-
-for v in target_vars:
-    assert v in var_block, f"list {v} not found in {cmake_file}"
-
-# paths already listed across ALL target blocks
-listed = set()
-for var, (s, e) in var_block.items():
-    for k in range(s + 1, e + 1):              # e+1: the ")" line may also carry the last entry
-        mm = PATH_RE.search(lines[k])
-        if mm:
-            listed.add(mm.group(0))
-
-# source files actually on disk
-disk = set()
-for root, _, files in os.walk(os.path.join(dest_dir, srcdir)):
-    for f in files:
-        if any(f.endswith(e) for e in exts):
-            disk.add(os.path.relpath(os.path.join(root, f), dest_dir).replace(os.sep, '/'))
-
-removed = []
-added = 0
-
-def merge(kept, new_lines):
-    if any(p is None for p, _ in kept):      # block has non-path lines -> don't risk misordering
-        return kept + new_lines
-    res, ia, ib = [], 0, 0
-    while ia < len(kept) and ib < len(new_lines):
-        if kept[ia][0] <= new_lines[ib][0]:
-            res.append(kept[ia]); ia += 1
-        else:
-            res.append(new_lines[ib]); ib += 1
-    res.extend(kept[ia:]); res.extend(new_lines[ib:])
-    return res
-
-out = []
-i = 0
-while i < n:
-    hit = next((v for v, (s, _) in var_block.items() if i == s), None)
-    if hit is None:
-        out.append(lines[i]); i += 1; continue
-    s, e = var_block[hit]
-    out.append(lines[s])                       # the "set(VAR" line
-    close_raw = lines[e]
-    cut = close_raw.split('#', 1)[0].rindex(')')
-    head = close_raw[:cut]                      # entry sharing the ")" line, if any
-    body = list(lines[s + 1:e])
-    if head.strip():                           # inline "lastentry)" -> split paren onto its own line
-        body.append(head.rstrip())
-        close_line = close_raw[cut:]           # ")" (+ any trailing)
-    else:
-        close_line = close_raw                 # ")" already on its own line
-    kept = []
-    for ln in body:
-        mm = PATH_RE.search(ln)
-        if not mm:
-            kept.append((None, ln))            # preserve unknown line verbatim
-        elif mm.group(0) in disk:
-            kept.append((mm.group(0), ln))     # keep existing entry untouched
-        else:
-            # drop: file gone from disk. An ACTIVE entry going away is worth a look
-            # (a function moved or was renamed upstream), a commented one is not.
-            removed.append((mm.group(0), not ln.lstrip().startswith('#')))
-    if hit == primary:
-        new_paths = sorted(disk - listed)
-        added = len(new_paths)
-        kept = merge(kept, [(p, f'    # {p}  # NEW') for p in new_paths])
-    out.extend(ln for _, ln in kept)
-    out.append(close_line)                      # the ")" line
-    i = e + 1
-
-open(cmake_file, 'w').write('\n'.join(out))
-base = os.path.basename(cmake_file)
-active_gone = [p for p, active in removed if active]
-print(f"   {base}: +{added} new, -{len(removed)} removed ({len(active_gone)} of them were active)")
-for p in active_gone:
-    print(f"     - active entry gone: {p}")
-_wf = os.environ.get('WARN_FILE')
-if _wf and (added or removed):
-    bits = []
-    if added:   bits.append(f"{added} new source(s) added (commented '# NEW' -- review & enable)")
-    if removed: bits.append(f"{len(removed)} stale entry(ies) pruned")
-    open(_wf, 'a').write(f"NOTE\t{base}: " + "; ".join(bits) + "\n")
-    if active_gone:
-        open(_wf, 'a').write(f"WARN\t{base}: {len(active_gone)} ACTIVE source(s) gone upstream -- check what replaced them\n")
-PY
+    local cmake_file="$1" dest="$2" srcdir="$3" exts="$4"
+    shift 4
+    python3 -B "$SCRIPT_DIR/libcport_lib.py" sync-sources "$cmake_file" "$dest" --srcdir "$srcdir" --exts "$exts" "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -518,118 +407,17 @@ PY
 check_libc_cmake_flags() {
     [ -f "$1" ] && [ -f "$2" ] || return 0
     echo "   checking libc.cmake libc_flags vs config.json:"
-    python3 - "$@" <<'PY'
-import json, sys, os
-
-cfg_file, cmake_file = sys.argv[1], sys.argv[2]
-cmake_base = os.path.basename(cmake_file)
-_wf = os.environ.get('WARN_FILE')
-def record(level, msg):
-    if _wf:
-        open(_wf, 'a').write(f"{level}\t{msg}\n")
-vals = {n: o.get('value') for g in json.load(open(cfg_file)).values() for n, o in g.items()}
-
-# extract set(libc_flags ...) via quote-aware balanced-paren scan (closing ')' is at
-# end of the last line, and the math value contains its own parens inside quotes)
-text = open(cmake_file).read()
-i = text.index('(', text.index('set(libc_flags'))
-depth, in_dq, j = 0, False, i
-while j < len(text):
-    c = text[j]
-    if c == '"':
-        in_dq = not in_dq
-    elif not in_dq:
-        if c == '(':
-            depth += 1
-        elif c == ')':
-            depth -= 1
-            if depth == 0:
-                break
-    j += 1
-blob = '\n'.join(l.split('#', 1)[0] for l in text[i + 1:j].split('\n'))  # drop comments
-toks = set(blob.replace('"', '').replace("'", '').split())               # quotes removed
-toks_ns = {t.replace(' ', '') for t in toks}
-def ns(s): return str(s).replace(' ', '')
-
-VAL = {  # LIBC_CONF_* -> expected -D macro (value-style)
-    'LIBC_CONF_ERRNO_MODE': 'LIBC_ERRNO_MODE',
-    'LIBC_CONF_THREAD_MODE': 'LIBC_THREAD_MODE',
-    'LIBC_CONF_QSORT_IMPL': 'LIBC_QSORT_IMPL',
-    'LIBC_CONF_MATH_OPTIMIZATIONS': 'LIBC_MATH',
-    'LIBC_CONF_WCTYPE_MODE': 'LIBC_CONF_WCTYPE_MODE',
-    'LIBC_CONF_STRING_LENGTH_IMPL': 'LIBC_COPT_STRING_LENGTH_IMPL',
-    'LIBC_CONF_FIND_FIRST_CHARACTER_IMPL': 'LIBC_COPT_FIND_FIRST_CHARACTER_IMPL',
-}
-BOOL = {  # bool -> -D present when true (absent when false)
-    'LIBC_ADD_NULL_CHECKS': '-DLIBC_ADD_NULL_CHECKS',
-    'LIBC_CONF_TRAP_ON_RAISE_FP_EXCEPT': '-DLIBC_TRAP_ON_RAISE_FP_EXCEPT',
-    'LIBC_CONF_MATH_USE_SYSTEM_FENV': '-DLIBC_MATH_USE_SYSTEM_FENV',
-}
-warnings = 0
-for conf, dname in VAL.items():
-    if conf not in vals:
-        continue
-    if ns(f"-D{dname}={vals[conf]}") in toks_ns:
-        print(f"     OK   {dname} = {vals[conf]}")
-    else:
-        got = next((t for t in toks if t.startswith(f"-D{dname}=")), "(absent)")
-        warnings += 1
-        print(f"     WARN {dname}: config.json wants '{vals[conf]}' but libc.cmake has {got}")
-for conf, flag in BOOL.items():
-    if conf not in vals:
-        continue
-    if bool(vals[conf]) == (flag in toks):
-        print(f"     OK   {flag[2:]} {'on' if flag in toks else 'off'}")
-    else:
-        warnings += 1
-        print(f"     WARN {conf}={vals[conf]} but {flag} is {'present' if flag in toks else 'absent'}")
-if 'LIBC_CONF_TIME_64BIT' in vals:  # false adds -DLIBC_TYPES_TIME_T_IS_32_BIT; true omits it
-    has32 = '-DLIBC_TYPES_TIME_T_IS_32_BIT' in toks
-    if bool(vals['LIBC_CONF_TIME_64BIT']) != has32:
-        print(f"     OK   TIME_T {'64' if not has32 else '32'}-bit")
-    else:
-        warnings += 1
-        print(f"     WARN TIME_64BIT={vals['LIBC_CONF_TIME_64BIT']} vs -DLIBC_TYPES_TIME_T_IS_32_BIT {'present' if has32 else 'absent'}")
-print("     (printf/scanf + stack-protector/frame-pointer configs are applied elsewhere, not checked)")
-print(f"     -> {warnings} mismatch(es); reconcile libc.cmake libc_flags" if warnings else "     -> in sync")
-if warnings:
-    record('WARN', f"{cmake_base}: {warnings} config/flag mismatch(es) vs config.json -- reconcile libc_flags")
-PY
+    python3 -B "$SCRIPT_DIR/libcport_lib.py" check-flags "$@"
 }
 
 # ---------------------------------------------------------------------------
-# Regenerate libc-config/OPTIONS.md: every option upstream's config.json knows,
+# Regenerate kvasir/libc-config/OPTIONS.md: every option upstream's config.json knows,
 # its default, and what our config.json sets. Fails the port on an option our
 # config.json sets that upstream no longer has (cmake would refuse it anyway).
 # ---------------------------------------------------------------------------
 write_options_md() {
-    UP="$LLVM/libc/config/config.json" OURS="$LIBC_CONFIG_JSON" \
-    OUT="$SCRIPT_DIR/libc-config/OPTIONS.md" TAG="$LLVM_TAG" python3 - <<'PY'
-import json, os, sys
-up = json.load(open(os.environ["UP"]))
-ours = {n: o.get("value") for g in json.load(open(os.environ["OURS"])).values() for n, o in g.items()}
-known = {n for g in up.values() for n in g}
-unknown = sorted(set(ours) - known)
-if unknown:
-    sys.exit(f"error: config.json sets option(s) upstream {os.environ['TAG']} no longer has: {', '.join(unknown)}")
-fmt = lambda v: "`" + json.dumps(v) + "`"
-n = sum(len(g) for g in up.values())
-out = ["# LLVM libc configuration options", "",
-       "Every `LIBC_CONF_*` option that can be set in `config.json` (or passed on the",
-       "cmake command line as `-D<NAME>=<value>`, which overrides config.json).", "",
-       f"Source: `libc/config/config.json` @ {os.environ['TAG']}. {n} options in {len(up)} groups.",
-       "Generated by libcport; **reference only - cmake does not read this file.**", "",
-       "`set here` = value currently in this folder's `config.json`; blank = using upstream default.", ""]
-for group, opts in up.items():
-    out += [f"## {group}", "", "| option | default | set here | doc |", "|---|---|---|---|"]
-    for name, o in opts.items():
-        here = fmt(ours[name]) if name in ours else ""
-        doc = " ".join(str(o.get("doc", "")).split()).replace("|", "\\|")
-        out.append(f"| `{name}` | {fmt(o.get('value'))} | {here.replace('|', chr(92) + '|')} | {doc} |")
-    out.append("")
-open(os.environ["OUT"], "w").write("\n".join(out))
-print(f"   OPTIONS.md: {n} options @ {os.environ['TAG']}")
-PY
+    python3 -B "$SCRIPT_DIR/libcport_lib.py" options-md "$LLVM/libc/config/config.json" "$LIBC_CONFIG_JSON" \
+        "$KVASIR_STATE_DIR/libc-config/OPTIONS.md" "$LLVM_TAG"
 }
 
 # ---------------------------------------------------------------------------
@@ -640,24 +428,8 @@ PY
 derive_libc_config() {
     local cfg="$LIBC_BUILD_DIR/kvasir-libc-config" up="$LLVM/libc/config/baremetal/arm"
     mkdir -p "$cfg"
-    cp "$SCRIPT_DIR/libc-config/config.json" "$cfg/config.json"
-    UP="$up" CFG="$cfg" EXCLUDE="$KVASIR_STATE_DIR/libc-config/exclude.txt" python3 - <<'PY'
-import os, re
-pats = []
-if os.path.exists(os.environ["EXCLUDE"]):
-    pats = [re.compile(l.strip()) for l in open(os.environ["EXCLUDE"])
-            if l.strip() and not l.lstrip().startswith("#")]
-for name in ("entrypoints.txt", "headers.txt"):
-    out, dropped = [], 0
-    for line in open(os.path.join(os.environ["UP"], name)):
-        tok = line.strip()
-        if tok and any(p.fullmatch(tok) for p in pats):
-            dropped += 1
-            continue
-        out.append(line)
-    open(os.path.join(os.environ["CFG"], name), "w").write("".join(out))
-    print(f"   {name}: upstream baremetal/arm, {dropped} target(s) excluded")
-PY
+    cp "$LIBC_CONFIG_JSON" "$cfg/config.json"
+    python3 -B "$SCRIPT_DIR/libcport_lib.py" derive-config "$up" "$cfg" "$KVASIR_STATE_DIR/libc-config/exclude.txt"
     LIBC_CONFIG_DIR="$cfg"
 }
 
@@ -716,7 +488,7 @@ libc_headers_for_check() {
 # ---------------------------------------------------------------------------
 check_component() {
     local comp="$1" dest="$2" stage="$WORK_DIR/stage/$1" expect="$WORK_DIR/expect/$1"
-    local pdir="$KVASIR_STATE_DIR/$1/patches" rec d filter line n=0 p applied head
+    local pdir="$KVASIR_STATE_DIR/$1/patches" rec d filter line n=0 p applied
     rec="$(head -1 "$dest/UPSTREAM" 2>/dev/null || true)"
     if [ "${rec%% *}" != "$LLVM_TAG" ]; then
         echo "   TAG      $dest/UPSTREAM says '${rec%% *}', the llvm checkout is at '$LLVM_TAG'"
@@ -762,26 +534,13 @@ check_component() {
                      "$expect/$d/" "$dest/$d/")
     done
 
-    # owned.txt lines that match nothing (relative to <dest>; a trailing / = a directory)
-    if [ -f "$KVASIR_STATE_DIR/$comp/owned.txt" ]; then
-        while read -r p; do
-            compgen -G "$dest/${p%/}" > /dev/null || { echo "   DEAD     owned.txt: $p"; n=$((n + 1)); }
-        done < <(grep -vE '^[[:space:]]*(#|$)' "$KVASIR_STATE_DIR/$comp/owned.txt")
-    fi
-
-    # every patch says why it exists: the header block in front of the first "--- a/"
-    if [ -d "$pdir" ]; then
-        while IFS= read -r p; do
-            head="$(awk '/^--- a\//{exit} {print}' "$p")"
-            if ! grep -q '^Kvasir patch: ' <<<"$head" || ! grep -q '^Why: ' <<<"$head" \
-                    || ! grep -q '^Upstream: ' <<<"$head" || ! grep -q '^Proof: ' <<<"$head" \
-                    || ! grep -q '^Drop when: ' <<<"$head"; then
-                echo "   NOHEADER ${p#"$pdir"/}"; n=$((n + 1))
-            elif grep -q 'TODO' <<<"$head"; then
-                echo "   NOHEADER ${p#"$pdir"/} (a TODO left in its header)"; n=$((n + 1))
-            fi
-        done < <(find "$pdir" -type f -name '*.patch' | sort)
-    fi
+    # owned.txt lines that match nothing (relative to <dest>; a trailing / = a directory), and every patch says
+    # why it exists: the header block in front of the first "--- a/" (libcport_lib.py: the port's own matcher and
+    # header reader)
+    while IFS= read -r line; do
+        echo "$line"; n=$((n + 1))
+    done < <(python3 -B "$SCRIPT_DIR/libcport_lib.py" owned-dead "$KVASIR_STATE_DIR/$comp/owned.txt" "$dest"
+             [ ! -d "$pdir" ] || python3 -B "$SCRIPT_DIR/libcport_lib.py" patch-check "$pdir")
 
     if [ -n "$SKIP_LIBC_HEADERS" ] && [ "$comp" = libc ]; then
         echo "   (libc: include/ and its patches NOT checked: --skip-libc-headers)"
@@ -826,28 +585,11 @@ port_component() {
     apply_patches "$comp" "$dest"
     printf '%s %s\n' "$LLVM_TAG" "$LLVM_SHA" > "$dest/UPSTREAM"
 
-    case "$comp" in
-        libc)
-            # two lists; new entries go to LIBC_SOURCE_FILES.
-            sync_cmake_sources "$dest/libc.cmake" "$dest" LIBC_SOURCE_FILES LIBC_MALLOC_SOURCE_FILES
-            check_libc_cmake_flags "$LIBC_CONFIG_JSON" "$dest/libc.cmake" ;;
-        libcxx)
-            sync_cmake_sources "$dest/libcxx.cmake" "$dest" LIBCXX_SOURCE_FILES ;;
-        compiler-rt)
-            # .c + .S (+ .cpp since LLVM 23) sources rooted at builtins/
-            SYNC_SRCDIR=builtins SYNC_EXTS=.c,.S,.cpp \
-                sync_cmake_sources "$dest/compiler-rt.cmake" "$dest" COMPILER_RT_ALL_SOURCE_FILES
-            SYNC_SRCDIR=profile SYNC_EXTS=.c \
-                sync_cmake_sources "$dest/profile.cmake" "$dest" COMPILER_RT_PROFILE_SOURCE_FILES ;;
-    esac
+    sync_source_lists "$comp" "$dest"
+    [ "$comp" != libc ] || check_libc_cmake_flags "$LIBC_CONFIG_JSON" "$dest/libc.cmake"
 }
 
-for c in $COMPONENTS; do
-    case "$c" in
-        libc|libcxx|compiler-rt) port_component "$c" ;;
-        *) echo "error: unknown component '$c' (want: libc, libcxx, compiler-rt)." >&2; exit 1 ;;
-    esac
-done
+for c in $COMPONENTS; do port_component "$c"; done
 
 echo
 if [ "$MODE" = port ]; then

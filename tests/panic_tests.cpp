@@ -1,77 +1,79 @@
 // Kvasir::Panic: the injected handler is the one raise() runs, with the cause and the caller's pc;
 // a specialisation placed after raise()'s definition still wins; the record keeps the first panic
-// and counts the rest. (A panic inside the handler goes to halt(), which is std::abort() here: not
-// run as a test.)
-#include "kvasir/Util/Panic.hpp"
+// and counts the rest; the dispatch runs the image's fatal start. (A panic inside the handler goes to
+// Detail::stop(), here halt(), which is std::abort(): not run as a test.)
+#include "kvasir/Runtime/Panic.hpp"
 
+#include "harness/PanicCatcher.hpp"
 #include "test_harness.hpp"
 
 #include <csetjmp>
 #include <cstdint>
 #include <optional>
 
-namespace Kvasir::Panic {
-// on the target this is StartUp.hpp's; here the test's
-[[noreturn,
-  gnu::noinline]] void
-raise(Cause cause) {
-    Detail::dispatch(Info{
-      cause,
-      static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(__builtin_return_address(0)))});
-}
-
-[[noreturn]] void raiseAt(Cause         cause,
-                          std::uint32_t pc,
-                          std::uint32_t detail) {
-    Detail::dispatch(Info{cause, pc, detail});
-}
-}   // namespace Kvasir::Panic
-
 namespace {
-std::jmp_buf                       back;
-std::optional<Kvasir::Panic::Info> seen;
-
-struct TestHandler {
-    [[noreturn]] static void operator()(Kvasir::Panic::Info const& info) {
-        seen = info;
-        std::longjmp(back, 1);
-    }
-};
+using Kvasir::Test::panicBack;
+using Kvasir::Test::panicSeen;
 }   // namespace
 
 // after raise() was defined and used: the dummy pack defers the lookup to the instantiation
 template<>
-inline constexpr auto Kvasir::Panic::injectedHandler<> = TestHandler{};
+struct Kvasir::Panic::PanicReaction<Kvasir::Tag::User> {
+    using type = Kvasir::Test::CatchPanic;
+};
+
+namespace {
+int starts = 0;
+
+struct CountStart {
+    static void operator()() { ++starts; }
+};
+}   // namespace
+
+// the image's fatal start: beginFatal() runs it, and the dispatch again after interrupts are masked
+template<>
+struct Kvasir::Panic::FatalStartReaction<Kvasir::Tag::User> {
+    using type = CountStart;
+};
 
 namespace {
 using Kvasir::Panic::Cause;
 
-// TSan's longjmp interceptor aborts on a jump out of a function that does not return; this test
-// has no threads for TSan to judge.
-#if defined(__SANITIZE_THREAD__)
-    #define PANIC_TEST_NO_LONGJMP 1
-#elif defined(__has_feature)
-    #if __has_feature(thread_sanitizer)
-        #define PANIC_TEST_NO_LONGJMP 1
-    #endif
+void startInDispatch() {
+    Kvasir::Test::test(
+      "a raise without beginFatal (a log-less site) runs the fatal start once, in the dispatch");
+#ifdef KVASIR_TEST_NO_LONGJMP
+    return;
 #endif
+    starts = 0;
+    CHECK(Kvasir::Test::panicOf([] { Kvasir::Panic::raise(Cause::bootLoop); }).has_value());
+    CHECK(starts == 1);
+
+    Kvasir::Test::test("beginFatal, then raise (a logged site): the fatal start runs twice");
+    starts = 0;
+    CHECK(Kvasir::Test::panicOf([] {
+              Kvasir::Panic::beginFatal();
+              Kvasir::Panic::raise(Cause::user);
+          }).has_value());
+    CHECK(starts == 2);
+}
 
 void handlerRuns() {
     Kvasir::Test::test("the injected handler runs, with the cause");
-#ifdef PANIC_TEST_NO_LONGJMP
+#ifdef KVASIR_TEST_NO_LONGJMP
     return;
 #endif
-    seen.reset();
+    panicSeen.reset();
     Kvasir::Panic::Detail::entered = false;
-    if(setjmp(back) == 0) { Kvasir::Panic::raise(Cause::stackSmash); }
-    CHECK(seen.has_value());
-    CHECK(seen && seen->cause == Cause::stackSmash);
-    CHECK(seen && seen->pc != 0U);
+    if(setjmp(panicBack) == 0) { Kvasir::Panic::raise(Cause::stackSmash); }
+    CHECK(panicSeen.has_value());
+    CHECK(panicSeen && panicSeen->cause == Cause::stackSmash);
+    CHECK(panicSeen && panicSeen->pc != 0U);
 }
 
 void recordKeepsFirst() {
     Kvasir::Test::test("record keeps the first panic and counts the rest");
-    Kvasir::Panic::lastPanic.magic = 0;
+    Kvasir::Panic::lastPanic.clear();
     Kvasir::Panic::record({Cause::assertion, 0x1000});
     Kvasir::Panic::record({Cause::abort, 0x2000});
     auto const r = Kvasir::Panic::takeLastPanic();
@@ -83,7 +85,7 @@ void recordKeepsFirst() {
 
 void recordKeepsDetail() {
     Kvasir::Test::test("record keeps the site and the detail a library path gives raiseAt()");
-    Kvasir::Panic::lastPanic.magic = 0;
+    Kvasir::Panic::lastPanic.clear();
     Kvasir::Panic::record({Cause::unhandledInterrupt, 0, 40});
     auto const r = Kvasir::Panic::takeLastPanic();
     CHECK(r && r->cause == static_cast<std::uint32_t>(Cause::unhandledInterrupt) && r->pc == 0U
@@ -92,11 +94,12 @@ void recordKeepsDetail() {
 
 static_assert(static_cast<unsigned char>(Cause::assertion) == 0,
               "the libc's assert header raises static_cast<Cause>(0)");
-static_assert(Kvasir::Panic::Handler<Kvasir::Panic::DefaultHandler>);
+static_assert(Kvasir::Panic::Handler<Kvasir::Panic::OnPanic::Default>);
 }   // namespace
 
 int main() {
     handlerRuns();
+    startInDispatch();
     recordKeepsFirst();
     recordKeepsDetail();
     return Kvasir::Test::report();

@@ -1,41 +1,35 @@
 // Tests for the write paths of Kvasir::Register::apply: runtime, compile-time and mixed
-// writes, merging of writes to the same register and overrideDefaultsRuntime.
+// writes, merging of writes to the same register and R::overrideDefaults (its type list and its bundle).
 #include "test_registers.hpp"
 
 #include <cstdint>
 #include <print>
+#include <type_traits>
 
 using namespace Kvasir::Register;
 using namespace Kvasir::Test;
-using R = Recorder::Read;
-using W = Recorder::Write;
 
-template<typename T,
-         unsigned V>
-constexpr auto ctv() {
-    return Kvasir::Register::value<T, static_cast<T>(V)>();
-}
-
+namespace {
 // all three fields written in one apply cover every non-write-ignored bit, so the whole
 // register is written exactly once and no read-modify-write read is needed
 template<typename Reg,
          bool Order>
-static void simpleWrite() {
-    test(Order ? "simpleWrite<dat,cmd,stop>" : "simpleWrite<stop,dat,cmd>");
+void simpleWrite() {
+    testFor<Reg>(Order ? "simpleWrite<dat,cmd,stop>" : "simpleWrite<stop,dat,cmd>");
 
-    using cmdT  = typename decltype(Reg::cmd)::DataType;
-    using stopT = typename decltype(Reg::stop)::DataType;
+    using CmdT  = typename decltype(Reg::cmd)::DataType;
+    using StopT = typename decltype(Reg::stop)::DataType;
 
     auto const v = runtimeValue(37);
 
     if constexpr(Order) {
         apply(write(Reg::dat, v),
-              write(Reg::cmd, ctv<cmdT, 0>()),
-              write(Reg::stop, ctv<stopT, 1>()));
+              write(Reg::cmd, ctv<CmdT, 0>()),
+              write(Reg::stop, ctv<StopT, 1>()));
     } else {
-        apply(write(Reg::stop, ctv<stopT, 1>()),
+        apply(write(Reg::stop, ctv<StopT, 1>()),
               write(Reg::dat, v),
-              write(Reg::cmd, ctv<cmdT, 0>()));
+              write(Reg::cmd, ctv<CmdT, 0>()));
     }
 
     checkActions({
@@ -43,21 +37,21 @@ static void simpleWrite() {
     });
 }
 
-// overrideDefaultsRuntime fills in the unmentioned fields from the defaults, the result
-// is still a single merged write
+// R::overrideDefaults with a runtime value is a bundle apply() takes alone: it fills in the unmentioned fields from the
+// defaults, the result is still a single merged write
 template<typename Reg,
          bool Order>
-static void overrideDefaultsWrites() {
-    test(Order ? "overrideDefaultsWrites<dat,stop>" : "overrideDefaultsWrites<stop,dat>");
+void overrideDefaultsWrites() {
+    testFor<Reg>(Order ? "overrideDefaultsWrites<dat,stop>" : "overrideDefaultsWrites<stop,dat>");
 
-    using stopT = typename decltype(Reg::stop)::DataType;
+    using StopT = typename decltype(Reg::stop)::DataType;
 
     auto const v = runtimeValue(123);
 
     if constexpr(Order) {
-        Reg::overrideDefaultsRuntime(write(Reg::dat, v), write(Reg::stop, ctv<stopT, 1>()));
+        apply(Reg::overrideDefaults(write(Reg::dat, v), write(Reg::stop, ctv<StopT, 1>())));
     } else {
-        Reg::overrideDefaultsRuntime(write(Reg::stop, ctv<stopT, 1>()), write(Reg::dat, v));
+        apply(Reg::overrideDefaults(write(Reg::stop, ctv<StopT, 1>()), write(Reg::dat, v)));
     }
 
     checkActions({
@@ -65,19 +59,56 @@ static void overrideDefaultsWrites() {
     });
 }
 
-template<typename Reg>
-static void runtimeOnlyWrites() {
-    test("runtimeOnlyWrites");
+template<typename T>
+inline constexpr bool isTypeList = false;
 
-    using cmdT  = typename decltype(Reg::cmd)::DataType;
-    using stopT = typename decltype(Reg::stop)::DataType;
+template<typename... Ts>
+inline constexpr bool isTypeList<brigand::list<Ts...>> = true;
+
+// with literal actions only R::overrideDefaults is a type list (a Startup list may hold it); apply() runs it as any
+// list
+template<typename Reg>
+void overrideDefaultsLiterals() {
+    testFor<Reg>("overrideDefaultsLiterals");
+
+    using StopT = typename decltype(Reg::stop)::DataType;
+    using DatT  = typename decltype(Reg::dat)::DataType;
+
+    auto const l
+      = Reg::overrideDefaults(write(Reg::stop, ctv<StopT, 1>()), write(Reg::dat, ctv<DatT, 5>()));
+    static_assert(isTypeList<std::remove_const_t<decltype(l)>>);
+    apply(l);
+
+    checkActions({
+      W{Reg::Addr::value, 0x205}
+    });
+}
+
+// the bundle holds the given actions and, as its Defaults, the default writes of the fields they leave out
+static_assert(std::is_same_v<decltype(SimpleTestReg::overrideDefaults(write(SimpleTestReg::dat,
+                                                                            runtimeValue(1U)))),
+                             Defaulted<brigand::list<decltype(write(SimpleTestReg::stop,
+                                                                    value<std::uint32_t,
+                                                                          0>())),
+                                                     decltype(write(SimpleTestReg::cmd,
+                                                                    value<std::uint32_t,
+                                                                          0>()))>,
+                                       decltype(write(SimpleTestReg::dat,
+                                                      runtimeValue(1U)))>>);
+
+template<typename Reg>
+void runtimeOnlyWrites() {
+    testFor<Reg>("runtimeOnlyWrites");
+
+    using CmdT  = typename decltype(Reg::cmd)::DataType;
+    using StopT = typename decltype(Reg::stop)::DataType;
 
     auto const v1 = runtimeValue(0x5A);
     auto const v2 = runtimeValue(1);
 
     apply(write(Reg::dat, v1),
-          write(Reg::cmd, static_cast<cmdT>(v2)),
-          write(Reg::stop, static_cast<stopT>(1)));
+          write(Reg::cmd, static_cast<CmdT>(v2)),
+          write(Reg::stop, static_cast<StopT>(1)));
 
     checkActions({
       W{Reg::Addr::value, v1 | (v2 << 8) | (1U << 9)}
@@ -85,15 +116,15 @@ static void runtimeOnlyWrites() {
 }
 
 template<typename Reg>
-static void compileTimeOnlyWrites() {
-    test("compileTimeOnlyWrites");
+void compileTimeOnlyWrites() {
+    testFor<Reg>("compileTimeOnlyWrites");
 
-    using cmdT  = typename decltype(Reg::cmd)::DataType;
-    using stopT = typename decltype(Reg::stop)::DataType;
+    using CmdT  = typename decltype(Reg::cmd)::DataType;
+    using StopT = typename decltype(Reg::stop)::DataType;
 
     apply(write(Reg::dat, Kvasir::Register::value<std::uint32_t, 42>()),
-          write(Reg::cmd, ctv<cmdT, 0>()),
-          write(Reg::stop, ctv<stopT, 1>()));
+          write(Reg::cmd, ctv<CmdT, 0>()),
+          write(Reg::stop, ctv<StopT, 1>()));
 
     checkActions({
       W{Reg::Addr::value, 42 | (1U << 9)}
@@ -101,19 +132,19 @@ static void compileTimeOnlyWrites() {
 }
 
 template<typename Reg>
-static void threeRuntimeWrites() {
-    test("threeRuntimeWrites");
+void threeRuntimeWrites() {
+    testFor<Reg>("threeRuntimeWrites");
 
-    using cmdT  = typename decltype(Reg::cmd)::DataType;
-    using stopT = typename decltype(Reg::stop)::DataType;
+    using CmdT  = typename decltype(Reg::cmd)::DataType;
+    using StopT = typename decltype(Reg::stop)::DataType;
 
     auto const v1 = runtimeValue(0xA5);
     auto const v2 = runtimeValue(1);
     auto const v3 = runtimeValue(1);
 
     apply(write(Reg::dat, v1),
-          write(Reg::cmd, static_cast<cmdT>(v2)),
-          write(Reg::stop, static_cast<stopT>(v3)));
+          write(Reg::cmd, static_cast<CmdT>(v2)),
+          write(Reg::stop, static_cast<StopT>(v3)));
 
     checkActions({
       W{Reg::Addr::value, v1 | (v2 << 8) | (v3 << 9)}
@@ -122,15 +153,15 @@ static void threeRuntimeWrites() {
 
 // runtime, compile-time, compile-time pattern
 template<typename Reg>
-static void alternatingWrites() {
-    test("alternatingWrites");
+void alternatingWrites() {
+    testFor<Reg>("alternatingWrites");
 
-    using cmdT  = typename decltype(Reg::cmd)::DataType;
-    using stopT = typename decltype(Reg::stop)::DataType;
+    using CmdT  = typename decltype(Reg::cmd)::DataType;
+    using StopT = typename decltype(Reg::stop)::DataType;
 
     auto const v = runtimeValue(0x33);
 
-    apply(write(Reg::dat, v), write(Reg::cmd, ctv<cmdT, 0>()), write(Reg::stop, ctv<stopT, 1>()));
+    apply(write(Reg::dat, v), write(Reg::cmd, ctv<CmdT, 0>()), write(Reg::stop, ctv<StopT, 1>()));
 
     checkActions({
       W{Reg::Addr::value, v | (1U << 9)}
@@ -139,30 +170,30 @@ static void alternatingWrites() {
 
 // all-compile-time applies take the non-indexed path and must still merge fields of the
 // same register into a single write
-static void allCompileTimeTwoFieldMerge() {
+void allCompileTimeTwoFieldMerge() {
     test("allCompileTimeTwoFieldMerge");
 
-    using dataT   = typename decltype(SecondReg::data)::DataType;
-    using statusT = typename decltype(SecondReg::status)::DataType;
+    using DataT   = typename decltype(SecondReg::data)::DataType;
+    using StatusT = typename decltype(SecondReg::status)::DataType;
 
-    apply(write(SecondReg::data, ctv<dataT, 0xAB>()),
-          write(SecondReg::status, ctv<statusT, 0xCD>()));
+    apply(write(SecondReg::data, ctv<DataT, 0xAB>()),
+          write(SecondReg::status, ctv<StatusT, 0xCD>()));
 
     checkActions({
       W{SecondReg::Addr::value, 0xCDAB}
     });
 }
 
-static void allCompileTimeThreeFieldMerge() {
+void allCompileTimeThreeFieldMerge() {
     test("allCompileTimeThreeFieldMerge");
 
-    using controlT = typename decltype(ThirdReg::control)::DataType;
-    using configT  = typename decltype(ThirdReg::config)::DataType;
-    using modeT    = typename decltype(ThirdReg::mode)::DataType;
+    using ControlT = typename decltype(ThirdReg::control)::DataType;
+    using ConfigT  = typename decltype(ThirdReg::config)::DataType;
+    using ModeT    = typename decltype(ThirdReg::mode)::DataType;
 
-    apply(write(ThirdReg::control, ctv<controlT, 0xAB>()),
-          write(ThirdReg::config, ctv<configT, 0xCD>()),
-          write(ThirdReg::mode, ctv<modeT, 0xEF>()));
+    apply(write(ThirdReg::control, ctv<ControlT, 0xAB>()),
+          write(ThirdReg::config, ctv<ConfigT, 0xCD>()),
+          write(ThirdReg::mode, ctv<ModeT, 0xEF>()));
 
     checkActions({
       W{ThirdReg::Addr::value, 0xEFCDAB}
@@ -170,7 +201,7 @@ static void allCompileTimeThreeFieldMerge() {
 }
 
 // FieldValue constants (enum typed) merge with a plain compile-time write
-static void fieldValueWritesMerge() {
+void fieldValueWritesMerge() {
     test("fieldValueWritesMerge");
 
     apply(write(ComplexTestReg::CMDValC::read),
@@ -182,36 +213,19 @@ static void fieldValueWritesMerge() {
     });
 }
 
-// two runtime writes to the same field plus a compile-time write in between: everything
-// still merges into a single write, the runtime values are or-ed together
-static void runtimeAndLiteralSameFieldMerge() {
-    test("runtimeAndLiteralSameFieldMerge");
-
-    using cmdT = typename decltype(SimpleTestReg::cmd)::DataType;
-
-    auto const v1 = runtimeValue(0x11);
-    auto const v2 = runtimeValue(0x22);
-
-    apply(write(SimpleTestReg::dat, v1),
-          write(SimpleTestReg::cmd, ctv<cmdT, 1>()),
-          write(SimpleTestReg::dat, v2));
-
-    CHECK(writeCount(SimpleTestReg::Addr::value) == 1);
-    auto const written = writtenValue(SimpleTestReg::Addr::value);
-    CHECK_EQ(written & 0x100U, 0x100U);
-    CHECK_EQ(written & 0xFFU, v1 | v2);
-}
+// (two runtime writes of one field with a literal between them are a compile error since the merge
+// table carries the runtime bits: tests/diagnostics_must_fail, runtime_literal_runtime_same_bits)
 
 // two runtime writes to two different fields of the same register merge into one write
-static void twoRuntimeWritesDifferentFieldsMerge() {
+void twoRuntimeWritesDifferentFieldsMerge() {
     test("twoRuntimeWritesDifferentFieldsMerge");
 
-    using cmdT = typename decltype(SimpleTestReg::cmd)::DataType;
+    using CmdT = typename decltype(SimpleTestReg::cmd)::DataType;
 
     auto const v1 = runtimeValue(0x11);
     auto const v2 = runtimeValue(1);
 
-    apply(write(SimpleTestReg::dat, v1), write(SimpleTestReg::cmd, static_cast<cmdT>(v2)));
+    apply(write(SimpleTestReg::dat, v1), write(SimpleTestReg::cmd, static_cast<CmdT>(v2)));
 
     CHECK(writeCount(SimpleTestReg::Addr::value) == 1);
     auto const written = writtenValue(SimpleTestReg::Addr::value);
@@ -221,18 +235,18 @@ static void twoRuntimeWritesDifferentFieldsMerge() {
 
 // the same literal twice in one apply (two peripherals setting one bit, or a field written
 // with one value from two places) is idempotent and merges into a single write
-static void agreeingLiteralsMerge() {
+void agreeingLiteralsMerge() {
     test("agreeingLiteralsMerge");
 
-    using stopT = typename decltype(SimpleTestReg::stop)::DataType;
-    using cmdT  = typename decltype(SimpleTestReg::cmd)::DataType;
+    using StopT = typename decltype(SimpleTestReg::stop)::DataType;
+    using CmdT  = typename decltype(SimpleTestReg::cmd)::DataType;
 
     apply(set(SimpleTestReg::stop),
           write(SimpleTestReg::dat, ctv<std::uint32_t, 0x5A>()),
           clear(SimpleTestReg::cmd),
           set(SimpleTestReg::stop),
-          write(SimpleTestReg::stop, ctv<stopT, 1>()),
-          write(SimpleTestReg::cmd, ctv<cmdT, 0>()),
+          write(SimpleTestReg::stop, ctv<StopT, 1>()),
+          write(SimpleTestReg::cmd, ctv<CmdT, 0>()),
           write(SimpleTestReg::dat, ctv<std::uint32_t, 0x5A>()));
 
     checkActions({
@@ -242,29 +256,32 @@ static void agreeingLiteralsMerge() {
 
 // Overlapping writes in one apply() where a runtime value is involved
 namespace OverlapRules {
-using Kvasir::Register::Detail::literalLeavesRuntimeBits;
-using Kvasir::Register::Detail::runtimeDisjoint;
-static_assert(runtimeDisjoint<CtrlReg::Addr,
-                              0x1,
-                              0x2>(),
-              "different fields: fine");
-static_assert(!runtimeDisjoint<CtrlReg::Addr,
-                               0xF0,
-                               0x30>(),
-              "two runtime writes of the same bits");
-static_assert(runtimeDisjoint<ToggleReg::Addr,
-                              0x20,
-                              0x20>(),
-              "a zero-ignored register ORs on purpose");
-static_assert(literalLeavesRuntimeBits<CtrlReg::Addr,
-                                       0x0,
-                                       0xF0>(),
-              "a 0 default under a runtime field");
-static_assert(!literalLeavesRuntimeBits<CtrlReg::Addr,
-                                        0x20,
-                                        0xF0>(),
-              "a literal 1 under a runtime field");
+    using Kvasir::Register::RegisterTraits;
+    using Kvasir::Register::Detail::literalLeavesRuntimeBits;
+    using Kvasir::Register::Detail::runtimeDisjoint;
+    static_assert(runtimeDisjoint(0x1,
+                                  0x2,
+                                  RegisterTraits<CtrlReg::Addr>::writeIgnoredIfZeroMask),
+                  "different fields: fine");
+    static_assert(!runtimeDisjoint(0xF0,
+                                   0x30,
+                                   RegisterTraits<CtrlReg::Addr>::writeIgnoredIfZeroMask),
+                  "two runtime writes of the same bits");
+    static_assert(runtimeDisjoint(0x20,
+                                  0x20,
+                                  RegisterTraits<ToggleReg::Addr>::writeIgnoredIfZeroMask),
+                  "a zero-ignored register ORs on purpose");
+    static_assert(literalLeavesRuntimeBits(0x0,
+                                           0xF0,
+                                           RegisterTraits<CtrlReg::Addr>::writeIgnoredIfZeroMask),
+                  "a 0 default under a runtime field");
+    static_assert(!literalLeavesRuntimeBits(0x20,
+                                            0xF0,
+                                            RegisterTraits<CtrlReg::Addr>::writeIgnoredIfZeroMask),
+                  "a literal 1 under a runtime field");
 }   // namespace OverlapRules
+
+}   // namespace
 
 int main() {
     simpleWrite<SimpleTestReg, true>();
@@ -276,6 +293,8 @@ int main() {
     overrideDefaultsWrites<SimpleTestReg, false>();
     overrideDefaultsWrites<ComplexTestReg, true>();
     overrideDefaultsWrites<ComplexTestReg, false>();
+    overrideDefaultsLiterals<SimpleTestReg>();
+    overrideDefaultsLiterals<ComplexTestReg>();
 
     runtimeOnlyWrites<SimpleTestReg>();
     runtimeOnlyWrites<ComplexTestReg>();
@@ -292,13 +311,8 @@ int main() {
     allCompileTimeTwoFieldMerge();
     allCompileTimeThreeFieldMerge();
     fieldValueWritesMerge();
-    runtimeAndLiteralSameFieldMerge();
     twoRuntimeWritesDifferentFieldsMerge();
     agreeingLiteralsMerge();
 
-    if(Kvasir::Test::failures != 0) {
-        std::print("{} checks failed\n", Kvasir::Test::failures);
-        return 1;
-    }
-    return 0;
+    return Kvasir::Test::report();
 }

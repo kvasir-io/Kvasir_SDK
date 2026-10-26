@@ -2,7 +2,7 @@ FROM archlinux AS build_env
 
 RUN pacman --disable-download-timeout --noconfirm -Syyu && \
     pacman --disable-download-timeout --noconfirm --needed -S \
-        base-devel fish llvm cmake lld git make clang python \
+        base-devel fish llvm cmake lld git make ninja just ccache clang python \
         fmt nlohmann-json pugixml cli11 boost inja arm-none-eabi-gdb lldb && \
     groupadd -r -g 5000 aur_user && \
     useradd aur_user -u 5000 -g 5000 --create-home && \
@@ -18,5 +18,9 @@ RUN pacman --disable-download-timeout --noconfirm -Syyu && \
     mkdir /workspace && \
     git config --global --add safe.directory /workspace && \
     chmod 777 /workspace
+
+# run_container.sh attach starts a shell through it (as the mounting user); the kvasirio/kvasir image's
+# COPY of the SDK puts the same file at the same path
+COPY entrypoint.sh /opt/kvasir/scripts/entrypoint.sh
 
 WORKDIR /workspace
