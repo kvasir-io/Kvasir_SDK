@@ -19,6 +19,10 @@ jobs:
         runs-on: ubuntu-latest
         container:
             image: archlinux:latest
+            # TSan: on a runner with vm.mmap_rnd_bits=32 some layouts are incompatible and TSan re-executes itself with
+            # ASLR off; Docker's default seccomp profile refuses that personality(ADDR_NO_RANDOMIZE) ("unable to disable
+            # ASLR (perhaps sandboxing is enabled?)", a flake of every TSan binary, the build's svd_converter included)
+            options: ${{ matrix.compiler.sanitizer == 'thread' && '--security-opt seccomp=unconfined' || '' }}
         # the tool groups this job installs (tests/tooling/armtc.py): a tool test that would skip for one of them fails
         env:
             KVASIR_TEST_REQUIRE: ${{ matrix.compiler.cc == 'clang' && 'arm-gcc,clang,llvm,host-cxx' || 'arm-gcc,host-cxx' }}
@@ -78,49 +82,17 @@ jobs:
                 nested: 'true'
                 mode: ${{ github.event_name == 'pull_request' && 'changed' || 'full' }}
 
-    # The SDK's headers in ARM context: the host tree above never sees the Arm-only branches, and a chip's or core's
-    # own CI counts SDK findings as foreign. The conformance trees of an M0+ and an M33 core (their paired chips and
-    # kvasir_devices from master), configured against THIS checkout and tidied with --repo . (findings in this
-    # repository and its nested checkouts fail; the core's and chip's are foreign).
+    # The SDK's headers in Arm context: the host tree above never sees the Arm-only branches, and a core's own CI counts
+    # SDK findings as foreign. Each core's conformance tree (package-conformance.yml, the same workflow the core's CI
+    # calls; its paired chip and kvasir_devices from master) configured against THIS checkout: it builds, its must-fail
+    # cases fail, and clang-tidy fails on findings in this repository and its nested checkouts.
     tidy-arm:
-        name: tidy-arm ${{ matrix.core }}
-        runs-on: ubuntu-latest
-        container:
-            image: archlinux:latest
+        name: tidy-arm
         strategy:
             fail-fast: false
             matrix:
-                core: [core_cortex_m0plus, core_cortex_m33]
-
-        steps:
-            - name: Set up the toolchain
-              run: |
-                pacman -Syu --noconfirm --disable-download-timeout
-                pacman -S --noconfirm --disable-download-timeout git cmake ninja base-devel python clang llvm lld
-
-            - name: Checkout repository
-              uses: actions/checkout@v6
-              with:
-                submodules: recursive
-
-            - name: Configure git safe directory
-              run: git config --global --add safe.directory '*'
-
-            # a run step, not a second actions/checkout: act's containers have no node for it
-            - name: Clone the core
-              run: git clone --quiet --depth 1 --recurse-submodules --shallow-submodules
-                https://github.com/kvasir-io/${{ matrix.core }}.git "$RUNNER_TEMP/${{ matrix.core }}"
-
-            - name: Configure and build the conformance tree
-              run: |
-                cmake -S "$RUNNER_TEMP/${{ matrix.core }}/tests/conformance" -B build/conformance -G Ninja \
-                    -DCOMPILE_TARGET=arm_clang -DKVASIR_ROOT="$GITHUB_WORKSPACE"
-                cmake --build build/conformance -j"$(nproc)"
-
-            - name: clang-tidy
-              uses: ./.github/actions/tidy
-              timeout-minutes: 45
-              with:
-                trees: build/conformance
-                sdk: .
-                nested: 'true'
+                core: [core_cortex_m0plus, core_cortex_m33, core_cortex_m4]
+        uses: ./.github/workflows/package-conformance.yml
+        with:
+            package: ${{ matrix.core }}
+            compilers: '["clang"]'

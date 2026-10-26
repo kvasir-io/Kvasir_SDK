@@ -15,10 +15,6 @@
 "chip_rp2350/cmake/chip.cmake: old wording: old image" = "the flash sequence: core 1, launched by the image before the flash, runs on through the erase"
 "Kvasir_SDK/src/kvasir/StartUp/SecondaryCore.hpp: old wording: old image" = "a core-0-only debugger restart can meet core 1 still running the image before the restart"
 
-# --- test oracles: the replaced implementation, kept beside the new one as its reference (no product uses it) ------
-"core_cortex_common/tests/fault_decode_legacy.hpp: legacy" = "test oracle: the fault decoder the current one replaced"
-"core_cortex_common/tests/fault_decode_test.cpp: legacy" = "test oracle: compares the fault decoder with the one it replaced"
-
 # --- forwarding headers that are an API, not an old path -----------------------------------------------------------
 "core_cortex_{m0plus,m33,m4}/src/core/*.hpp: forwarding header" = "the per-core spelling core/<X>.hpp of the common implementation: a chip and its firmware include their core's header, the core says where it lives"
 

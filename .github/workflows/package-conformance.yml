@@ -9,6 +9,9 @@ name: Package conformance
 # (clang, first variant). The caller is checked out with its submodules (core, the commons).
 # Callers: the chip and core repositories' ci.yml / tests.yml, job `conformance`; a tree another repository holds (the
 # RP chips' one tree in chip_rp_common) is named by `source-dir` and configured with `cmake-args`.
+# The other direction: Kvasir_SDK's own ci.yml names a package with `package`. The caller's checkout is then the SDK
+# under test (KVASIR_ROOT), the package is cloned from master, and clang-tidy counts the SDK's findings (its nested
+# checkouts included) instead of the package's - the SDK's headers in Arm context, which its host tree never compiles.
 
 on:
     workflow_call:
@@ -28,26 +31,35 @@ on:
                 required: false
                 type: string
                 default: ''
+            compilers:
+                description: 'JSON list of the compilers, out of ["clang","gcc"]'
+                required: false
+                type: string
+                default: '["clang","gcc"]'
+            package:
+                description: 'empty: the caller is the package. Else a kvasir-io repository (e.g. core_cortex_m4) cloned
+                    from master and tested against the caller, which is then Kvasir_SDK (Kvasir_SDK ci.yml only)'
+                required: false
+                type: string
+                default: ''
 
 jobs:
     conformance:
-        name: ${{ matrix.compiler.name }}${{ matrix.variant && format(' {0}', matrix.variant) || '' }}
+        name: ${{ inputs.package && format('{0} ', inputs.package) || '' }}${{ matrix.compiler }}${{ matrix.variant && format(' {0}', matrix.variant) || '' }}
         runs-on: ubuntu-latest
         container:
             image: archlinux:latest
         strategy:
             fail-fast: false
             matrix:
-                compiler:
-                    - {name: clang, target: arm_clang, packages: clang llvm lld}
-                    - {name: gcc, target: arm_gcc, packages: arm-none-eabi-gcc arm-none-eabi-newlib}
+                compiler: ${{ fromJSON(inputs.compilers) }}
                 variant: ${{ fromJSON(inputs.variants) }}
 
         steps:
             - name: Set up the toolchain
               run: |
                 pacman -Syu --noconfirm --disable-download-timeout
-                pacman -S --noconfirm --disable-download-timeout git cmake ninja base-devel python ${{ matrix.compiler.packages }}
+                pacman -S --noconfirm --disable-download-timeout git cmake ninja base-devel python ${{ matrix.compiler == 'clang' && 'clang llvm lld' || 'arm-none-eabi-gcc arm-none-eabi-newlib' }}
 
             - name: Checkout repository
               uses: actions/checkout@v6
@@ -60,10 +72,18 @@ jobs:
             - name: Configure git safe directory
               run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
+            # a run step, not a second actions/checkout: act's containers have no node for it
+            - name: Clone the package
+              if: inputs.package != ''
+              run: git clone --quiet --depth 1 --recurse-submodules --shallow-submodules
+                https://github.com/kvasir-io/${{ inputs.package }}.git "$RUNNER_TEMP/${{ inputs.package }}"
+
             - name: Configure
               run: >
-                cmake -S ${{ inputs.source-dir }} -B build/conformance -G Ninja
-                -DCOMPILE_TARGET=${{ matrix.compiler.target }} ${{ inputs.cmake-args }}
+                cmake -S ${{ inputs.package && format('"$RUNNER_TEMP/{0}"/', inputs.package) || '' }}${{ inputs.source-dir }}
+                -B build/conformance -G Ninja
+                -DCOMPILE_TARGET=${{ matrix.compiler == 'clang' && 'arm_clang' || 'arm_gcc' }} ${{ inputs.cmake-args }}
+                ${{ inputs.package && '-DKVASIR_ROOT="$GITHUB_WORKSPACE"' || '' }}
                 ${{ matrix.variant && format('-DCONFORMANCE_VARIANT={0}', matrix.variant) || '' }}
 
             - name: Build
@@ -77,8 +97,19 @@ jobs:
             # clang-tidy (Kvasir_SDK master's tools/tidy.py and .clang-tidy) over the tree, clang and the first variant
             # only: the package's findings fail, the SDK's and kvasir_devices' are counted as foreign
             - name: clang-tidy
-              if: matrix.compiler.name == 'clang' && matrix.variant == fromJSON(inputs.variants)[0]
+              if: inputs.package == '' && matrix.compiler == 'clang' && matrix.variant == fromJSON(inputs.variants)[0]
               uses: kvasir-io/Kvasir_SDK/.github/actions/tidy@master
               timeout-minutes: 30
               with:
                 trees: build/conformance
+
+            # called by Kvasir_SDK for a package: the action, runner and config of the SDK under test, and the SDK's
+            # findings fail (its nested checkouts count as the SDK); the package's and kvasir_devices' are foreign
+            - name: clang-tidy (Kvasir_SDK)
+              if: inputs.package != '' && matrix.compiler == 'clang' && matrix.variant == fromJSON(inputs.variants)[0]
+              uses: ./.github/actions/tidy
+              timeout-minutes: 45
+              with:
+                trees: build/conformance
+                sdk: .
+                nested: 'true'

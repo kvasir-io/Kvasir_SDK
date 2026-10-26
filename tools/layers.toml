@@ -272,8 +272,8 @@ mmio_exempt = { R1 = ["Kvasir_SDK/src/kvasir/Register/Mmio.hpp"], R2 = ["Kvasir_
 "chip_rp_common/Io.hpp: R4 Register::Address<" = "ResourceOfAction<>: an IO_BANK0 GPIO_CTRL write provides its pin, matched by partial specialisation"
 "chip_stm32f413/src/chip/Io.hpp: R4 Register::Action<" = "ResourceOfAction<>: a MODER write provides its pin, matched by partial specialisation"
 "chip_stm32f413/src/chip/Io.hpp: R4 Register::Address<" = "ResourceOfAction<>: a MODER write provides its pin, matched by partial specialisation"
-"core_cortex_common/Nvic.hpp: R4 Register::Action<" = ["InterruptOfAction<> / PriorityOfAction<>: an NVIC enable or IPR write names its line, matched by partial specialisation", 3]
-"core_cortex_common/Nvic.hpp: R4 Register::Address<" = ["InterruptOfAction<> / PriorityOfAction<>: an NVIC enable or IPR write names its line, matched by partial specialisation", 3]
-"core_cortex_common/SystemControl.hpp: R4 Register::Action<" = ["PriorityOfAction<>: an SHPR write names its exception, matched by partial specialisation", 2]
-"core_cortex_common/SystemControl.hpp: R4 Register::Address<" = ["PriorityOfAction<>: an SHPR write names its exception, matched by partial specialisation", 2]
+"core_cortex_common/Nvic.hpp: R4 Register::Action<" = ["InterruptOfAction<> / PriorityOfAction<>: an NVIC enable or IPR write names its line, matched by partial specialisation", 2]
+"core_cortex_common/Nvic.hpp: R4 Register::Address<" = ["InterruptOfAction<> / PriorityOfAction<>: an NVIC enable or IPR write names its line, matched by partial specialisation", 2]
+"core_cortex_common/SystemControl.hpp: R4 Register::Action<" = "PriorityOfAction<>: an SHPR write names its exception, matched by partial specialisation"
+"core_cortex_common/SystemControl.hpp: R4 Register::Address<" = "PriorityOfAction<>: an SHPR write names its exception, matched by partial specialisation"
 "core_cortex_common/Systick.hpp: R4 Register::Action<" = "InterruptOfAction<>: CSR.TICKINT written to one enables the SysTick exception, matched by partial specialisation"

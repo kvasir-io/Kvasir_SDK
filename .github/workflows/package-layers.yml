@@ -45,10 +45,20 @@ jobs:
                   tools/compat_keep.toml
                 sparse-checkout-cone-mode: false
 
+            # the table key: repo-name, else the caller's name - from the event payload, else GITHUB_REPOSITORY (act
+            # without an event file has no payload, and an empty name made every path a NEW finding)
+            - name: Repository name
+              id: name
+              run: |
+                name="${{ inputs.repo-name || github.event.repository.name }}"
+                name="${name:-${GITHUB_REPOSITORY#*/}}"
+                [ -n "$name" ] || { echo "no repository name: set the repo-name input" >&2; exit 1; }
+                echo "name=$name" >> "$GITHUB_OUTPUT"
+
             - name: Layer check
               run: >
                 python3 -B kvasir_sdk/tools/layer_check.py
-                --repo "${{ inputs.repo-name || github.event.repository.name }}=repo"
+                --repo "${{ steps.name.outputs.name }}=repo"
 
             # also after a layer finding: the two checks are independent
             - name: Fatal sites
@@ -63,7 +73,7 @@ jobs:
 
             # also after a finding above: independent of the two checks before it
             - name: Compat check
-              if: ${{ !cancelled() }}
+              if: ${{ !cancelled() && steps.name.outcome == 'success' }}
               run: >
                 python3 -B kvasir_sdk/tools/compat_check.py --quiet
-                --repo "${{ inputs.repo-name || github.event.repository.name }}=repo"
+                --repo "${{ steps.name.outputs.name }}=repo"
