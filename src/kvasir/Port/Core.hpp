@@ -14,7 +14,7 @@
 //                                            and SecondaryCoreTraits from cortex_common (one body for every core);
 //                                            startup(): FPU access (m4, m33), MSPLIM (m33)
 //   core/Fault.hpp                           Fault::Core::Snapshot snapshot(), void clearFaultStatus(),
-//                                            void Log(std::uint32_t const* frame, std::uint32_t excReturn,
+//                                            void log(std::uint32_t const* frame, std::uint32_t excReturn,
 //                                            Snapshot const&) (the COREFAULT line), EarlyInitList (Startup actions)
 //   cmake/core.cmake                         the target flags and the core SVD's svd_convert()
 // A core header names no chip header: a chip fact (Nvic::InterruptOffsetTraits<Tag::User>) is read when a firmware
