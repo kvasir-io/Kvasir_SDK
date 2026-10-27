@@ -116,7 +116,6 @@ struct remote_fmt::formatter<R> {
     template<typename Printer>
     void format(R const&,
                 Printer& printer) {
-        remote_fmt::typeEntry<Kvasir::Register::Detail::RegisterTextOf<R>>();
         printer.value(static_cast<Kvasir::Register::Detail::Word>(apply(read(R::FULLREGISTER))));
     }
 };
@@ -195,7 +194,6 @@ struct remote_fmt::formatter<Kvasir::Register::Flags<R>> {
     template<typename Printer>
     constexpr void format(Kvasir::Register::Flags<R> const& flags,
                           Printer&                          printer) const {
-        remote_fmt::typeEntry<Kvasir::Register::Detail::FlagsTextOf<R>>();
         printer.value(static_cast<Kvasir::Register::Detail::Word>(flags.value));
     }
 };
