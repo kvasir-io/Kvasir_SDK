@@ -4,6 +4,9 @@
 # as at the top of kvasir.cmake, for the functions defined from here on
 cmake_policy(SET CMP0174 NEW)
 
+# Compiler identification happens in project(); tidy's compiler check must run after it.
+include(${kvasir_cmake_dir}/tidy.cmake)
+
 include(${KVASIR_ROOT}/cmake_git_version/CMakeLists.txt)
 
 include(${kvasir_cmake_dir}/kvasir_interface.cmake)

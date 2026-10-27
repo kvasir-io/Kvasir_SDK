@@ -36,7 +36,6 @@ if(NOT IS_DIRECTORY "${CHIP_ROOT}")
     message(FATAL_ERROR "CHIP_ROOT does not exist or is not a directory: ${CHIP_ROOT}")
 endif()
 
-include(${CMAKE_CURRENT_LIST_DIR}/tidy.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/cppcheck.cmake)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
