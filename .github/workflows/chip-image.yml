@@ -35,6 +35,9 @@ on:
 jobs:
     build-push:
         name: build and push
+        # act runs as 'nektos/act' and has no DockerHub secrets: nothing to push from a local run (env is not
+        # available in a job-level if, hence the actor)
+        if: github.actor != 'nektos/act'
         runs-on: ubuntu-latest
         outputs:
             build-date: ${{ steps.set-date.outputs.build-date }}
@@ -90,7 +93,8 @@ jobs:
     notify-status:
         runs-on: ubuntu-latest
         needs: [build-push]
-        if: always()
+        # no commit status from a local act run either
+        if: always() && github.actor != 'nektos/act'
         steps:
             - name: Set build status
               run: |

@@ -35,12 +35,15 @@ concurrency:
 
 jobs:
     plan:
+        # act runs as 'nektos/act' and has no DockerHub secrets: a local run builds and pushes nothing (every job
+        # below needs plan)
         if: >-
-            github.event_name == 'workflow_dispatch' ||
-            (github.event.workflow_run.conclusion == 'success' &&
-             github.event.workflow_run.head_branch == 'master' &&
-             github.event.workflow_run.head_repository.full_name == github.repository &&
-             contains(fromJSON('["push", "schedule", "workflow_dispatch"]'), github.event.workflow_run.event))
+            github.actor != 'nektos/act' &&
+            (github.event_name == 'workflow_dispatch' ||
+             (github.event.workflow_run.conclusion == 'success' &&
+              github.event.workflow_run.head_branch == 'master' &&
+              github.event.workflow_run.head_repository.full_name == github.repository &&
+              contains(fromJSON('["push", "schedule", "workflow_dispatch"]'), github.event.workflow_run.event)))
         runs-on: ubuntu-latest
         outputs:
             sha: ${{ steps.plan.outputs.sha }}
