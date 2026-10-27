@@ -29,8 +29,9 @@ change. This tool finds the shapes such code takes, so that it does not come bac
                      the same namespace under another name
   forwarding header  a header whose only content is one #include
 
-Files: what git lists in the repository (tracked, recursing into submodules, plus untracked files not ignored), else
-every file below it; not through a symlinked directory, not the notebooks (CLAUDE.md), not LICENSE, not this tool and
+Files: what git lists in the repository (tracked, plus untracked files not ignored), else every file below it -
+recursing into submodules only in Kvasir_SDK, which owns its submodules (any other repository's submodule is a
+repository of its own and scanned as one); not through a symlinked directory, not the notebooks (CLAUDE.md), not LICENSE, not this tool and
 its keep tables, not upstream code in Kvasir_SDK/lib/{libc,libcxx,compiler-rt} (only its Kvasir-owned files), not
 binary or data files. The wording kinds read every text file, version markers, deprecated, rename guards and tool
 gates the code files (C/C++, Python, CMake, shell), the alias and forwarding-header kinds the headers (alias: only
@@ -93,6 +94,8 @@ SKIP_EXT = {".svd", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".b
             ".kicad_pro", ".step", ".stl", ".rttlog", ".pickle"}
 SKIP_NAMES = {"CLAUDE.md", "LICENSE",
               "LICENSE.txt", "LICENSE.md", "compat_check.py"}
+# the one repository whose submodules are its own code (the others' submodules are top-level repositories)
+OWNS_SUBMODULES = "Kvasir_SDK"
 UPSTREAM = re.compile(r"^Kvasir_SDK/lib/(libc|libcxx|compiler-rt)/")
 OWNED = re.compile(
     r"^Kvasir_SDK/lib/[^/]+/(.*/)?kvasir/|^Kvasir_SDK/lib/[^/]+/[^/]+\.cmake$")
@@ -381,11 +384,12 @@ class Scanner:
         return sorted(out, key=lambda f: (f.line, f.kind))
 
 
-def listed_files(root: Path) -> list[str]:
-    """Paths relative to root: git's list (tracked, through submodules, plus untracked not ignored), else a walk."""
+def listed_files(root: Path, submodules: bool) -> list[str]:
+    """Paths relative to root: git's list (tracked, through submodules when asked, plus untracked not ignored), else
+    a walk."""
     def ls(*opts):
         return subprocess.run(["git", "-C", str(root), "ls-files", "-z", *opts], capture_output=True, text=True)
-    tracked = ls("--recurse-submodules")
+    tracked = ls("--recurse-submodules") if submodules else ls()
     if tracked.returncode == 0:
         # git refuses -o together with --recurse-submodules: tracked files of every submodule, untracked of the top
         names = tracked.stdout.split(
@@ -404,7 +408,7 @@ def repo_files(name: str, root: Path) -> list[tuple[str, Path]]:
     root = Path(os.path.abspath(root))
     real_root = os.path.realpath(root)
     out = []
-    for rel in listed_files(root):
+    for rel in listed_files(root, submodules=name == OWNS_SUBMODULES):
         f = root / rel
         key = f"{name}/{rel}"
         if f.name in SKIP_NAMES or f.name.startswith("compat_keep") or f.suffix.lower() in SKIP_EXT:

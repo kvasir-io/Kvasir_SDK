@@ -17,7 +17,6 @@
 
 # --- forwarding headers that are an API, not an old path -----------------------------------------------------------
 "core_cortex_{m0plus,m33,m4}/src/core/*.hpp: forwarding header" = "the per-core spelling core/<X>.hpp of the common implementation: a chip and its firmware include their core's header, the core says where it lives"
-"chip_*/core/src/core/*.hpp: forwarding header" = "the same per-core headers, scanned through a chip's core submodule"
 
 # --- names brought into a namespace for its own declarations or as its public face (a second spelling by design) ---
 "chip_atsam_common/DMAC.hpp: alias: using TriggerSource = Sam::Package::Dmac::TriggerSource;" = "the DMAC front's name for the chip's trigger enum, which each chip's traits define"
