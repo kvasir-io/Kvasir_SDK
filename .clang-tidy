@@ -295,6 +295,7 @@ CheckOptions:
   readability-identifier-naming.LocalConstantIgnoredRegexp: '^(UC_LOG_.*|REMOTE_FMT_.*|DO_NOT_USE_.*|kvasir_.*)$'   # kvasir_*: macro-internal locals (KVASIR_CHECK_*'s kvasir_check_ha)
   readability-identifier-naming.ConstexprVariableCase: aNy_CasE
   readability-identifier-naming.ConstantCase: aNy_CasE
+  readability-identifier-naming.ConstantIgnoredRegexp: '^_LINKER_.*$'   # the linker scripts' symbols, declared as const arrays (Runtime/FaultHandler.hpp)
   readability-identifier-naming.EnumConstantCase: aNy_CasE
   readability-identifier-naming.MemberCase: camelBack
   # escape_control_characters, indentation_width: glaze's glz::opts flags, read by glaze under those names
