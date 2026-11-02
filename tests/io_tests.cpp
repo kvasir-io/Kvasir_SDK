@@ -127,44 +127,44 @@ namespace Kvasir { namespace Io {
 using namespace Kvasir::Register;
 using namespace Kvasir::Test;
 
-namespace io     = Kvasir::Io;
-namespace detail = Kvasir::Io::Detail;
+namespace io       = Kvasir::Io;
+namespace ioDetail = Kvasir::Io::Detail;
 
 // ===========================================================================
 // Io::Detail traits
 // ===========================================================================
 
 // --- IsPinLocation --------------------------------------------------------
-static_assert(detail::IsPinLocation<Loc<0,
-                                        0>>::value);
-static_assert(detail::IsPinLocation<Loc<3,
-                                        17>>::value);
-static_assert(!detail::IsPinLocation<int>::value);
-static_assert(!detail::IsPinLocation<io::Pin<0>>::value);
-static_assert(!detail::IsPinLocation<io::HwPort<0>>::value);
+static_assert(ioDetail::IsPinLocation<Loc<0,
+                                          0>>::value);
+static_assert(ioDetail::IsPinLocation<Loc<3,
+                                          17>>::value);
+static_assert(!ioDetail::IsPinLocation<int>::value);
+static_assert(!ioDetail::IsPinLocation<io::Pin<0>>::value);
+static_assert(!ioDetail::IsPinLocation<io::HwPort<0>>::value);
 
 // --- PinLocationLess ------------------------------------------------------
 // pins are ordered by port first, then by pin number
-static_assert(detail::PinLocationLess<Loc<0,
-                                          0>,
-                                      Loc<0,
-                                          1>>::value);
-static_assert(!detail::PinLocationLess<Loc<0,
-                                           1>,
-                                       Loc<0,
-                                           0>>::value);
-static_assert(!detail::PinLocationLess<Loc<0,
-                                           1>,
-                                       Loc<0,
-                                           1>>::value);
-static_assert(detail::PinLocationLess<Loc<0,
-                                          9>,
-                                      Loc<1,
-                                          0>>::value);
-static_assert(!detail::PinLocationLess<Loc<1,
-                                           0>,
-                                       Loc<0,
-                                           9>>::value);
+static_assert(ioDetail::PinLocationLess<Loc<0,
+                                            0>,
+                                        Loc<0,
+                                            1>>::value);
+static_assert(!ioDetail::PinLocationLess<Loc<0,
+                                             1>,
+                                         Loc<0,
+                                             0>>::value);
+static_assert(!ioDetail::PinLocationLess<Loc<0,
+                                             1>,
+                                         Loc<0,
+                                             1>>::value);
+static_assert(ioDetail::PinLocationLess<Loc<0,
+                                            9>,
+                                        Loc<1,
+                                            0>>::value);
+static_assert(!ioDetail::PinLocationLess<Loc<1,
+                                             0>,
+                                         Loc<0,
+                                             9>>::value);
 
 // --- pinLocationEqual -----------------------------------------------------
 static_assert(io::pinLocationEqual(Loc<0,

@@ -147,7 +147,7 @@ concept FlagPrintableRegister = PrintableRegister<T> && requires {
 // The host reconstructs the joined flag names, so the spec is checked against a string instead
 // of degrading to UncheckedArg.
 template<FlagPrintableRegister R>
-struct remote_fmt::detail::HostType<Kvasir::Register::Flags<R>> {
+struct remote_fmt::Detail::HostType<Kvasir::Register::Flags<R>> {
     using type = std::string_view;
 };
     #endif

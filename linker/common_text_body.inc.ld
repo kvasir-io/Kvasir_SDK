@@ -21,6 +21,11 @@ __stop___lcxx_override = .;
 /* The image CRC descriptor (IMAGE_CRC), patched after the link by cmake/tools/patch_image_crc.py: 76 bytes, 4-aligned,
    so the init array stays aligned. */
 KEEP(*(.kvasir_image_crc))
+/* The linker's build id (--build-id=sha1, compiler_common.cmake): a GNU note, 36 bytes, its 20-byte hash at +16. The
+   firmware copies part of it into RAM at boot (uc_log), so the printer can tell the running image from the hex file
+   without reading the flash. */
+_LINKER_build_id_ = .;
+KEEP(*(.note.gnu.build-id))
 _LINKER_INTERN_init_array_start_ = .;
 . = ALIGN(4);
 KEEP(*(SORT_BY_INIT_PRIORITY(.init_array*)))

@@ -9,6 +9,7 @@ tree.
   size_report.py report   before.json                     # one markdown row per image
   size_report.py diff     before.json after.json          # per image, totals, symbols that moved
   size_report.py symbols  before.json 'fw_b/build/release' --top 40
+  size_report.py stack    fw_b/build/release_log.elf --path   # the static stack bound per core
 
 A TREE is a build directory (searched for ELFs) or one ELF. An image's key is `<label>/<path of
 the ELF in the tree, without .elf>`; the label is `name=` in front of the path, or the path's last
@@ -28,6 +29,10 @@ Per image a snapshot holds
              many functions carry a stack canary
   symbols    name -> bytes, for `diff` and `symbols` (megabytes for a big tree; --no-symbols
              leaves them out)
+
+`stack <elf> [--notes f]... [--path] [--json out] [--check] ...` is the static worst-case stack bound of one image
+(cmake/tools/stack_bound.py, which every image's post-link runs too: <target>_stack.txt / .json next to the ELF;
+`stack --help` lists its arguments). Give a firmware's notes and its chip's <CHIP_ROOT>/stack_bound.txt as the build does.
 """
 import argparse
 import concurrent.futures
@@ -42,6 +47,10 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cxx_names import plain_name  # noqa: E402  the one C++-name shortener of the tools
+
+sys.path.insert(
+    0, str(Path(__file__).resolve().parents[1] / "cmake" / "tools"))
+import stack_bound  # noqa: E402  the post-link stack bound (size_report.py stack)
 
 SKIP_DIRS = ("CMakeFiles", "_deps", "host_build", "__pycache__")
 RAM_SECTIONS = re.compile(r"^\.(data|bss|noInit\w*)$")
@@ -386,6 +395,13 @@ def main() -> None:
     p.add_argument("--top", type=int, default=40)
     p.add_argument("--grep", help="regex on the symbol name")
     p.set_defaults(func=cmd_symbols)
+    p = sub.add_parser("stack", add_help=False,
+                       help="the static stack bound of one image (cmake/tools/stack_bound.py; stack --help)")
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p.set_defaults(func=lambda a: sys.exit(stack_bound.main(a.rest)))
+    if sys.argv[1:2] == ["stack"]:
+        # its own arguments, --help included
+        sys.exit(stack_bound.main(sys.argv[2:]))
     args = ap.parse_args()
     args.func(args)
 

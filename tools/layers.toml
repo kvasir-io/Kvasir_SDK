@@ -74,6 +74,7 @@ exclude = ["tests/**", "lib/**", "tools/**", "cmake/**", "linker/**", "scripts/*
 "src/kvasir/Control/**" = "base"       # numeric filters, std only
 "src/kvasir/Runtime/**" = "runtime"    # fatal path, crash records, boot report and guard, image check, stores, executor
 "src/kvasir/Health/**" = "runtime"     # the Health supervisor, its checks, HealthKey, HealthRecords
+"src/kvasir/Test/**" = "runtime"       # on-device tests: Kvasir::Test, the runner, OnRequest, perf clocks
 "src/kvasir/Log/RttSink.hpp" = "app"   # an image config header's backend: names the chip's DebuggerPresent and CPU ceiling
 "src/kvasir/Log/**" = "runtime"        # RateLimiter, LogLimited, FaultLog: the SDK side of driver log lines (drivers include them)
 

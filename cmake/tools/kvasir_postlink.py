@@ -3,7 +3,8 @@
 util.cmake (target_configure_kvasir) registers it as the image's one SDK POST_BUILD command.
 
     kvasir_postlink.py <elf> --linker-file <ld> --objcopy <tool> --objdump <tool>
-                       [--image-crc [--exclude START END]...] [--uf2-family <id>] [--delete-on-failure]
+                       [--image-crc [--exclude START END]...] [--uf2-family <id>] [--stack-notes <file>]...
+                       [--stack-check] [--delete-on-failure]
 
 The steps, in this order (checks, then the CRC, then the artefacts, then the listing, then the size):
   ram_funcs       check_ram_funcs.py        every RAM function in RAM, nothing it reaches in flash
@@ -11,6 +12,9 @@ The steps, in this order (checks, then the CRC, then the artefacts, then the lis
   undefined_refs  find_undefined_refs.py    no undefined or absolute-zero symbol
   image_crc       patch_image_crc.py        with --image-crc: the descriptor written into the ELF (before every
                                             artefact, so each one carries it)
+  stack           stack_bound.py            <name>_stack.{txt,json}, the static stack bound per core (silent); with
+                                            --stack-check a bound over its limit fails the link (STACK_BOUND_CHECK).
+                                            After image_crc: the report is newer than the ELF it describes
   images          elf_image.py              <name>_flash.{bin,hex,uf2,elf}, _eeprom*, from the load view
   lst             objdump | beautify_lst.py <name>.lst (streamed: no raw listing) of every section the image loads
   size            pretty_size.py            the memory table
@@ -40,6 +44,7 @@ import elf_image  # noqa: E402
 import find_undefined_refs  # noqa: E402
 import patch_image_crc  # noqa: E402
 import pretty_size  # noqa: E402
+import stack_bound  # noqa: E402
 from kvasir_elf import Elf  # noqa: E402
 
 
@@ -87,6 +92,10 @@ def steps(args, elf):
     yield 'undefined_refs', lambda: run_tool(lambda: find_undefined_refs.run(elf, args.elf))
     if args.image_crc:
         yield 'image_crc', lambda: run_tool(lambda: patch_image_crc.run(elf, args.elf, [tuple(p) for p in args.exclude]))
+    stack = argparse.Namespace(elf=args.elf, notes=args.stack_notes, ci=[], txt=Path(f'{prefix}_stack.txt'),
+                               json=Path(f'{prefix}_stack.json'), path=False, check=args.stack_check, quiet=True,
+                               fp=False, objdump=None)
+    yield 'stack', lambda: run_tool(lambda: stack_bound.run(stack, elf=elf))
     uf2 = int(args.uf2_family, 0) if args.uf2_family else None
     yield 'images', lambda: run_tool(lambda: elf_image.run(elf, args.elf, prefix, uf2, args.objcopy))
 
@@ -120,6 +129,8 @@ def main(argv=None):
     ap.add_argument('--exclude', nargs=2, action='append',
                     default=[], metavar=('START', 'END'))
     ap.add_argument('--uf2-family')
+    ap.add_argument('--stack-notes', action='append', default=[], type=Path)
+    ap.add_argument('--stack-check', action='store_true')
     ap.add_argument('--delete-on-failure', action='store_true')
     args = ap.parse_args(argv)
     try:

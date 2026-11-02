@@ -94,3 +94,16 @@ function(forward_then_receive)
 endfunction()
 forward_then_receive(JLINK_PROBE "" RAM_ONLY HEAP_SIZE 2k)
 round_trip("" "")
+
+# kvasir_variant_arguments: VARIANT_SETTINGS tokens replace a one-value keyword, switch an option off or on, for their
+# variant only; other variants keep the forwarded list
+set(_fwd STACK_BOUND_CHECK MIN_STACK_SIZE 10k CORE1_STACK_SIZE 32k)
+set(_settings "sanitize:MIN_STACK_SIZE=4k;sanitize:STACK_BOUND_CHECK=OFF;debug:IMAGE_CRC=ON")
+kvasir_variant_arguments(_a sanitize "${_fwd}" "${_settings}")
+expect("settings sanitize" "${_a}" "CORE1_STACK_SIZE;32k;MIN_STACK_SIZE;4k")
+kvasir_variant_arguments(_a release "${_fwd}" "${_settings}")
+expect("settings release" "${_a}" "${_fwd}")
+kvasir_variant_arguments(_a debug "${_fwd}" "${_settings}")
+expect("settings debug" "${_a}" "STACK_BOUND_CHECK;MIN_STACK_SIZE;10k;CORE1_STACK_SIZE;32k;IMAGE_CRC")
+kvasir_variant_arguments(_a release_log "" "")
+expect("settings none" "${_a}" "")

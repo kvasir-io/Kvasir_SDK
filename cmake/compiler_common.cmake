@@ -31,4 +31,6 @@ set(compiler_common_c_flags -std=c23)
 
 set(compiler_common_asm_flags)
 
-set(linker_common_flags --static --Bstatic --gc-sections --entry=ResetISR)
+# --build-id: a hash of the linked image as a note in it (linker/common_text_body.inc.ld), the image's identity for the
+# printer's firmware check; sha1 because GNU ld knows no faster kind
+set(linker_common_flags --static --Bstatic --gc-sections --entry=ResetISR --build-id=sha1)

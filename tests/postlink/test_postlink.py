@@ -47,12 +47,14 @@ class Postlink(unittest.TestCase):
     def test_order(self):
         def names(*extra):
             args = kvasir_postlink.argparse.Namespace(elf=Path('a.elf'), linker_file='x.ld', objcopy='o', objdump='d',
-                                                      image_crc=bool(extra), exclude=[], uf2_family=None)
+                                                      image_crc=bool(extra), exclude=[], uf2_family=None,
+                                                      stack_notes=[], stack_check=False)
             return [name for (name, _step) in kvasir_postlink.steps(args, None)]
         self.assertEqual(
-            names(), ['ram_funcs', 'reset_entry', 'undefined_refs', 'images', 'lst', 'size'])
-        self.assertEqual(names('crc'), ['ram_funcs', 'reset_entry', 'undefined_refs', 'image_crc', 'images', 'lst',
-                                        'size'])
+            names(), ['ram_funcs', 'reset_entry', 'undefined_refs', 'stack', 'images', 'lst', 'size'])
+        # the stack report after the CRC patch: newer than the ELF it describes (kvasir_bench.py stack reads it so)
+        self.assertEqual(names('crc'), ['ram_funcs', 'reset_entry', 'undefined_refs', 'image_crc', 'stack', 'images',
+                                        'lst', 'size'])
 
     def test_run_tool(self):
         def tool(result):
@@ -106,7 +108,7 @@ class Postlink(unittest.TestCase):
             self.assertIn('Disassembly of section .chip_code', listing)
             self.assertIn('Disassembly of section .data', listing)
             self.assertNotIn('.kvasir_meta', listing)
-            for suffix in ('_flash.bin', '_flash.hex', '_flash.elf'):
+            for suffix in ('_flash.bin', '_flash.hex', '_flash.elf', '_stack.txt', '_stack.json'):
                 self.assertTrue((tmp / f'image{suffix}').exists(), suffix)
 
     def test_size_is_the_memory_table_alone(self):

@@ -67,6 +67,8 @@ foreach(_package IN LISTS _kvasir_packages)
 endforeach()
 
 include(${kvasir_cmake_dir}/kvasir_variants.cmake)
+# add_kvasir_device_test / kvasir_device_test_ctests: test images (kvasir/Test) as ctests, KVASIR_DEVICE_TESTS
+include(${kvasir_cmake_dir}/kvasir_device_test.cmake)
 
 # kvasir_constexpr_budget(<steps> [<target>...]): how much compile-time evaluation the compiler may do - for
 # static_asserts that simulate a plant or measure text (gfx's checked literals). <steps> is clang's count
@@ -150,7 +152,9 @@ set(KVASIR_LINK_INPUTS
     ${kvasir_cmake_dir}/tools/patch_image_crc.py
     ${kvasir_cmake_dir}/tools/pretty_size.py
     ${kvasir_cmake_dir}/tools/elf_image.py
-    ${kvasir_cmake_dir}/tools/beautify_lst.py)
+    ${kvasir_cmake_dir}/tools/beautify_lst.py
+    ${kvasir_cmake_dir}/tools/stack_bound.py
+    ${kvasir_cmake_dir}/tools/stack_bound_default.txt)
 
 # The image's post-link pipeline (cmake/tools/kvasir_postlink.py), one POST_BUILD command: the RAM function, reset entry
 # and undefined-symbol checks, IMAGE_CRC's descriptor (before every artefact, so each one carries it), the flash
@@ -158,10 +162,18 @@ set(KVASIR_LINK_INPUTS
 # listing, the memory table. A failed step removes the .elf, so the next build fails again instead of passing on a stale
 # image. kvasir_chip(IMAGE_CRC_EXCLUDE): pairs of symbols bounding bytes a later step rewrites (the RP2350's picobin
 # block); kvasir_chip(UF2_FAMILY): the .uf2 artefacts, none without it. Registered before the J-Link and uc_log steps,
-# which read its artefacts.
-function(_kvasir_postlink target linker_file image_crc)
+# which read its artefacts. The stack bound (cmake/tools/stack_bound.py) writes <target>_stack.{txt,json} with the SDK's
+# notes, the chip's (<CHIP_ROOT>/stack_bound.txt) and the firmware's (stack_notes); stack_check fails the link when a
+# bound is over its limit.
+function(_kvasir_postlink target linker_file image_crc stack_notes stack_check)
     set(_out "${CMAKE_CURRENT_BINARY_DIR}/${target}")
     set(_args --linker-file "${linker_file}" --objcopy ${CMAKE_OBJCOPY} --objdump ${CMAKE_OBJDUMP})
+    foreach(_notes IN LISTS stack_notes)
+        list(APPEND _args --stack-notes "${_notes}")
+    endforeach()
+    if(stack_check)
+        list(APPEND _args --stack-check)
+    endif()
     if(image_crc)
         list(APPEND _args --image-crc)
         kvasir_chip_get(_pair IMAGE_CRC_EXCLUDE) # pairs: kvasir_chip() checked
@@ -179,7 +191,9 @@ function(_kvasir_postlink target linker_file image_crc)
         _eeprom.bin
         _eeprom.hex
         _eeprom_flash.hex
-        .lst)
+        .lst
+        _stack.txt
+        _stack.json)
         list(APPEND _byproducts "${_out}${_suffix}")
     endforeach()
     kvasir_chip_get(_uf2_family UF2_FAMILY)
@@ -199,12 +213,15 @@ endfunction()
 
 # kvasir_executable_variants(<base> SOURCES <src>... [LIBRARIES <lib>...] [VARIANTS <v>...] [OPTIMIZATION <o>]
 # [DEBUG_OPTIMIZATION <o>] [OUT_TARGETS <var>] [COVERAGE [COVERAGE_MODE bytes|counts] [COVERAGE_LIST <file>]]
-# [<target_configure_kvasir keyword>...]) One image per variant (default: debug release release_log sanitize), named
-# <base>_<variant> (<variant> for base ""), each `add_executable` + `target_configure_kvasir(... VARIANT <variant>)` +
-# LIBRARIES. OPTIMIZATION (size) is every variant's but debug's, DEBUG_OPTIMIZATION (debug) debug's. Every keyword of
-# target_configure_kvasir but VARIANT and OPTIMIZATION_STRATEGY is forwarded to each (KVASIR_CONFIGURE_*). OUT_TARGETS
-# names the variable that gets the targets made. A per-variant define goes `target_compile_definitions(<t> PRIVATE ...)`
-# after the call.
+# [VARIANT_SETTINGS <variant>:<KEYWORD>=<value>...] [<target_configure_kvasir keyword>...]) One image per variant
+# (default: debug release release_log sanitize), named <base>_<variant> (<variant> for base ""), each `add_executable` +
+# `target_configure_kvasir(... VARIANT <variant>)` + LIBRARIES. OPTIMIZATION (size) is every variant's but debug's,
+# DEBUG_OPTIMIZATION (debug) debug's. Every keyword of target_configure_kvasir but VARIANT and OPTIMIZATION_STRATEGY is
+# forwarded to each (KVASIR_CONFIGURE_*). OUT_TARGETS names the variable that gets the targets made. A per-variant
+# define goes `target_compile_definitions(<t> PRIVATE ...)` after the call; a per-variant keyword of
+# target_configure_kvasir through VARIANT_SETTINGS, tokens `<variant>:<KEYWORD>=<value>` / `<variant>:<OPTION>=ON|OFF`
+# (kvasir_variant_arguments, cmake/kvasir_variants.cmake): `MIN_STACK_SIZE 10k STACK_BOUND_CHECK VARIANT_SETTINGS
+# sanitize:MIN_STACK_SIZE=4k sanitize:STACK_BOUND_CHECK=OFF`.
 #
 # COVERAGE: one more image, <base>_coverage: release_log's image with clang's source-coverage instrumentation on the
 # firmware's own translation units, the bare-metal profile runtime (lib/compiler-rt/profile.cmake) and KVASIR_COVERAGE=1
@@ -216,7 +233,7 @@ function(kvasir_executable_variants base)
     cmake_parse_arguments(
         PARSE_ARGV 1 V "COVERAGE;${KVASIR_CONFIGURE_OPTIONS}"
         "OPTIMIZATION;DEBUG_OPTIMIZATION;COVERAGE_MODE;COVERAGE_LIST;OUT_TARGETS;${KVASIR_CONFIGURE_ONE_VALUE}"
-        "SOURCES;LIBRARIES;VARIANTS;${KVASIR_CONFIGURE_MULTI_VALUE}")
+        "SOURCES;LIBRARIES;VARIANTS;VARIANT_SETTINGS;${KVASIR_CONFIGURE_MULTI_VALUE}")
     if(V_UNPARSED_ARGUMENTS)
         message(FATAL_ERROR "unknown argument ${V_UNPARSED_ARGUMENTS}")
     endif()
@@ -257,7 +274,8 @@ function(kvasir_executable_variants base)
             set(_opt ${V_DEBUG_OPTIMIZATION})
         endif()
         add_executable(${_t} ${_exclude} ${V_SOURCES})
-        target_configure_kvasir(${_t} VARIANT ${_v} OPTIMIZATION_STRATEGY ${_opt} ${_common})
+        kvasir_variant_arguments(_args ${_v} "${_common}" "${V_VARIANT_SETTINGS}")
+        target_configure_kvasir(${_t} VARIANT ${_v} OPTIMIZATION_STRATEGY ${_opt} ${_args})
         if(V_LIBRARIES)
             target_link_libraries(${_t} ${V_LIBRARIES})
         endif()
@@ -282,7 +300,8 @@ function(kvasir_executable_variants base)
                 set(_t ${base}_coverage)
             endif()
             add_executable(${_t} EXCLUDE_FROM_ALL ${V_SOURCES})
-            target_configure_kvasir(${_t} VARIANT coverage OPTIMIZATION_STRATEGY ${V_OPTIMIZATION} ${_common})
+            kvasir_variant_arguments(_args coverage "${_common}" "${V_VARIANT_SETTINGS}")
+            target_configure_kvasir(${_t} VARIANT coverage OPTIMIZATION_STRATEGY ${V_OPTIMIZATION} ${_args})
             # after the configure call: the string-constants TU (its COMPILE_OPTIONS snapshot) stays uninstrumented
             target_compile_options(${_t} PRIVATE ${coverage_option_${V_COVERAGE_MODE}})
             if(V_COVERAGE_LIST)
@@ -543,13 +562,38 @@ function(target_configure_kvasir target)
     # and the SDK (with uc_log): one link each, nothing appended by hand
     target_link_libraries(${target} kvasir::chip kvasir::sdk)
 
-    _kvasir_postlink(${target} ${_linker_file} "${A_IMAGE_CRC}")
+    # The stack bound's notes: the chip's, then the firmware's STACK_BOUND_NOTES (the SDK's own the tool reads itself).
+    # Both are link inputs: editing one rewrites the report.
+    set(_stack_notes "")
+    if(EXISTS "${CHIP_ROOT}/stack_bound.txt")
+        list(APPEND _stack_notes "${CHIP_ROOT}/stack_bound.txt")
+    endif()
+    if(A_STACK_BOUND_NOTES)
+        get_filename_component(_notes "${A_STACK_BOUND_NOTES}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        if(NOT EXISTS "${_notes}")
+            message(FATAL_ERROR "${target}: STACK_BOUND_NOTES ${_notes} does not exist")
+        endif()
+        list(APPEND _stack_notes "${_notes}")
+    endif()
+    _kvasir_postlink(${target} ${_linker_file} "${A_IMAGE_CRC}" "${_stack_notes}" "${A_STACK_BOUND_CHECK}")
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        # gcc's LTO link writes one <elf>.ltrans<N>.ltrans.{su,ci} per partition (the stack bound's frames,
+        # arm_gcc.cmake): the files of an earlier link with more partitions must not be read as this one's
+        add_custom_command(
+            TARGET ${target}
+            PRE_LINK
+            COMMAND
+                ${Python3_EXECUTABLE} -c
+                "import glob,os,sys;[os.remove(f) for f in glob.glob(glob.escape(sys.argv[1])+'.ltrans*.ltrans.*')]"
+                "${CMAKE_CURRENT_BINARY_DIR}/${target}.elf"
+            VERBATIM)
+    endif()
     cmake_git_version_add_headers_with_type(${target} ${A_OPTIMIZATION_STRATEGY})
 
     set_property(
         TARGET ${target}
         APPEND
-        PROPERTY LINK_DEPENDS ${KVASIR_LINK_INPUTS} ${_linker_file})
+        PROPERTY LINK_DEPENDS ${KVASIR_LINK_INPUTS} ${_linker_file} ${_stack_notes})
 
     get_filename_component(linker_file_path ${_linker_file} ABSOLUTE)
     get_filename_component(linker_file_path ${linker_file_path} DIRECTORY)
@@ -588,9 +632,15 @@ function(target_configure_kvasir target)
         "${_jlink_probe}"
         CONNECT_COMMANDS
         ${_chip_JLINK_CONNECT_COMMANDS})
+    # a variant without the log (the variant table's LOG column) gets no log_<target>: it would wait for nothing
+    set(_uc_log_no_log "")
+    if(NOT _p_LOG)
+        set(_uc_log_no_log NO_LOG)
+    endif()
     target_add_uc_log_rtt_jlink(
         ${target}
         ${_uc_log_ram_image}
+        ${_uc_log_no_log}
         TARGET_MPU
         ${_chip_MPU}
         SWD_SPEED

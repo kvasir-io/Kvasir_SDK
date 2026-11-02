@@ -29,12 +29,12 @@ def extract_meaningful_name(long_name):
             return f"[{match.group(1)}<...>]"
         return "[enable_if<...>::type]"
 
-    if 'rtt::detail::BufferControlBlock' in long_name:
+    if 'rtt::Detail::BufferControlBlock' in long_name:
         match = re.search(
-            r'(rtt::detail::BufferControlBlock)<[^>]*>::(\w+)<', long_name)
+            r'(rtt::Detail::BufferControlBlock)<[^>]*>::(\w+)<', long_name)
         if match:
             return f"[{match.group(1)}<...>::{match.group(2)}<...>]"
-        return "[rtt::detail::BufferControlBlock<...>]"
+        return "[rtt::Detail::BufferControlBlock<...>]"
 
     if 'remote_fmt::Printer' in long_name:
         match = re.search(r'(remote_fmt::Printer)<[^>]*>::(\w+)<', long_name)

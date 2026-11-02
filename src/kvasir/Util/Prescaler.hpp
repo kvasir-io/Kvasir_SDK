@@ -205,7 +205,7 @@ struct IntFrac {
     constexpr bool operator==(IntFrac const&) const = default;
 };
 
-namespace detail {
+namespace Detail {
     // the two candidates around in / (scale * want) in steps of 1/unit, clamped to [lo, hi]
     constexpr std::array<std::uint64_t,
                          2>
@@ -221,13 +221,13 @@ namespace detail {
         auto const ceil  = floor + (num % den != 0 ? 1U : 0U);
         return {std::clamp(floor, lo, hi), std::clamp(ceil, lo, hi)};
     }
-}   // namespace detail
+}   // namespace Detail
 
 constexpr auto fromRange(std::uint64_t in,
                          std::uint64_t want,
                          Linear        r,
                          Pick          pick = Pick::nearest) {
-    auto const n = detail::neighbours(in, want, 1, 1, r.first, r.last);
+    auto const n = Detail::neighbours(in, want, 1, 1, r.first, r.last);
     // floor first: on a tie the smaller divider wins, as a loop from `first` would
     std::array<std::uint32_t, 2> const cs{static_cast<std::uint32_t>(n[0]),
                                           static_cast<std::uint32_t>(n[1])};
@@ -262,7 +262,7 @@ constexpr Choice<IntFrac> fromFixedPoint(std::uint64_t in,
     auto const unit = std::uint64_t{1} << f.fracBits;
     auto const lo   = mulChecked(f.intMin, unit);
     auto const hi   = mulChecked(f.intMax, unit) + (unit - 1);
-    auto const n    = detail::neighbours(in, want, unit, f.scale, lo, hi);
+    auto const n    = Detail::neighbours(in, want, unit, f.scale, lo, hi);
     auto const r    = search(
       in,
       want,
@@ -290,7 +290,7 @@ constexpr auto fromMultiplier(std::uint64_t in,
                               std::uint64_t want,
                               Multiplier    m,
                               Pick          pick = Pick::nearest) {
-    auto const                         n = detail::neighbours(want, in, m.den, 1, m.first, m.last);
+    auto const                         n = Detail::neighbours(want, in, m.den, 1, m.first, m.last);
     std::array<std::uint32_t, 2> const cs{static_cast<std::uint32_t>(n[0]),
                                           static_cast<std::uint32_t>(n[1])};
     return search(in, want, cs, [&](std::uint32_t k) { return Rational{k, m.den}; }, pick);
@@ -300,7 +300,7 @@ constexpr auto fromMultiplier(std::uint64_t in,
 // A static_assert cannot see a function argument, so these are not constant expressions when the
 // rate fails: the compiler's note "in call to 'rateOutOfTolerance(...)'" shows the numbers.
 
-namespace detail {
+namespace Detail {
     // not constexpr: reaching one is the compile error
     inline void rateOutsideItsToleranceSeeTheCallBelow() {}
 
@@ -309,7 +309,7 @@ namespace detail {
     constexpr std::uint64_t milli(Rational a) {
         return (mulChecked(a.num, 1000) + a.den / 2) / a.den;
     }
-}   // namespace detail
+}   // namespace Detail
 
 // achievedMilliHz: the achieved rate x 1000, rounded
 constexpr void rateOutOfTolerance(std::uint64_t wantedHz,
@@ -320,7 +320,7 @@ constexpr void rateOutOfTolerance(std::uint64_t wantedHz,
     static_cast<void>(achievedMilliHz);
     static_cast<void>(errorPpm);
     static_cast<void>(allowedPpm);
-    detail::rateOutsideItsToleranceSeeTheCallBelow();
+    Detail::rateOutsideItsToleranceSeeTheCallBelow();
 }
 
 // the range the hardware can reach, in mHz
@@ -330,7 +330,7 @@ constexpr void rateOutOfReach(std::uint64_t wantedHz,
     static_cast<void>(wantedHz);
     static_cast<void>(slowestMilliHz);
     static_cast<void>(fastestMilliHz);
-    detail::rateOutOfReachSeeTheCallBelow();
+    Detail::rateOutOfReachSeeTheCallBelow();
 }
 
 // inTolerance for a runtime argument of a consteval function: true, or not a constant expression
@@ -339,7 +339,7 @@ constexpr bool requireInTolerance(Rational      achieved,
                                   Tolerance     tol) {
     if(!inTolerance(achieved, wanted, tol)) {
         rateOutOfTolerance(wanted,
-                           detail::milli(achieved),
+                           Detail::milli(achieved),
                            errorIn(achieved, wanted, 1'000'000),
                            (mulChecked(tol.num, 1'000'000) + tol.den / 2) / tol.den);
     }

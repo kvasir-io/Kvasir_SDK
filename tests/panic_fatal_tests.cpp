@@ -81,7 +81,7 @@ int main() {
     Kvasir::Test::test(
       "uc_log::bootsThatLogged() is the backend's count; a tag without one has none");
     CHECK(uc_log::bootsThatLogged() == 7);
-    static_assert(!uc_log::detail::HasBootCount<OtherTag>);
+    static_assert(!uc_log::Detail::HasBootCount<OtherTag>);
 
     Kvasir::Test::test("OnPanic::Reset: the record, the drain, then the reboot");
 #ifndef KVASIR_TEST_NO_LONGJMP

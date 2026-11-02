@@ -97,7 +97,7 @@ struct Polls {
     std::uint32_t grace;   // polls after the ack, for the host's JLINK_Close to finish
 };
 
-namespace detail {
+namespace Detail {
     // Each poll is at least a load, a compare, the counter update and a taken branch. On the
     // Cortex-M0+ that is >= 6 cycles (DDI0484C Table 3-1: LDR 2, CMP 1, ADDS/SUBS 1, B<cc> taken
     // 2); the Cortex-M33 can dual-issue some 16-bit pairs (100230 A1.4.1 "Limited dual-issue"), so
@@ -155,12 +155,12 @@ namespace detail {
         return true;   // the host, RISC-V
 #endif
     }
-}   // namespace detail
+}   // namespace Detail
 
 /// ~0.5 s for the ack, ~0.1 s of grace, at the chip's fastest clock (see detail::minCyclesPerPoll).
 template<typename... Dep>
 constexpr Polls defaultPolls() {
-    return {detail::pollsFor<Dep...>(500'000), detail::pollsFor<Dep...>(100'000)};
+    return {Detail::pollsFor<Dep...>(500'000), Detail::pollsFor<Dep...>(100'000)};
 }
 
 /// The same waits in microseconds, for a chip with a running microsecond counter.
@@ -171,7 +171,7 @@ struct Waits {
 
 inline constexpr Waits defaultWaits{500'000, 100'000};
 
-namespace detail {
+namespace Detail {
     // A counter that has not moved for this long is taken as stopped (a timer whose tick is not set up).
     inline constexpr std::uint64_t stillUs = 2'000;
 
@@ -196,7 +196,7 @@ namespace detail {
             return done++ >= polls;
         }
     };
-}   // namespace detail
+}   // namespace Detail
 
 enum class Field : std::uint8_t { magic, armed, request, ack };
 
@@ -261,14 +261,14 @@ Outcome announceVia(Access const& access,
     }
     // Interrupts masked while it waits: a busy interrupt load would stretch the grace past the host's pause and the
     // reset would fall into the host's reconnect. PRIMASK is put back for a caller that goes on.
-    [[maybe_unused]] detail::IrqMask const masked{};
+    [[maybe_unused]] Detail::IrqMask const masked{};
     std::uint32_t const request = nextRequest(access.load(Field::request), stayAwayMs);
     access.store(Field::request, request);
-    std::uint32_t const still = detail::pollsFor<Access>(detail::stillUs);
-    for(detail::Deadline ack{nowUs, waits.ackUs, polls.ack, still}; !ack.expired();) {
+    std::uint32_t const still = Detail::pollsFor<Access>(Detail::stillUs);
+    for(Detail::Deadline ack{nowUs, waits.ackUs, polls.ack, still}; !ack.expired();) {
         if(access.load(Field::ack) == request) {
             // the host closes its session after the ack: let it finish before the reset
-            for(detail::Deadline grace{nowUs, waits.graceUs, polls.grace, still}; !grace.expired();)
+            for(Detail::Deadline grace{nowUs, waits.graceUs, polls.grace, still}; !grace.expired();)
             {
                 // a volatile read per pass, so the loop is not optimised away
                 if(access.load(Field::magic) != magicValue) { break; }
@@ -299,10 +299,10 @@ template<typename... Dep>
 inline bool waitForPrinterOn(Block const volatile& block,
                              std::uint32_t         microseconds,
                              std::uint32_t (*nowUs)() = nullptr) {
-    for(detail::Deadline d{nowUs,
+    for(Detail::Deadline d{nowUs,
                            microseconds,
-                           detail::pollsFor<Dep...>(microseconds),
-                           detail::pollsFor<Dep...>(detail::stillUs)};
+                           Detail::pollsFor<Dep...>(microseconds),
+                           Detail::pollsFor<Dep...>(Detail::stillUs)};
         !d.expired();)
     {
         if(printerListeningOn(block)) { return true; }
@@ -334,7 +334,7 @@ template<typename... Dummy>
 inline Outcome announce([[maybe_unused]] std::uint32_t stayAwayMs = 0) {
 #ifdef USE_UC_LOG
     return announceVia(VolatileAccess{kvasir_announced_reset},
-                       detail::haltingDebugMayBeEnabled(),
+                       Detail::haltingDebugMayBeEnabled(),
                        defaultPolls<Dummy...>(),
                        stayAwayMs,
                        &kvasir_announced_reset_time_us);

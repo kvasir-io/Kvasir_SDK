@@ -7,7 +7,7 @@ repositories:
 
   (a) include   an #include whose target is in a higher layer than the including file ("upward"), an include of
                 the log libraries from a layer with `log = false`, or of a log adapter from any library layer;
-  (b) detail    a name in a `detail`/`Detail` namespace that one repository declares and another one uses;
+  (b) detail    a name in a `Detail` namespace that one repository declares and another one uses;
   (c) has_include  a `__has_include` in a layer with `has_include = false` (a feature switched by what happens to be
                 on the include path);
   (d) mmio      an access around the register layer, in any layer: R1 a volatile pointer cast (`reinterpret_cast` /
@@ -180,7 +180,7 @@ HAS_INCLUDE = re.compile(r'__has_include[\s\\]*\(([^)]*)\)')
 NS_OR_BRACE = re.compile(
     r"(?P<ns>\bnamespace\s+(?P<name>[A-Za-z_]\w*(?:\s*::\s*(?:inline\s+)?[A-Za-z_]\w*)*)?\s*\{)|(?P<open>\{)|(?P<close>\})")
 DETAIL_USE = re.compile(
-    r"(?<![\w:])(?P<chain>(?:::\s*)?(?:[A-Za-z_]\w*\s*::\s*)*?)(?P<d>detail|Detail)\s*::\s*(?:template\s+)?(?P<x>[A-Za-z_]\w*)")
+    r"(?<![\w:])(?P<chain>(?:::\s*)?(?:[A-Za-z_]\w*\s*::\s*)*?)(?P<d>Detail)\s*::\s*(?:template\s+)?(?P<x>[A-Za-z_]\w*)")
 GUARDED = re.compile(r'\s*#\s*(?:el)?if\s+defined\s*(?:\(\s*([A-Za-z_]\w*)\s*\)|\s([A-Za-z_]\w*))\s*&&\s*'
                      r'__has_include\s*\(\s*(?:<[^>\n]+>|"[^"\n]+")\s*\)\s*\Z')
 MMIO_RULES = {
@@ -266,7 +266,7 @@ def declared_names(piece: str) -> list[str]:
 
 
 def detail_declarations(text: str) -> list[tuple[tuple[str, ...], str]]:
-    """(namespace path, name) for everything declared directly in a namespace whose last part is detail/Detail."""
+    """(namespace path, name) for everything declared directly in a namespace whose last part is Detail."""
     out = []
     # a namespace frame holds its full path; another brace None
     stack: list[tuple[str, ...] | None] = []
@@ -279,7 +279,7 @@ def detail_declarations(text: str) -> list[tuple[tuple[str, ...], str]]:
         return ()
 
     def top_is_detail() -> bool:
-        return bool(stack) and stack[-1] is not None and stack[-1] and stack[-1][-1] in ("detail", "Detail")
+        return bool(stack) and stack[-1] is not None and stack[-1] and stack[-1][-1] == "Detail"
 
     for m in NS_OR_BRACE.finditer(text):
         if top_is_detail():
@@ -288,6 +288,8 @@ def detail_declarations(text: str) -> list[tuple[tuple[str, ...], str]]:
         if m.group("ns"):
             parts = tuple(p.strip().removeprefix("inline").strip()
                           for p in (m.group("name") or "").split("::") if p.strip())
+            if top_is_detail() and parts:   # a namespace declared in Detail is one of its names
+                out.append((stack[-1], parts[0]))
             stack.append(ns_path() + parts)
         elif m.group("open"):
             stack.append(None)

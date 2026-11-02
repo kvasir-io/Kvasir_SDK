@@ -261,44 +261,79 @@ CheckOptions:
   # <string>) and <random> stay allowed: firmware TUs use them in consteval code; the engines need no OS.
   portability-restrict-system-includes.Includes: '*,-thread,-mutex,-shared_mutex,-condition_variable,-future,-semaphore,-latch,-barrier,-stop_token,-execution,-iostream,-istream,-ostream,-ios,-iosfwd,-streambuf,-sstream,-fstream,-iomanip,-syncstream,-spanstream,-filesystem,-regex,-locale,-codecvt,-format,-print,-stdexcept,-typeinfo,-cstdio,-stdio.h,-pthread.h,-unistd.h,-sys/*'
 
-  # ---- naming: the kinds the code already spells one way ---------------------------------------------------------
-  # Types, concepts and template parameters CamelCase; functions, methods, parameters, variables and members
-  # camelBack; macros UPPER_CASE. A trailing _ (state, private helpers) is allowed, not required. Constants,
-  # constexpr variables, enumerators and namespaces are spelled both ways today and are not checked (aNy_CasE).
-  # Names a std protocol fixes, C-linkage/ABI names and the names the log macros declare in every user are ignored.
+  # ---- naming -------------------------------------------------------------------------------------------------
+  # Types, concepts and template parameters CamelCase; functions, methods, parameters, variables, members,
+  # constexpr constants and enumerators camelBack (a trailing _ allowed except on enumerators); macros UPPER_CASE;
+  # only the namespace `detail` is reported (-> Detail). Names a std protocol, the ABI, generated code or glaze
+  # fixes and the names the macros declare in every user are ignored (reasons beside each regex).
+  # (TypeAlias: std protocol members (type, value_type, rep), *_t, macro-internal aliases; Typedef: only the
+  # C-compatible uc_log_env_t; Method: a trailing _ on private helpers, the std vocabulary of the containers, locks
+  # and formatters, ISR entries named by the linker script.)
   readability-identifier-naming.ClassCase: CamelCase
   readability-identifier-naming.ClassIgnoredRegexp: '^(formatter|hash|tuple_size|tuple_element|numeric_limits|common_type|pointer_traits|iterator_traits|is_[a-z_]+|[a-z_]+_tag)$'
   readability-identifier-naming.StructCase: CamelCase
-  readability-identifier-naming.StructIgnoredRegexp: '^(formatter|hash|tuple_size|tuple_element|numeric_limits|common_type|pointer_traits|iterator_traits|is_[a-z_]+|[a-z_]+_tag)$'
+  # std-protocol specialisations (as Class) + llvm-libc's own struct names (__llvm_libc_stdio_cookie: Libc.hpp
+  # defines the type llvm-libc declares)
+  readability-identifier-naming.StructIgnoredRegexp: '^(formatter|hash|tuple_size|tuple_element|numeric_limits|common_type|pointer_traits|iterator_traits|is_[a-z_]+|[a-z_]+_tag|__.*)$'
   readability-identifier-naming.UnionCase: CamelCase
   readability-identifier-naming.EnumCase: CamelCase
   readability-identifier-naming.ConceptCase: CamelCase
   readability-identifier-naming.TypeAliasCase: CamelCase
-  readability-identifier-naming.TypeAliasIgnoredRegexp: '^[a-z][a-z0-9_]*$|_t$|^(UC_LOG_|REMOTE_FMT_|DO_NOT_USE_).*$'   # std protocol members (type, value_type, rep), *_t, macro-internal aliases
-  readability-identifier-naming.TypedefCase: lower_case    # only the C-compatible uc_log_env_t
+  readability-identifier-naming.TypeAliasIgnoredRegexp: '^[a-z][a-z0-9_]*$|_t$|^[A-Z][a-zA-Z0-9]*_$|^(UC_LOG_|REMOTE_FMT_|DO_NOT_USE_).*$'
+  readability-identifier-naming.TypedefCase: lower_case
   readability-identifier-naming.TemplateParameterCase: CamelCase
+  # A trailing _ on template parameters, parameters, local constants and aliases too -
+  # the idiom `template<typename Config_> struct X { using Config = Config_; }` avoids exactly that collision
+  readability-identifier-naming.TemplateParameterIgnoredRegexp: '^([A-Z][a-zA-Z0-9]*_|UC_LOG_.*|REMOTE_FMT_.*|DO_NOT_USE_.*|UBSAN_.*)$'
   readability-identifier-naming.FunctionCase: camelBack
-  readability-identifier-naming.FunctionIgnoredRegexp: '^(_LINKER_.*|__.*|_sbrk|_exit|kvasir_.*|uc_log_.*|JLINK_.*|main|[A-Z][A-Za-z0-9]*ISR|LLVMFuzzer[A-Za-z]+|format_to)$'   # JLINK_*: the J-Link DLL's C exports keep the vendor's names; LLVMFuzzer*: libFuzzer's entry point and hooks; format_to: remote_fmt's fmt-shaped free function, found by the fmt-style callers
+  # + _Exit (the libc entry point Runtime/Libc.hpp defines), JLINK_*: SEGGER's DLL symbols (jlink JLinkDLL.h, C linkage),
+  # log_assert (uc_log::log_assert: the patched llvm-libc/libc++ assert.h calls it), assert_fail (fmt::assert_fail, fmt's)
+  # + LLVMFuzzer*: libFuzzer's entry point and hooks (aglio fuzz_packager, uc_log FuzzChecks); format_to: remote_fmt's
+  # fmt-shaped free function, found by the fmt-style callers
+  # Fields: rtxui's customisation point, found by ADL under that name
+  readability-identifier-naming.FunctionIgnoredRegexp: '^(_LINKER_.*|__.*|_sbrk|_exit|_Exit|JLINK_.*|log_assert|assert_fail|kvasir_.*|uc_log_.*|main|[A-Z][A-Za-z0-9]*ISR|LLVMFuzzer[A-Za-z]+|format_to|Fields)$'
   readability-identifier-naming.MethodCase: camelBack
-  # Methods: a trailing _ on private helpers (fromList_); the std vocabulary of the containers, locks and
-  # formatters keeps its std spelling, and so does the std-shaped vocabulary of a stand-in for this_thread, condition_variable_any
-  # and jthread (sleep_until, notify_one, wait_for, request_stop, ...); ISR entries named by the linker script (ResetISR);
-  # rename_key: glaze's glz::meta member; to_wait_duration: asio's WaitTraits protocol (asio calls it by that name);
-  # apply_fields, apply_fields_with_dim: the generated registers' protocol (svd_converter writes them, Register/Views.hpp calls them).
-  readability-identifier-naming.MethodIgnoredRegexp: '^([a-z][a-zA-Z0-9]*_|push_back|pop_back|emplace_back|push_front|pop_front|emplace_front|try_push_back|try_emplace_back|unchecked_push_back|unchecked_emplace_back|append_range|try_append_range|insert_range|assign_range|resize_and_overwrite|max_size|shrink_to_fit|insert_or_assign|remove_prefix|remove_suffix|starts_with|ends_with|find_first_of|find_last_of|has_value|value_or|try_lock|try_lock_for|try_lock_until|lock_shared|unlock_shared|sleep_until|sleep_for|notify_one|notify_all|wait_until|wait_for|request_stop|get_stop_token|to_wait_duration|format_to|parse|format|rename_key|apply_fields|apply_fields_with_dim|[A-Z][A-Za-z0-9]*ISR)$'
+  # + insert_or_assign (StaticMap has the map shape); to_wait_duration (asio's WaitTraits, uc_log ClockedIo); rename_key (glaze's glz::meta member); the virtual clock's std mirror (uc_log printer Clock.hpp is
+  # swapped with std::condition_variable / std::stop_source / std::this_thread by the generic code that uses it);
+  # apply_fields / apply_fields_with_dim: spelled by generated register code (svd_converter kvasir_bit.hpp), which
+  # is not renamed - hand-written register mimics (tests, hand-made register structs) must keep the same member
+  readability-identifier-naming.MethodIgnoredRegexp: '^([a-z][a-zA-Z0-9]*_|push_back|pop_back|emplace_back|push_front|pop_front|emplace_front|try_push_back|try_emplace_back|unchecked_push_back|unchecked_emplace_back|append_range|try_append_range|insert_range|assign_range|resize_and_overwrite|max_size|shrink_to_fit|remove_prefix|remove_suffix|starts_with|ends_with|find_first_of|find_last_of|has_value|value_or|try_lock|try_lock_for|try_lock_until|lock_shared|unlock_shared|format_to|parse|format|insert_or_assign|notify_one|notify_all|wait_for|wait_until|sleep_for|sleep_until|request_stop|get_stop_token|to_wait_duration|rename_key|apply_fields|apply_fields_with_dim|[A-Z][A-Za-z0-9]*ISR)$'
   readability-identifier-naming.ParameterCase: camelBack
-  # a trailing _ like the member it initialises (depth_ -> depth)
+  # macro-internal names of KVASIR_CHECK (kvasir_check_ch, ..._extra) and the log macros: declared in every user's scope
   readability-identifier-naming.ParameterIgnoredRegexp: '^([a-z][a-zA-Z0-9]*_|UC_LOG_.*|REMOTE_FMT_.*|DO_NOT_USE_.*|UBSAN_.*|kvasir_.*)$'
+  # C10: a const parameter is ConstantParameter (then Constant) in clang-tidy, not Parameter: the same rule stated
+  # explicitly, so `const int x_` is reported exactly like `int x_`
+  readability-identifier-naming.ConstantParameterCase: camelBack
+  readability-identifier-naming.ConstantParameterIgnoredRegexp: '^([a-z][a-zA-Z0-9]*_|UC_LOG_.*|REMOTE_FMT_.*|DO_NOT_USE_.*|UBSAN_.*|kvasir_.*)$'
+  readability-identifier-naming.ConstantPointerParameterCase: camelBack
+  readability-identifier-naming.ConstantPointerParameterIgnoredRegexp: '^([a-z][a-zA-Z0-9]*_|UC_LOG_.*|REMOTE_FMT_.*|DO_NOT_USE_.*|UBSAN_.*|kvasir_.*)$'
   readability-identifier-naming.VariableCase: camelBack
-  readability-identifier-naming.VariableIgnoredRegexp: '^(UC_LOG_.*|REMOTE_FMT_.*|DO_NOT_USE_.*|_LINKER_.*|__.*|kvasir_.*|uc_log_.*|[a-z][a-zA-Z0-9]*_)$'
+  readability-identifier-naming.VariableIgnoredRegexp: '^(UC_LOG_.*|REMOTE_FMT_.*|DO_NOT_USE_.*|UBSAN_.*|_LINKER_.*|__.*|kvasir_.*|uc_log_.*|[a-z][a-zA-Z0-9]*_)$'
   readability-identifier-naming.LocalConstantCase: camelBack
-  readability-identifier-naming.LocalConstantIgnoredRegexp: '^(UC_LOG_.*|REMOTE_FMT_.*|DO_NOT_USE_.*|kvasir_.*)$'   # kvasir_*: macro-internal locals (KVASIR_CHECK_*'s kvasir_check_ha)
-  readability-identifier-naming.ConstexprVariableCase: aNy_CasE
-  readability-identifier-naming.ConstantCase: aNy_CasE
-  readability-identifier-naming.ConstantIgnoredRegexp: '^_LINKER_.*$'   # the linker scripts' symbols, declared as const arrays (Runtime/FaultHandler.hpp)
-  readability-identifier-naming.EnumConstantCase: aNy_CasE
+  readability-identifier-naming.LocalConstantIgnoredRegexp: '^([a-z][a-zA-Z0-9]*_|UC_LOG_.*|REMOTE_FMT_.*|DO_NOT_USE_.*|UBSAN_.*|kvasir_.*)$'
+  # (c): static constexpr members, constexpr globals; a trailing _ allowed as on members. Kept spellings:
+  # linker-defined and ABI names (_LINKER_*, __*, kvasir_* read by libc_link_probe.py, uc_log_*), the macro-internal
+  # prefixes, glaze_reflect (glaze reads T::glaze_reflect), is_steady (the std Clock requirement: SteadyClock, net's
+  # and uc_log's test clocks); FULLREGISTER / fmt_string / field_names / field_dims: the generated register
+  # protocol (svd_converter output is not renamed; Register/ reads them; hand-written mimics keep the spelling)
+  readability-identifier-naming.ConstexprVariableCase: camelBack
+  readability-identifier-naming.ConstexprVariableIgnoredRegexp: '^([a-z][a-zA-Z0-9]*_|UC_LOG_.*|REMOTE_FMT_.*|DO_NOT_USE_.*|UBSAN_.*|_LINKER_.*|__.*|kvasir_.*|uc_log_.*|glaze_reflect|is_steady|FULLREGISTER|fmt_string|field_names|field_dims)$'
+  readability-identifier-naming.ConstantCase: camelBack
+  readability-identifier-naming.ConstantIgnoredRegexp: '^([a-z][a-zA-Z0-9]*_|UC_LOG_.*|REMOTE_FMT_.*|DO_NOT_USE_.*|UBSAN_.*|_LINKER_.*|__.*|kvasir_.*|uc_log_.*|FULLREGISTER|fmt_string|field_names|field_dims)$'
+  # (c): enumerators. No trailing-_ escape: an enumerator that cannot be lowered (digit-led, keyword, alternative
+  # token) gets a prefix with the enum's meaning, so none is ignored
+  readability-identifier-naming.EnumConstantCase: camelBack
   readability-identifier-naming.MemberCase: camelBack
-  # escape_control_characters, indentation_width: glaze's glz::opts flags, read by glaze under those names
+  # escape_control_characters / indentation_width: glz::opts option members, read by glaze BY NAME through
+  # `requires { Opts.<name>; }` (glaze core/opts.hpp); a renamed one compiles and is silently ignored
+  # (uc_log ControlProtocol.hpp WriteOptions, tests/ControlProtocolFixture.hpp JqStyle)
   readability-identifier-naming.MemberIgnoredRegexp: '^([a-z][a-zA-Z0-9]*_|escape_control_characters|indentation_width)$'
+  # C10: a const non-static member is ConstantMember (then Constant): the Member rule stated explicitly
+  readability-identifier-naming.ConstantMemberCase: camelBack
+  readability-identifier-naming.ConstantMemberIgnoredRegexp: '^([a-z][a-zA-Z0-9]*_|escape_control_characters|indentation_width)$'
+  # (c): only `detail` is reported (-> Detail). llvm::Regex has no look-ahead: every other name is ignored by
+  # spelling it out (checked on uc_log, printer, d, de, deta, details, ssd1680_detail, Detail: none reported)
+  readability-identifier-naming.NamespaceCase: CamelCase
+  readability-identifier-naming.NamespaceIgnoredRegexp: '^([^d].*|d[^e].*|de[^t].*|det[^a].*|deta[^i].*|detai[^l].*|detail.+|d|de|det|deta|detai)$'
   readability-identifier-naming.MacroDefinitionCase: UPPER_CASE
   readability-identifier-naming.IgnoreMainLikeFunctions: true

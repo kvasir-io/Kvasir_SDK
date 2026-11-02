@@ -154,7 +154,7 @@ int main() {
     {
         clockStep = 0;
         ScriptedAccess const a{};
-        Polls const          counted{detail::pollsFor<>(detail::stillUs) + 50, 5};
+        Polls const          counted{Detail::pollsFor<>(Detail::stillUs) + 50, 5};
         CHECK(announceVia(a, true, counted, 0, &fakeClock, Waits{1, 1}) == Outcome::timedOut);
         CHECK_EQ(a.ackPolls, counted.ack);
     }
@@ -206,7 +206,7 @@ int main() {
 
     Kvasir::Test::test("the bounds: >= 0.5 s / 0.1 s at the chip's fastest clock (CpuHzCeiling)");
     {
-        using namespace Kvasir::AnnouncedReset::detail;
+        using namespace Kvasir::AnnouncedReset::Detail;
         constexpr Polls p = defaultPolls<>();
         static_assert(maxCoreHz<>() == 266'000'000);
         CHECK(static_cast<std::uint64_t>(p.ack) * minCyclesPerPoll

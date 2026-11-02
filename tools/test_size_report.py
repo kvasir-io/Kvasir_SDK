@@ -37,7 +37,7 @@ class Names(unittest.TestCase):
             ("__aeabi_uwrite4", "compiler-rt"),
             ("divmod_u32u32", "compiler-rt"),
             ("std::__2::to_chars(char*, char*, int)", "libc++"),
-            ("void uc_log::detail::Log<std::__2::tuple<int>>::log<B, 'a'>(int)", "logging"),
+            ("void uc_log::Detail::Log<std::__2::tuple<int>>::log<B, 'a'>(int)", "logging"),
             ("remote_fmt::Printer<X>::append<unsigned int>(unsigned int)", "logging"),
             ("Kvasir::Startup::StartupImpl<X>::ResetISR()", "startup"),
             ("__stack_chk_fail", "startup"),

@@ -34,9 +34,11 @@
 #include "uc_log/uc_log.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cerrno>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <exception>   // std::terminate, defined by Runtime/Cxx.hpp
@@ -146,6 +148,55 @@ namespace Kvasir { namespace Startup {
                             SecondaryPeripherals,
                             ::uc_log::ComBackend<::uc_log::Tag::User>,
                             ::Kvasir::Crc::ImageEngines<::Kvasir::Tag::User>>;
+
+        // The interrupt levels of every core for the post-link stack bound (cmake/tools/stack_bound.py), which
+        // sums the deepest handler of each priority level: per core {core, n, (index, level) x n} as int16_t, index
+        // = the IRQ number or the exception number - 16, level = what ListRules::IsrPrioritiesIn says the list
+        // leaves it at (unknownIsrLevel when a priority is written at run time). The lists are the ISR-contract
+        // checks' own (Checks::CoreLists: this core's entries, then each SecondaryCore's), already evaluated there.
+        template<typename Prios>
+        struct IsrLevelsOf;
+
+        template<typename... Ps>
+        struct IsrLevelsOf<brigand::list<Ps...>> {
+            static constexpr std::size_t size = 2 + (2 * sizeof...(Ps));
+
+            template<typename Table>
+            static constexpr void write(Table&       t,
+                                        std::size_t& at,
+                                        int          core) {
+                t[at++] = static_cast<std::int16_t>(core);
+                t[at++] = static_cast<std::int16_t>(sizeof...(Ps));
+                ((t[at++] = static_cast<std::int16_t>(Ps::index),
+                  t[at++] = static_cast<std::int16_t>(Ps::level)),
+                 ...);
+            }
+        };
+
+        template<typename CoreLists>
+        struct IsrLevelTableOf;
+
+        template<typename... Ls>
+        struct IsrLevelTableOf<brigand::list<Ls...>> {
+            static constexpr auto value = [] {
+                std::array<std::int16_t,
+                           (IsrLevelsOf<typename ListRules::IsrPrioritiesIn<Ls>::type>::size + ...
+                            + 0)>
+                            t{};
+                std::size_t at   = 0;
+                int         core = 0;
+                (IsrLevelsOf<typename ListRules::IsrPrioritiesIn<Ls>::type>::write(t, at, core++),
+                 ...);
+                return t;
+            }();
+        };
+
+        template<typename Ctx, typename Entries>
+        struct IsrLevelTable;
+
+        template<typename Ctx, typename... Ps>
+        struct IsrLevelTable<Ctx, brigand::list<Ps...>>
+          : IsrLevelTableOf<Checks::CoreLists<Ctx, brigand::list<Ps...>, Ps...>> {};
     }   // namespace Detail
 
     // .data from its load image, .bss zeroed (linker/common.ld's symbols; MemoryInit.hpp hides
@@ -381,6 +432,11 @@ namespace Kvasir { namespace Startup {
           typename Detail::StartupContext<ClockSettings>::Traits,
           IsrList> nvicIsrVectors{};
 
+        // The interrupt levels of both cores (Detail::IsrLevelTable), for the post-link stack bound. Never loaded:
+        // common.ld places .kvasir.isr_levels as an INFO section, so the image's bytes are the same with it.
+        [[gnu::used, gnu::section(".kvasir.isr_levels")]] static constexpr auto isrLevelTable
+          = Detail::IsrLevelTable<Detail::StartupContext<ClockSettings>, Entries>::value;
+
         // Every Extend the listed peripherals of both cores (a SecondaryCore's list included) added to Hook, in list
         // order, as a brigand::list: what a component that needs the list itself reads (Health::Supervisor).
         template<typename Hook>
@@ -440,6 +496,8 @@ struct Start {
                                    decltype(Core::cleanCore()),
                                    decltype(Nvic::clearAllEnablesAndPending())>());
     static constexpr auto const* vectors = std::addressof(S::nvicIsrVectors);
+    // odr-uses the level table as `vectors` the vector table (gnu::used alone does not instantiate a member)
+    static constexpr auto const* isrLevels = std::addressof(S::isrLevelTable);
 #endif
 };
 }   // namespace Kvasir::Startup

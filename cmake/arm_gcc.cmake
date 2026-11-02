@@ -139,6 +139,11 @@ list(APPEND linker_common_flags --no-warn-rwx-segments)
 
 list(TRANSFORM linker_common_flags PREPEND ${LINKER_PREFIX})
 
+# Every function's frame size and call graph from the LTO link, for the post-link stack bound
+# (cmake/tools/stack_bound.py): <elf>.ltrans<N>.ltrans.{su,ci} next to the image, the code stays the same. Link options:
+# under -flto gcc compiles nothing at compile time, and -fstack-usage given there writes nothing.
+set(stack_bound_link_flags -fstack-usage -fcallgraph-info=su)
+
 # the link per optimisation set (cmake/arm_compiler_common.cmake)
 set(optimize_link_option_speed)
 set(optimize_link_option_size)
@@ -146,16 +151,16 @@ set(optimize_link_option_debug)
 if("${CLIB}" STREQUAL "llvm")
     # no specs file: the driver must not add newlib; libgcc is still wanted
     foreach(_set speed size debug)
-        set(linker_flags_${_set} ${linker_common_flags} -nostdlib)
+        set(linker_flags_${_set} ${linker_common_flags} ${stack_bound_link_flags} -nostdlib)
     endforeach()
     # standard libraries land after the objects, where GNU ld needs -lgcc to be
     set(CMAKE_C_STANDARD_LIBRARIES "-lgcc")
     set(CMAKE_CXX_STANDARD_LIBRARIES "-lgcc")
 else()
     # newlib through gcc's specs: nano (newlib-nano, libstdc++ nano) for size and debug, nosys for speed
-    set(linker_flags_speed ${linker_common_flags} -nostartfiles --specs=nosys.specs)
-    set(linker_flags_size ${linker_common_flags} -nostartfiles --specs=nano.specs)
-    set(linker_flags_debug ${linker_common_flags} -nostartfiles --specs=nano.specs)
+    set(linker_flags_speed ${linker_common_flags} ${stack_bound_link_flags} -nostartfiles --specs=nosys.specs)
+    set(linker_flags_size ${linker_common_flags} ${stack_bound_link_flags} -nostartfiles --specs=nano.specs)
+    set(linker_flags_debug ${linker_common_flags} ${stack_bound_link_flags} -nostartfiles --specs=nano.specs)
 endif()
 
 include(${CMAKE_CURRENT_LIST_DIR}/compiler_common_end.cmake)

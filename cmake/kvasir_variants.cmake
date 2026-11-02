@@ -5,7 +5,7 @@
 # own those two) - and so every keyword kvasir_executable_variants forwards to it. Both functions parse this one table:
 # forwarding "${ARGN} minus the wrapper's own keywords" instead lets a multi-value keyword (SOURCES, LIBRARIES) swallow
 # every word up to the next keyword its parser knows, so `LIBRARIES l MIN_STACK_SIZE 8k` would link -lMIN_STACK_SIZE.
-set(KVASIR_CONFIGURE_OPTIONS RAM_ONLY SCRATCH_BANKS IMAGE_CRC)
+set(KVASIR_CONFIGURE_OPTIONS RAM_ONLY SCRATCH_BANKS IMAGE_CRC STACK_BOUND_CHECK)
 set(KVASIR_CONFIGURE_ONE_VALUE
     MIN_STACK_SIZE
     CORE1_STACK_SIZE
@@ -15,6 +15,7 @@ set(KVASIR_CONFIGURE_ONE_VALUE
     LOG_FILTER
     LOG_REFLECTED_STRUCTS
     CONFIG_HEADER
+    STACK_BOUND_NOTES
     JLINK_IP
     JLINK_PROBE
     MIN_LOG_LEVEL
@@ -56,13 +57,69 @@ function(kvasir_forward_arguments out prefix options one multi)
         PARENT_SCOPE)
 endfunction()
 
+# kvasir_variant_arguments(<out> <variant> <forwarded> <settings>): the target_configure_kvasir arguments of one variant
+# - <forwarded> (kvasir_forward_arguments' list, the keywords every variant gets) with the VARIANT_SETTINGS of
+# kvasir_executable_variants applied. A setting is one token `<variant>:<KEYWORD>=<value>` (a one-value keyword: its
+# value for that variant) or `<variant>:<OPTION>=ON|OFF` (an option switched on or off for it); tokens of other variants
+# are skipped. A token is no keyword, so the caller's parser cannot take its keyword for its own. An unknown variant or
+# keyword, or an option set to anything but ON/OFF, is a FATAL_ERROR.
+function(kvasir_variant_arguments out variant forwarded settings)
+    set(_args "${forwarded}")
+    foreach(_s IN LISTS settings)
+        if(NOT _s MATCHES "^([a-z_]+):([A-Z0-9_]+)=(.*)$")
+            message(FATAL_ERROR "VARIANT_SETTINGS ${_s}: expected <variant>:<KEYWORD>=<value>")
+        endif()
+        set(_v "${CMAKE_MATCH_1}")
+        set(_k "${CMAKE_MATCH_2}")
+        set(_value "${CMAKE_MATCH_3}")
+        if(NOT _v IN_LIST KVASIR_VARIANTS AND NOT _v STREQUAL "coverage")
+            message(FATAL_ERROR "VARIANT_SETTINGS ${_s}: ${_v} is no variant (${KVASIR_VARIANTS} coverage)")
+        endif()
+        if(_k IN_LIST KVASIR_CONFIGURE_OPTIONS)
+            if(NOT _value MATCHES "^(ON|OFF)$")
+                message(FATAL_ERROR "VARIANT_SETTINGS ${_s}: the option ${_k} takes ON or OFF")
+            endif()
+        elseif(NOT _k IN_LIST KVASIR_CONFIGURE_ONE_VALUE)
+            message(FATAL_ERROR "VARIANT_SETTINGS ${_s}: ${_k} is no keyword of target_configure_kvasir")
+        endif()
+        if(NOT _v STREQUAL variant)
+            continue()
+        endif()
+        # drop the keyword (and a one-value keyword's value) from the list, then add the variant's own
+        set(_kept "")
+        set(_skip_value FALSE)
+        foreach(_word IN LISTS _args)
+            if(_skip_value)
+                set(_skip_value FALSE)
+                continue()
+            endif()
+            if(_word STREQUAL _k)
+                if(_k IN_LIST KVASIR_CONFIGURE_ONE_VALUE)
+                    set(_skip_value TRUE)
+                endif()
+                continue()
+            endif()
+            list(APPEND _kept "${_word}")
+        endforeach()
+        set(_args "${_kept}")
+        if(_k IN_LIST KVASIR_CONFIGURE_ONE_VALUE)
+            list(APPEND _args ${_k} "${_value}")
+        elseif(_value STREQUAL "ON")
+            list(APPEND _args ${_k})
+        endif()
+    endforeach()
+    set(${out}
+        "${_args}"
+        PARENT_SCOPE)
+endfunction()
+
 # kvasir_variant_row(<variant> <prefix>): the variant's policy, one row each, as <prefix>_<column> in the caller's
-# scope: EXCLUDE   TRUE: not in ALL (built when named, or by its flash/log target) LOG       TRUE: USE_UC_LOG SAN TRUE:
-# the sanitizer OPT       the default optimisation (kvasir_executable_variants: DEBUG_OPTIMIZATION / OPTIMIZATION
-# instead) FLOOR     the log floor's keyword: debug (MIN_LOG_LEVEL_DEBUG, else MIN_LOG_LEVEL), release
-# (MIN_LOG_LEVEL_RELEASE, else MIN_LOG_LEVEL) or none LEVELS    debug (CHECK_LEVEL, DCHECK_LEVEL) or release
-# (CHECK_LEVEL_RELEASE, DCHECK_LEVEL_RELEASE) ESCALATE  KVASIR_SOFT_CHECK_ESCALATE: a failed KVASIR_SOFT_CHECK panics
-# instead of logging SELFTEST  ON: by SELFTEST_VARIANT; OFF: never (coverage)
+# scope: EXCLUDE   TRUE: not in ALL (built when named, or by its flash/log target) LOG       TRUE: USE_UC_LOG (FALSE: no
+# log_<target>, uc_log NO_LOG) SAN TRUE: the sanitizer OPT       the default optimisation (kvasir_executable_variants:
+# DEBUG_OPTIMIZATION / OPTIMIZATION instead) FLOOR     the log floor's keyword: debug (MIN_LOG_LEVEL_DEBUG, else
+# MIN_LOG_LEVEL), release (MIN_LOG_LEVEL_RELEASE, else MIN_LOG_LEVEL) or none LEVELS    debug (CHECK_LEVEL,
+# DCHECK_LEVEL) or release (CHECK_LEVEL_RELEASE, DCHECK_LEVEL_RELEASE) ESCALATE  KVASIR_SOFT_CHECK_ESCALATE: a failed
+# KVASIR_SOFT_CHECK panics instead of logging SELFTEST  ON: by SELFTEST_VARIANT; OFF: never (coverage)
 function(kvasir_variant_row v p)
     # EXCLUDE LOG  SAN  OPT   FLOOR   LEVELS  ESCALATE SELFTEST
     if(v STREQUAL "debug")

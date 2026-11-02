@@ -6,3 +6,4 @@ Runtime/BootLog.hpp             # needs the image's project version (cmake_git_v
 Runtime/BootReport.hpp          # includes Runtime/BootLog.hpp
 Runtime/Standard.hpp            # includes Runtime/BootReport.hpp
 Log/RttSink.hpp                 # an image config header's backend: names the chip's DebuggerPresent, which comes first
+Test/Runner.hpp                 # includes Runtime/BootLog.hpp; names the chip's PM::resetKind() (chip headers first)

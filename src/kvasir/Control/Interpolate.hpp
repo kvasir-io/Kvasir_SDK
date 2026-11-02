@@ -37,7 +37,7 @@ template<typename X,
     return true;
 }
 
-namespace detail {
+namespace Detail {
     template<typename Y,
              typename X>
     constexpr Y lerp(X x,
@@ -54,7 +54,7 @@ namespace detail {
             return y0 + (y1 - y0) * (x - x0) / (x1 - x0);
         }
     }
-}   // namespace detail
+}   // namespace Detail
 
 /// y at x from a table with strictly increasing x; the first/last y outside the table.
 template<auto const& Table>
@@ -75,7 +75,7 @@ template<auto const& Table>
             hi = mid;
         }
     }
-    return detail::lerp<Y>(x, Table[lo].x, Table[hi].x, Table[lo].y, Table[hi].y);
+    return Detail::lerp<Y>(x, Table[lo].x, Table[hi].x, Table[lo].y, Table[hi].y);
 }
 
 /// N values on an even grid from x0 in steps of `step`; y[0] below x0, y[N-1] from the last

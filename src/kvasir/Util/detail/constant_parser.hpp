@@ -2,7 +2,7 @@
 
 #include <cstddef>
 
-namespace Kvasir { namespace literals { namespace detail {
+namespace Kvasir { namespace literals { namespace Detail {
     // Not constexpr: reaching one of these while a literal is parsed is the compile error, and the
     // function's name is the message (the Prescaler idiom, Util/Prescaler.hpp; `throw` is refused under
     // -fno-exceptions by clang and gcc alike).
@@ -54,4 +54,4 @@ namespace Kvasir { namespace literals { namespace detail {
         }
         return v;
     }
-}}}   // namespace Kvasir::literals::detail
+}}}   // namespace Kvasir::literals::Detail

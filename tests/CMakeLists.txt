@@ -499,6 +499,12 @@ kvasir_add_host_test(kvasir_test_safe_state safe_state_tests.cpp)
 kvasir_add_host_test(kvasir_test_panic panic_tests.cpp)
 # StackProtector: an overwritten sentinel is Cause::stackOverflow, pc 0, detail = words overwritten
 kvasir_add_host_test(kvasir_test_stack_protector stack_protector_tests.cpp)
+# Kvasir::Test (on-device tests): the macros, the list, the run state's decisions, PerfState, OnRequest's turn; a
+# capturing log and a fake clock
+kvasir_add_host_test(kvasir_test_device_test_framework device_test_framework_tests.cpp)
+target_include_directories(kvasir_test_device_test_framework
+                           PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../uc_log/remote_fmt/string_constant/src)
+kvasir_add_must_fail_test(kvasir_test_device_test_must_fail device_test_must_fail)
 # the default fatal end with a stand-in chip reboot (Port::Reboot): record, reboot; the nested stop;
 # Fault::OnFault::Panic
 kvasir_add_host_test(kvasir_test_panic_default_end panic_default_end_tests.cpp)
@@ -595,6 +601,14 @@ set(KVASIR_NON_SELF_CONTAINED_HEADERS
     kvasir/StartUp/Runtime/Cxx.hpp # StartUp.hpp's main TU only: strong library definitions, uc_log, a chip file
     kvasir/StartUp/Runtime/LibAtomic.hpp # StartUp.hpp's main TU only: strong library definitions (its blocks,
                                          # LibAtomicBlocks.hpp, are tested in libatomic_blocks_tests)
+    # Kvasir::Test: the names are string constants (SC_LIFT) and the lines uc_log's; tested whole, with a capturing log
+    # and string_constant's include path, in device_test_framework_tests and device_test_must_fail
+    kvasir/Test/Test.hpp
+    kvasir/Test/Perf.hpp
+    kvasir/Test/RunState.hpp
+    kvasir/Test/Engine.hpp
+    kvasir/Test/OnRequest.hpp
+    kvasir/Test/Runner.hpp # BootLog.hpp as well (uc_log, cmake_git_version); compiled by the test images
 )
 
 file(
@@ -668,6 +682,9 @@ kvasir_add_python_test(kvasir_test_runtime_lib_flags
 # cmake/tools/check_reset_entry.py (the post-link reset entry check): its instruction rules on hand-assembled code
 kvasir_add_python_test(kvasir_test_check_reset_entry ${CMAKE_CURRENT_LIST_DIR}/reset_entry/test_check_reset_entry.py
                        LABELS tool)
+# cmake/tools/stack_bound.py (the post-link static stack bound): the graph rules, recorded objdump lines, and crafted
+# images linked here with clang/lld (.stack_sizes) and gcc (-fcallgraph-info=su); a missing toolchain is a skip
+kvasir_add_python_test(kvasir_test_stack_bound ${CMAKE_CURRENT_LIST_DIR}/stack_bound/test_stack_bound.py LABELS tool)
 # cmake/jlink.cmake's J-Link Commander scripts: downloads and resets pinned byte for byte, connect.jlink attach only
 # (configure only, no JLinkExe)
 kvasir_add_python_test(kvasir_test_jlink_scripts ${CMAKE_CURRENT_LIST_DIR}/jlink_scripts/test_jlink_scripts.py LABELS
@@ -687,6 +704,9 @@ kvasir_add_python_test(kvasir_test_stack_fill ${CMAKE_CURRENT_LIST_DIR}/stack_fi
 kvasir_add_python_test(kvasir_test_image_end ${CMAKE_CURRENT_LIST_DIR}/image_end/test_image_end.py LABELS tool)
 
 kvasir_add_python_test(kvasir_test_bench_tool ${CMAKE_CURRENT_LIST_DIR}/../tools/test_kvasir_bench.py LABELS tool)
+# kvasir_test.py (the on-device test runner's host side) without a board: the image's list, the run state, whole runs
+# against a fake board on a fake clock
+kvasir_add_python_test(kvasir_test_device_runner ${CMAKE_CURRENT_LIST_DIR}/../tools/test_kvasir_test.py LABELS tool)
 
 # lib/compiler-rt/builtins/kvasir/udivmoddi4_udiv.c (the 64-bit division of the cores with a 32-bit divide instruction)
 # against the host's own division; C, as the routine. Its options are its own: the directory's are for C++

@@ -188,6 +188,15 @@ SECTIONS {
     {
         KEEP(*(kvasir_ram_funcs_calls_flash))
     }
+
+    /* Startup's interrupt-level table (StartUp.hpp isrLevelTable), read by the post-link stack bound
+       (cmake/tools/stack_bound.py). The compiler makes the input section allocated (a const object in a named
+       section); INFO makes the output section unallocated, so it is in no segment and no flash artefact. KEEP: only
+       `used` holds it, --gc-sections would drop it. */
+    .kvasir.isr_levels 0 (INFO) :
+    {
+        KEEP(*(.kvasir.isr_levels))
+    }
 }
 
 /* libgcc's unwinder names the bounds of the discarded unwind index. GNU ld defines them itself

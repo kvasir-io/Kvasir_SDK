@@ -40,4 +40,4 @@ guarded_has_include = ["LOW_LOG"]
 "lib_low/src/low/a.hpp -> high/gone.hpp" = "an include that is no longer there (stale)"
 
 [keep.detail]
-"lib_high -> lib_low: low::detail::Nested" = "kept: a nested detail namespace used from another repository"
+"lib_high -> lib_low: low::Detail::Nested" = "kept: a nested detail namespace used from another repository"

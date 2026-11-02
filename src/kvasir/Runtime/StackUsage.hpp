@@ -58,8 +58,10 @@ struct StackUsage {
         StackUsageDetail::paint(low(), end);
     }
 
+    // the ends are two linker symbols, not one array: their distance as addresses (a pointer difference across two
+    // objects is undefined, clang-analyzer-security.PointerSub)
     static std::size_t size() {
-        return static_cast<std::size_t>(high() - low()) * sizeof(std::uint32_t);
+        return reinterpret_cast<std::uintptr_t>(high()) - reinterpret_cast<std::uintptr_t>(low());
     }
 
     static std::size_t free() { return StackUsageDetail::freeBytes(low(), high()); }

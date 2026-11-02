@@ -1,0 +1,24 @@
+# The stack bound's notes for Kvasir_SDK's own code (stack_bound.py reads this file for every image, before the chip's
+# <CHIP_ROOT>/stack_bound.txt and the firmware's STACK_BOUND_NOTES). Directives: stack_bound.py's docstring.
+
+# Error paths: they log and stop (or return once). A path enters one of them at most, and a call into one from inside
+# it (a canary failing in the log line of a UB report) ends there. They stay in the bound: they run on the same stack.
+once __stack_chk_fail
+once __ubsan_handle_*
+once uc_log::log_assert*
+once Kvasir::Panic::raise*
+once fmt::assert_fail*
+
+# compiler-rt's Thumb-1 float add/sub (builtins/arm/thumb1/addsf3fast.S, its header): fadd jumps into the middle of
+# fsub when the signs differ and vice versa, past the sign test - one hop, never back: each frame counts once
+recurse __aeabi_fsub 1
+
+# Handlers that end the run: an interrupt nothing serves panics (Startup's default vector entry). One of the fault
+# class counts, with the NMI and the faults that run on the stack.
+fault Kvasir::Nvic::DefaultIsrs::onIsr*
+
+# Function pointers the SDK fills with one function: the microsecond counter of the announced-reset waits
+# (Runtime/AnnouncedReset.hpp: Deadline, inlined into announce/waitForPrinter in debug) and of uc_log's panic-mode
+# stall (uc_log detail/LossLedger.hpp StallWaiter).
+calls Kvasir::AnnouncedReset::* kvasir_announced_reset_time_us
+calls uc_log::*StallWaiter::* kvasir_announced_reset_time_us

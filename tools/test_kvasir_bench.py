@@ -1514,7 +1514,7 @@ class RecordConstantsPinned(unittest.TestCase):
 
     def test_coverage_manifest(self):
         self.assertEqual(coverage_data.COVERAGE_MAGIC,
-                         self.constant("Util/Coverage.hpp", r"constexpr std::uint32_t Magic = ([0-9xA-Fa-f']+)U"))
+                         self.constant("Util/Coverage.hpp", r"constexpr\s+std::uint32_t\s+magicValue\s*=\s*([0-9xA-Fa-f']+)U"))
         self.assertEqual(coverage_data.COVERAGE_PIECES, self.constant(
             "Util/Coverage.hpp", r"Piece\s+pieces\[(\d+)\]"))
 
@@ -1639,6 +1639,66 @@ class RecordTextGoldens(unittest.TestCase):
         self.assertEqual([r["name"]
                          for r in answer["rings"]], ["edges", "isr"])
         self.assertEqual(answer["rings"][0]["count"], 1500)
+
+
+class StaticBound(unittest.TestCase):
+    """`stack` beside the static bound (cmake/tools/stack_bound.py's <target>_stack.json): measured above a bound that
+    is not a lower bound is an error (exit 1), above a LOWER BOUND a note; a report older than the ELF is not read."""
+
+    def report(self, bound, lower, core=0):
+        return {"cores": [{"core": core, "bound": bound, "lower": lower}]}
+
+    def test_verdicts(self):
+        line, error = commands.bound_verdict(
+            500, {"bound": 740, "lower": False})
+        self.assertEqual(
+            line, "static bound 740 B (this ELF), measured 500 B (68 % of it)")
+        self.assertFalse(error)
+        line, error = commands.bound_verdict(
+            800, {"bound": 740, "lower": False})
+        self.assertTrue(error)
+        self.assertTrue(line.startswith("ERROR static bound 740 B"), line)
+        line, error = commands.bound_verdict(
+            800, {"bound": 740, "lower": True})
+        self.assertFalse(error)
+        self.assertIn("LOWER BOUND", line)
+        self.assertIn("a path the analysis cannot see ran", line)
+
+    def run_stack(self, report, used, *, stale=False):
+        with tempfile.TemporaryDirectory() as d:
+            elf = Path(d) / "t.elf"
+            elf.write_bytes(b"")
+            json_file = Path(d) / "t_stack.json"
+            json_file.write_text(json.dumps(report))
+            if stale:   # the report from before the last link
+                os.utime(json_file, (1, 1))
+            stacks = {"stacks": [{"name": "core 0 stack", "valid": True, "low": 0x20000000, "high": 0x20001000,
+                                  "size": 4096, "used": used, "never": 4096 - used}]}
+            s = types.SimpleNamespace(tree=types.SimpleNamespace(build="b", target="t", elf=elf),
+                                      records=lambda kinds: stacks)
+            return run_text(lambda: commands.stack(s, types.SimpleNamespace(stale_ok=False)))
+
+    def test_measured_within_the_bound(self):
+        out = self.run_stack(self.report(740, False), 432)
+        self.assertEqual(out["exit"], 0)
+        self.assertEqual(
+            out["stdout"][-1], "  core 0: static bound 740 B (this ELF), measured 432 B (58 % of it)")
+
+    def test_measured_above_the_bound_is_an_error(self):
+        out = self.run_stack(self.report(400, False), 432)
+        self.assertEqual(out["exit"], 1)
+        self.assertTrue(
+            out["stderr"][-1].startswith("  core 0: ERROR static bound 400 B"), out)
+
+    def test_measured_above_a_lower_bound_is_a_note(self):
+        out = self.run_stack(self.report(400, True), 432)
+        self.assertEqual(out["exit"], 0)
+        self.assertIn("above a lower bound", out["stdout"][-1])
+
+    def test_a_report_older_than_the_elf_is_not_read(self):
+        out = self.run_stack(self.report(400, False), 432, stale=True)
+        self.assertEqual(out["exit"], 0)
+        self.assertIn("no static bound", out["stdout"][-1])
 
 
 if __name__ == "__main__":

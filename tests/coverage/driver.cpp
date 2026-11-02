@@ -21,7 +21,7 @@ int main(int    argc,
 
     Kvasir::Coverage::runtimeInit();
     auto const& m = Kvasir::Coverage::manifest;
-    if(m.magic != Kvasir::Coverage::Magic || m.status != 0) {
+    if(m.magic != Kvasir::Coverage::magicValue || m.status != 0) {
         std::printf("manifest: magic %x status %u\n", m.magic, m.status);
         return 1;
     }

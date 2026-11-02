@@ -4,7 +4,7 @@
 The fixture has two ranked layers (lib_low below lib_high) and a log library nested inside lib_high without a .git
 of its own. It covers an upward include, a downward one, a log include from a `log = false` layer, a cross-repository
 detail name next to a same-repository one and one inside a string and a comment, a nested detail namespace,
-`Detail` vs `detail`, detail declarations behind a requires-clause, a `__has_include` in code and one in a comment, the
+detail declarations behind a requires-clause, a `__has_include` in code and one in a comment, the
 guarded `#if defined(MACRO) && __has_include` shape (exempt for a macro the rule names, also over a line continuation;
 a finding for another macro or another shape), a file-level include cycle (a.hpp <-> b.hpp), two kept and a stale keep
 entry. A copy in a temporary directory adds the cases that need extra files or another table (a nested checkout, a
@@ -57,9 +57,9 @@ def keep_every_new(s):
 CYCLE = "lib_high/src/high/b.hpp <-> lib_low/src/low/a.hpp"
 NEW = {
     ("cycle", CYCLE),
-    ("detail", "lib_high -> lib_low: low::detail::helper"),
-    ("detail", "lib_high -> lib_low: low::detail::recorded"),
-    ("detail", "lib_high -> lib_low: low::detail::twice"),
+    ("detail", "lib_high -> lib_low: low::Detail::helper"),
+    ("detail", "lib_high -> lib_low: low::Detail::recorded"),
+    ("detail", "lib_high -> lib_low: low::Detail::twice"),
     ("has_include", 'lib_low/src/low/a.hpp: "high/b.hpp"'),
     ("has_include", 'lib_low/src/low/a.hpp: "high/c.hpp"'),
     ("has_include", 'lib_low/src/low/a.hpp: "logl/x.hpp"'),
@@ -67,7 +67,7 @@ NEW = {
     ("include", "lib_low/src/low/a.hpp -> logl/log.hpp"),
 }
 KEPT = {("include", "lib_low/src/low/c.hpp -> high/c.hpp"),
-        ("detail", "lib_high -> lib_low: low::detail::Nested")}
+        ("detail", "lib_high -> lib_low: low::Detail::Nested")}
 STALE = {("include", "lib_low/src/low/a.hpp -> high/gone.hpp")}
 
 
@@ -133,14 +133,14 @@ class LayerCheck(unittest.TestCase):
         self.assertEqual(
             where["lib_low/src/low/a.hpp -> high/b.hpp"], ["lib_low/src/low/a.hpp:3"])
         self.assertEqual(
-            where["lib_high -> lib_low: low::detail::helper"], ["lib_high/src/high/b.hpp:9"])
+            where["lib_high -> lib_low: low::Detail::helper"], ["lib_high/src/high/b.hpp:12"])
         self.assertEqual(
-            where["lib_high -> lib_low: low::detail::recorded"], ["lib_high/src/high/b.hpp:15"])
+            where["lib_high -> lib_low: low::Detail::recorded"], ["lib_high/src/high/b.hpp:18"])
         self.assertEqual(
             where[CYCLE], ["lib_high/src/high/b.hpp:2", "lib_low/src/low/a.hpp:3"])
         # the two guarded lines are exempt; the OTHER-macro line is the only "high/c.hpp" one
         self.assertEqual(
-            where['lib_low/src/low/a.hpp: "high/c.hpp"'], ["lib_low/src/low/a.hpp:32"])
+            where['lib_low/src/low/a.hpp: "high/c.hpp"'], ["lib_low/src/low/a.hpp:33"])
 
     def test_fails_on_new_and_stale(self):
         rc, data, err = run()
@@ -307,7 +307,7 @@ class LayerCheck(unittest.TestCase):
             for name in ("fw_a", "fw_old"):
                 (root / name).mkdir()
                 (root / name / "main.cpp").write_text(
-                    '#include "low/a.hpp"\nint m = low::detail::helper(1);\n')
+                    '#include "low/a.hpp"\nint m = low::Detail::helper(1);\n')
             (root / "repos.txt").write_text("# checkouts\nnolink lib_low\nfw_a  -  master\n")
             overlay = root.parent / "ws.toml"
             overlay.write_text(
@@ -318,7 +318,7 @@ class LayerCheck(unittest.TestCase):
             self.assertIn("fw_a", data["scanned"])
             self.assertNotIn("fw_old", data["scanned"])
             self.assertIn(
-                ("detail", "fw_a -> lib_low: low::detail::helper"), keys(data, "new"))
+                ("detail", "fw_a -> lib_low: low::Detail::helper"), keys(data, "new"))
             overlay.write_text(
                 '[default_repo]\nlayer = "app"\nrequire = "CMakeLists.txt"\n')
             rc, _, err = run("--overlay", str(overlay), root=root)

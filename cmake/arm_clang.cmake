@@ -269,6 +269,10 @@ set(link_flags_common
     --no-allow-multiple-definition
     # lld's own level: 2 also merges string tails
     -O2
+    # every function's frame size into .stack_sizes, for the post-link stack bound (cmake/tools/stack_bound.py): a
+    # non-allocated section (SHF_LINK_ORDER to .text, in no segment), the image bytes stay the same. A backend option,
+    # so a link option: with -flto the code is generated in lld, a compile-time -fstack-size-section writes nothing
+    --mllvm=-stack-size-section
     ${KVASIR_EXTRA_LINK_FLAGS}
     ${linker_search_path})
 

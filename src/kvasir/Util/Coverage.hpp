@@ -54,7 +54,8 @@ inline int __llvm_profile_runtime{};
 
 namespace Kvasir {
 struct Coverage {
-    static constexpr std::uint32_t Magic = 0x4B43'4F56U;   // "KCOV", what kvasir_bench looks for
+    static constexpr std::uint32_t magicValue
+      = 0x4B43'4F56U;   // "KCOV", what kvasir_bench looks for
 
     enum class Kind : std::uint32_t { memory, zeros, inlined };
 
@@ -84,7 +85,7 @@ struct Coverage {
         manifest = {};
         Coverage_detail::Writer w{record, nullptr};
         manifest.status = static_cast<std::uint32_t>(lprofWriteData(&w, nullptr, 0));
-        manifest.magic  = Magic;
+        manifest.magic  = magicValue;
     }
 
 private:

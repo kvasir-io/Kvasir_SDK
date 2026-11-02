@@ -3,6 +3,7 @@ here is the order of the subcommands in the help."""
 import argparse
 import collections
 import importlib.util
+import json
 import os
 import re
 import signal
@@ -186,9 +187,34 @@ def crash(s: Session, _args) -> None:
         print("  log: " + line[:600].strip())
 
 
+def static_bound(elf) -> dict | None:
+    """The image's static stack bound: the <target>_stack.json its post-link wrote (cmake/tools/stack_bound.py), None
+    when there is none or it is older than the ELF."""
+    if elf is None:
+        return None
+    report = Path(elf).with_name(Path(elf).stem + "_stack.json")
+    if not report.exists() or not Path(elf).exists() or report.stat().st_mtime < Path(elf).stat().st_mtime:
+        return None
+    return json.loads(report.read_text())
+
+
+def bound_verdict(measured: int, core: dict) -> tuple[str, bool]:
+    """The line beside a measured high water, and whether it is an error: measured above a bound that is not a lower
+    bound is an analyzer bug; above a LOWER BOUND it is a path the bound cannot see (the report's `!` lines)."""
+    bound = core["bound"]
+    text = (f"static bound {bound} B{' (LOWER BOUND)' if core['lower'] else ''} (this ELF), measured {measured} B"
+            f" ({100 * measured / bound:.0f} % of it)" if bound else f"static bound 0 B, measured {measured} B")
+    if measured <= bound:
+        return text, False
+    if core["lower"]:
+        return text + ": above a lower bound - a path the analysis cannot see ran (the report's '!' lines)", False
+    return "ERROR " + text + ": measured above the static bound - a stack_bound.py bug", True
+
+
 @command("stack", checks_build=True, args=["stale_ok"])
 def stack(s: Session, _args) -> None:
-    """Core 0's painted stack (Kvasir::StackUsage), as the printer measured it."""
+    """Core 0's painted stack (Kvasir::StackUsage), as the printer measured it, and beside it the static bound of the
+    ELF (<target>_stack.json, size_report.py stack): measured above a bound that is not a lower bound is an error."""
     stacks = {st["name"]: st for st in s.records(["stacks"])["stacks"]}
     st = stacks.get("core 0 stack")
     if st is None:
@@ -201,6 +227,27 @@ def stack(s: Session, _args) -> None:
     low, high, size, used = st["low"], st["high"], st["size"], st["used"]
     print(f"stack {low:#010x}..{high:#010x}: {size} bytes, deepest use so far {used} bytes "
           f"({100 * used / size:.1f} %), {st['never']} bytes never touched")
+    elf = getattr(s.tree, "elf", None)
+    if elf is None:
+        return
+    report = static_bound(elf)
+    if report is None:
+        print(
+            f"  no static bound: no {Path(elf).stem}_stack.json newer than the ELF (relink the image)")
+        return
+    failed = False
+    for core in report["cores"]:
+        measured = stacks.get(f"core {core['core']} stack")
+        if measured is None or not measured.get("valid"):
+            print(f"  core {core['core']}: static bound {core['bound']} B"
+                  + (" (LOWER BOUND)" if core["lower"] else "") + " (this ELF), not measured")
+            continue
+        line, error = bound_verdict(measured["used"], core)
+        print(f"  core {core['core']}: {line}",
+              file=sys.stderr if error else sys.stdout)
+        failed = failed or error
+    if failed:
+        sys.exit(1)
 
 
 @command("ub", what="the UB counter", checks_build=True, args=["stale_ok"])

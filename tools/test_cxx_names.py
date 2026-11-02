@@ -43,8 +43,8 @@ class DisplayName(unittest.TestCase):
                          "bool a::operator<() const")
 
     def test_five_template_levels_are_one_marker(self):
-        self.assertEqual(cxx_names.display_name("void uc_log::detail::Log<a<b<c<d<e>>>>>::record<>(int)"),
-                         "void uc_log::detail::Log<>::record<>()")
+        self.assertEqual(cxx_names.display_name("void uc_log::Detail::Log<a<b<c<d<e>>>>>::record<>(int)"),
+                         "void uc_log::Detail::Log<>::record<>()")
 
     def test_conversion_and_new_operators(self):
         self.assertEqual(cxx_names.display_name("a::B<int>::operator unsigned int() const"),

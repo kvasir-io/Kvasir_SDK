@@ -9,19 +9,20 @@
 #if __has_include("high/b.hpp")   // a switch in a has_include = false layer: NEW
 #endif
 
-namespace low::detail {
+namespace low::Detail {
 struct Own {};
+struct Phase {};   // a type here, a namespace of the same name in high::Detail
 
 inline int helper(int x) { return x + 1; }
-}   // namespace low::detail
+}   // namespace low::Detail
 
 namespace low {
-namespace detail {
+namespace Detail {
     template<typename T>
     struct Nested {};
-}   // namespace detail
+}   // namespace Detail
 
-inline detail::Own own{};   // same repository: not a finding
+inline Detail::Own own{};   // same repository: not a finding
 }   // namespace low
 
 #if defined(LOW_LOG)                                                                  \
@@ -34,7 +35,7 @@ inline detail::Own own{};   // same repository: not a finding
 #if defined(LOW_LOG) || __has_include("logl/x.hpp")   // not the guard shape: NEW
 #endif
 
-namespace low { namespace detail {
+namespace low { namespace Detail {
     // a requires-clause between the template head and the name: still declarations of `recorded` and `twice`
     template<typename... Dummy>
         requires(sizeof...(Dummy) == 0)
@@ -47,4 +48,4 @@ namespace low { namespace detail {
     T twice(T x) {
         return x + x;
     }
-}}   // namespace low::detail
+}}   // namespace low::Detail

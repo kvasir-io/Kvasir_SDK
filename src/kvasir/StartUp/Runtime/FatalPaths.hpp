@@ -21,15 +21,15 @@ __stack_chk_fail() {
 
 [[noreturn]] inline void Kvasir::Nvic::DefaultIsrs::onIsr() {
     std::uint32_t const ipsr = Kvasir::Core::ipsr();
-    auto const          irq  = static_cast<std::int32_t>(ipsr) - 16;
     // no program site caused it (pc 0): the record names the interrupt instead - the exception
     // number in detail, IRQ = detail - 16, a negative IRQ a system exception (IPSR, Armv6-M ARM
-    // DDI0419E B1.4.2 / Armv8-M ARM DDI0553B.y D1.2.137)
+    // DDI0419E B1.4.2 / Armv8-M ARM DDI0553B.y D1.2.137). The IRQ is computed in the log
+    // argument: a variable of its own is a dead store in images without log lines.
     KVASIR_DETAIL_FATAL_AT(Kvasir::Panic::Cause::unhandledInterrupt,
                            0,
                            ipsr,
                            "unhandled interrupt fired, IRQ={}",
-                           irq);
+                           static_cast<std::int32_t>(ipsr) - 16);
 }
 
 #endif

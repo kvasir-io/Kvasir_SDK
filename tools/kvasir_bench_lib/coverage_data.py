@@ -3,7 +3,7 @@ image's bytes, the counters read live."""
 import struct
 
 
-COVERAGE_MAGIC = 0x4B434F56   # "KCOV", Kvasir::Coverage::Magic
+COVERAGE_MAGIC = 0x4B434F56   # "KCOV", Kvasir::Coverage::magicValue
 COVERAGE_PIECES = 24          # Kvasir::Coverage::Manifest::pieces
 COVERAGE_KINDS = ("memory", "zeros", "inlined")
 

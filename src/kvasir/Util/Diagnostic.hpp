@@ -20,13 +20,13 @@
 #include <string_view>
 
 namespace Kvasir::Prescaler {
-namespace detail {
+namespace Detail {
     // not constexpr: reaching it in a constant expression is the compile error
     inline std::uint64_t prescalerArithmeticOverflowsSixtyFourBits(std::uint64_t a,
                                                                    std::uint64_t b) {
         return a * b;
     }
-}   // namespace detail
+}   // namespace Detail
 
 /// a * b; a product that would overflow 64 bits is a compile error in a constant expression, never a wrap. Defined
 /// here, not in Prescaler.hpp (which includes this header), because Text::fixed1 needs it too.
@@ -34,7 +34,7 @@ constexpr std::uint64_t mulChecked(std::uint64_t a,
                                    std::uint64_t b) {
     std::uint64_t r{};
     if(__builtin_mul_overflow(a, b, &r)) {
-        return detail::prescalerArithmeticOverflowsSixtyFourBits(a, b);
+        return Detail::prescalerArithmeticOverflowsSixtyFourBits(a, b);
     }
     return r;
 }
