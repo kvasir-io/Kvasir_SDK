@@ -25,7 +25,7 @@
 "chip_atsamd21/src/chip/ClockTree.hpp: alias" = "the NVM wait states on the chip's clock limits (Supply, Rating, waitStates), spelled in Nvm"
 "chip_atsam{c21,d21,e51}/src/chip/EIC_Traits.hpp: alias" = "the chip's EXTINT table is written with the family's two sentinels (none, notEncoded)"
 "kvasir_devices/src/kvasir/Devices/Display/{Co5300,St7789,St77916}.hpp: alias" = "a panel's command tables spell the shared DCS commands short (Dcs = Display::Dcs)"
-"kvasir_devices/src/kvasir/Devices/Engine/DeviceCore.hpp: alias: using detail::Answer;" = "the engine's public name of a description's answer type"
+"kvasir_devices/src/kvasir/Devices/Engine/DeviceCore.hpp: alias: using Detail::Answer;" = "the engine's public name of a description's answer type"
 "kvasir_devices/src/kvasir/Devices/Gnss/Ubx.hpp: alias" = "the UBX message fields' quantity types, spelled short in Ublox"
 "kvasir_devices/src/kvasir/Devices/I2C/Quantities.hpp: alias" = "the quantity types declared into Kvasir::I2C so a description writes them unqualified (the header's purpose)"
 "kvasir_devices/src/kvasir/Devices/I2C/Adapters/TouchController.hpp: alias" = "the touch controller's public names of the chips' identification and edge types"
