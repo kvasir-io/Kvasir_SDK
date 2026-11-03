@@ -82,7 +82,7 @@ struct NoCoreResetGuard {
 // filled with a pattern at launch, and stackHighWater() reads how much of it was ever used.
 //
 // The chip half (SecondaryCoreInit<Tag::User>: the CPACR mask, launch(), reset(), optionally armCoreResetGuard(),
-// armOtherCoreStop() and PrimaryIsr) lives in
+// armOtherCoreStop(), PrimaryIsr (core 0's vectors) and SecondaryIsr (core 1's)) lives in
 // the chip's StartUp.hpp, next to FirstInitStep.
 namespace Detail {
     template<typename List>
@@ -91,6 +91,17 @@ namespace Detail {
     template<typename... Ts>
     inline constexpr bool anyNoCoreResetGuard<brigand::list<Ts...>>
       = (requires { Ts::noCoreResetGuard; } || ...);
+
+    template<typename Init>
+    struct SecondaryIsrOf {
+        using type = brigand::list<>;
+    };
+
+    template<typename Init>
+        requires requires { typename Init::SecondaryIsr; }
+    struct SecondaryIsrOf<Init> {
+        using type = typename Init::SecondaryIsr;
+    };
 
     template<typename Init>
     struct PrimaryIsrOf {
@@ -179,9 +190,13 @@ struct SecondaryCore {
 
     [[noreturn]] static void start();
 
-    // This core's ISRs, through the list's IsrTransform if an entry has one (Entry.hpp; IsrProfiling on core 1).
-    using IsrList = typename Detail::
-      IsrTransformInT<typename Detail::IsrsOf<PeripheralList>::type, 1, Entries>::type;
+    // This core's ISRs and the chip half's own (SecondaryIsr: RP, the NMI of core 0's flash lockout), through the
+    // list's IsrTransform if an entry has one (Entry.hpp; IsrProfiling on core 1).
+    using IsrList = typename Detail::IsrTransformInT<
+      brigand::append<typename Detail::IsrsOf<PeripheralList>::type,
+                      typename Detail::SecondaryIsrOf<Init>::type>,
+      1,
+      Entries>::type;
     using Table = Detail::VectorTable<std::addressof(_LINKER_stack1_end_),
                                       std::addressof(entry),
                                       typename Context::Traits,
