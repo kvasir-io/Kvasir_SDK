@@ -70,9 +70,16 @@ namespace Detail {
         static constexpr std::array<std::uint32_t, sizeof...(Cs)> recoveryWindowMs{
           static_cast<std::uint32_t>(recoveryWindowOf<typename Cs::config>().count())...};
         static constexpr bool anyRecovery = (Recovers<typename Cs::config> || ...);
-        // only instantiated where anyRecovery
-        static constexpr std::array<Recovery (*)(Attempt), sizeof...(Cs)> onStarved{
-          onStarvedOf<typename Cs::config>()...};
+
+        // check i's onStarved (only instantiated where anyRecovery): a fold over the checks, each a direct call
+        static Recovery onStarvedAt(std::size_t const i,
+                                    Attempt const     a) {
+            Recovery    r = Recovery::cannot;
+            std::size_t k = 0;
+            static_cast<void>((onStarvedIf<typename Cs::config>(k++ == i, a, r) || ...));
+            return r;
+        }
+
         static constexpr std::uint32_t initiallySuspended = [] {
             constexpr std::array<bool, sizeof...(Cs)> suspended{
               startSuspendedOf<typename Cs::config>()...};

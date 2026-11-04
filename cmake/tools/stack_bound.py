@@ -3,10 +3,11 @@
 priority level, the fault path on its own SP, against MIN_STACK_SIZE / CORE1_STACK_SIZE and the fault reserve.
 
     stack_bound.py <elf> [--notes <file>]... [--ci <file>]... [--txt <out>] [--json <out>] [--path] [--check]
-                   [--quiet] [--fp] [--objdump <llvm-objdump>]
+                   [--exact] [--quiet] [--fp] [--objdump <llvm-objdump>]
 
 The user command is `tools/size_report.py stack` (the same arguments); util.cmake runs it in every image's post-link
-(kvasir_postlink.py), writing <target>_stack.txt and _stack.json silently; STACK_BOUND_CHECK adds --check.
+(kvasir_postlink.py), writing <target>_stack.txt and _stack.json silently; STACK_BOUND_CHECK adds --check,
+STACK_BOUND_EXACT --exact (a LOWER BOUND fails as well).
 
 Inputs, all from the ELF and files next to it (nothing is built):
   frames      clang: the `.stack_sizes` section ([u32 address][ULEB128 bytes] records, lld --mllvm=-stack-size-section,
@@ -19,16 +20,28 @@ Inputs, all from the ELF and files next to it (nothing is built):
               function (tail calls), linker thunks/veneers by name, blx/bx rN with rN from a literal or movw/movt, the
               -fsanitize=function type hash (0xC105CAFE + hash before the call: every function with that prefix), the
               static-constructor loop over [_LINKER_init_array_start_, _end_). Anything else is an unresolved call (`!`).
+              One linear pass per function: register values meet at forward branch targets; a callee-saved register
+              the function writes exactly once keeps that value everywhere; literal pools and alignment padding are
+              no code. The machine outliner: a short OUTLINED_FUNCTION_<n> that calls nothing is followed at each
+              `bl` on the caller's registers (a boot-ROM lookup or a sanitize check it took along); a `bx rN` on a
+              register it never writes is its callers' call; its own unresolved calls are its callers' too (a note
+              on a caller covers it - no note can name OUTLINED_FUNCTION_<n>). gcc's `ldr.w pc, [rT, rI, lsl #2]` is a
+              switch, no call.
   roots       core 0's vector table (the Startup's nvicIsrVectors symbol), core 1's ([_LINKER_INTERN_core1_vectors_*]).
   levels      `.kvasir.isr_levels` (StartUp.hpp, non-allocated): per core {core, n, (index, level) x n} int16, index =
               IRQ number or exception number - 16, level = the priority the Startup list leaves it at (-1: set at run
               time). Without it every handler counts as its own level ("all nest").
-  notes       annotation files, merged (SDK, chip, firmware), one directive a line, `#` comments; names mangled or
-              demangled, globs (fnmatch), no spaces (write `*`):
+  notes       annotation files, merged (SDK, chip, firmware), one directive a line, `#` comments; names mangled,
+              demangled or plain (`Kvasir::Foo::bar` for `void Kvasir::Foo<int>::bar(int) const [clone .isra.0]`),
+              globs (fnmatch), no spaces (write `*` or `?`):
                 frame <fn> <bytes>        the frame of a function the code reading cannot see
-                calls <fn> <callee>...    the targets of <fn>'s indirect calls
+                calls <fn> <callee>...    the targets of <fn>'s indirect calls; only a <fn> that has some (an
+                                          unresolved one, or one the type hash matched: the note replaces those)
+                                          takes the edges, a later `calls` adds to them
                 indirect <fn> <bytes>     <fn>'s indirect calls go to code we cannot see: budget them
-                rom <fn>                  <fn>'s indirect calls go into the boot ROM: not measured, LOWER BOUND
+                rom <fn> [<bytes>]        <fn>'s indirect calls go into the boot ROM: not measured, LOWER BOUND; with
+                                          <bytes>, its boot-ROM calls (recognised or indirect) are budgeted at that
+                                          (the deepest ROM function it reaches, measured: the chip's notes say how)
                 once <fn>                 an error path (it logs and stops: panic, UB report, assert): a path enters
                                           one error path at most, and a call into one inside it stops there
                 fault <fn>                a handler that ends the run (an unhandled interrupt): in the fault class
@@ -43,12 +56,14 @@ member's frame once - `recurse` multiplies it - and is a `!` (recursion) unless 
 bound = entry + sum over priority levels of the deepest handler at that level (+ the exception frame each: 32 B basic
 frame + 4 B realignment, 104 + 4 with FP context when the image has an FP instruction; DDI0403E B1.5.6-B1.5.7). Only a
 strictly higher priority preempts, tail-chaining adds no frame. A handler that sets its own SP (Fault::HandlerFor) adds
-only its exception frame and its own frame to the interrupted stack; its path is checked against the room below that SP
-(and the bound against its reserve: the faulting context's frame must survive). A bound with any `!` reachable is a
-LOWER BOUND, and the report says why.
+only its exception frame and its own frame to the interrupted stack. On a stack of its own (Fault::Options::stackBytes:
+a `faultStack` object whose end is in its literal pool) its path plus one nested exception frame is checked against
+that stack, which must not overlap the main one; below a reserve of the faulting stack, its path against the room
+below that SP and the bound against the reserve (the faulting context's frames must survive). A handler that sets SP to
+neither fails the check. A bound with any `!` reachable is a LOWER BOUND, and the report says why.
 
-Exit codes: 0, 1 with --check when a bound exceeds its limit, 2 when the ELF cannot be read. Without --quiet it prints
-the report; with --quiet only a failed check.
+Exit codes: 0, 1 with --check when a bound exceeds its limit (with --exact also when one is a LOWER BOUND), 2 when the
+ELF cannot be read. Without --quiet it prints the report; with --quiet only a failed check.
 """
 
 import argparse
@@ -92,6 +107,10 @@ RX_SPADJ = re.compile(r'^(sub|add)(s|w)?(\.w|\.n)?$')
 RX_TARGET = re.compile(r'0x([0-9a-f]+)')
 RX_LITERAL = re.compile(r'@ 0x([0-9a-f]+)')
 RX_THUNK = re.compile(r'^__\w*?(?:Thunk|thunk)_(.+)$|^__(.+)_veneer$')
+RX_JUMP_TABLE = re.compile(r'^pc, \[r\d+, r\d+, lsl #(0x)?2\]$')
+# one register pushed / popped with writeback: `str lr, [sp, #-8]!`, `ldr pc, [sp], #8` (hex or decimal)
+RX_PUSH_ONE = re.compile(r'\[sp, #-(0x[0-9a-f]+|\d+)\]!')
+RX_POP_ONE = re.compile(r'^(\w+), \[sp\], #(0x[0-9a-f]+|\d+)')
 
 
 def uleb(data, i):
@@ -219,18 +238,183 @@ def demangle(names):
     return {n: n for n in names}
 
 
+RX_CLONE = re.compile(r' \[clone [^\]]*\]|\[abi:[^\]]*\]')
+RX_QUALIFIER = re.compile(r'\s+(?:const|volatile|noexcept|&&|&)(?=::|\s|$)')
+OPERATOR_CHARS = set('<>=!+-*/%^&|~[],')
+
+
 def plain(name):
-    """A demangled name without its return type, template arguments and parameters, for matching notes."""
-    depth, out = 0, []
-    for c in name:
+    """A demangled name without its return type, template arguments, parameters, trailing qualifiers and gcc's clone
+    suffixes, for matching notes: `Kvasir::Foo::bar` for `void Kvasir::Foo<int>::bar(int) const [clone .isra.0]`,
+    `Kvasir::Rom::lookup` for `void (*Kvasir::Rom::lookup<'F'>())(int)`, `f::'lambda'::operator()` for a lambda's
+    call operator, `ns::{anonymous}::g` for `(anonymous namespace)`."""
+    s = RX_CLONE.sub('', name).replace('(anonymous namespace)', '{anonymous}')
+    depth, out, ptr, i = 0, [], 0, 0
+    while i < len(s):
+        c = s[i]
+        if depth == 0 and s.startswith('operator', i) and (i == 0 or not (s[i - 1].isalnum() or s[i - 1] == '_')):
+            # the operator's own characters are part of the name: operator(), operator<<, operator new
+            j = i + len('operator')
+            if s.startswith('()', j):
+                j += 2
+            elif j < len(s) and s[j] == ' ':
+                while j < len(s) and s[j] not in '(<':
+                    j += 1
+            else:
+                while j < len(s) and s[j] in OPERATOR_CHARS:
+                    j += 1
+            out.append(s[i:j].replace(' ', '\0'))
+            i = j
+            continue
+        if depth == 0 and c == '(' and s.startswith('(*', i):
+            # R (*name(params))(params): a function returning a function pointer, the name inside the declarator
+            ptr += 1
+            out.append(' ')
+            i += 2
+            continue
         if c in '<(':
             depth += 1
         elif c in '>)':
-            depth = max(0, depth - 1)
+            if depth == 0 and c == ')' and ptr:
+                ptr -= 1
+            else:
+                depth = max(0, depth - 1)
         elif depth == 0:
             out.append(c)
-    s = ''.join(out).strip()
-    return s.rsplit(' ', 1)[-1] if ' ' in s else s
+        i += 1
+    # a qualifier is no word of the name, at the end or inside it (`f()::'lambda'() const::__invoke`)
+    joined = RX_QUALIFIER.sub('', ''.join(out))
+    words = joined.split()
+    return words[-1].replace('\0', ' ') if words else ''
+
+
+RX_DATA = re.compile(r'(^|\s)\.(word|short|byte|long|inst|2byte|4byte)\b')
+RX_HEXBYTE = re.compile(r'^[0-9a-f]{2}$')
+
+
+def data_line(op, rest):
+    """objdump's line for data inside a function (a literal pool): `00 00 f0 3f  .word 0x3ff00000`."""
+    return op.startswith('.') or (RX_HEXBYTE.match(op) is not None and RX_DATA.search(rest) is not None)
+
+
+CALLEE_SAVED = ('r4', 'r5', 'r6', 'r7', 'r8', 'r9', 'r10', 'r11')
+TWO_DESTINATIONS = ('ldrd', 'ldrexd', 'umull', 'smull',
+                    'umlal', 'smlal', 'umaal', 'mrrc')
+RX_REG = re.compile(r'^(r\d+|lr|ip|sb|sl|fp)$')
+REG_ALIAS = {'sb': 'r9', 'sl': 'r10', 'fp': 'r11', 'ip': 'r12'}
+NOT_WRITING = ('str', 'cmp', 'cmn', 'tst', 'teq', 'push', 'stm', 'it', 'b', 'cb', 'dmb', 'dsb', 'isb', 'nop', 'vst',
+               'pld', 'pli', 'msr', 'svc', 'bkpt', 'cps', 'wfi', 'wfe', 'sev', 'tb')
+
+
+def written_registers(op, args):
+    """The core registers an instruction writes (for the registers a function writes exactly once): the destination,
+    the second of a two-register destination, a pop/ldm list, a base register's writeback."""
+    out = set()
+    regl = [r.strip() for r in register_list(args)]
+    if RX_POP.match(op) or op.startswith('ldm'):
+        out.update(regl)
+        if op.startswith('ldm') and '!' in args.split('{', 1)[0]:
+            out.add(args.split(',')[0].strip().rstrip('!'))
+    else:
+        parts = [p.strip() for p in args.split(',')] if args else []
+        if parts and RX_REG.match(parts[0]) and (op.startswith('strex') or not op.startswith(NOT_WRITING)):
+            out.add(parts[0])
+        if op.startswith(TWO_DESTINATIONS) and len(parts) > 1 and RX_REG.match(parts[1]):
+            out.add(parts[1])
+        if op.startswith('vmov') and len(parts) > 2 and RX_REG.match(parts[0]) and RX_REG.match(parts[1]):
+            out.add(parts[1])
+        wb = re.search(r'\[(r\d+|sb|sl|fp|ip)(, [^\]]*)?\](!|, )', args)
+        if wb and (op.startswith(('ldr', 'str'))):
+            out.add(wb.group(1))
+    return {REG_ALIAS.get(r, r) for r in out}
+
+
+def single_written(lines):
+    """The callee-saved registers a function's code writes exactly once (a pop that returns does not count: nothing
+    of the function runs after it). Such a register holds that one value wherever it is read: compiled code never reads
+    a callee-saved register it did not write but to save it, so the value survives every merge of the linear pass."""
+    count = {}
+    for _pc, op, rest in lines:
+        if data_line(op, rest):
+            continue
+        args = rest.split('@', 1)[0].strip()
+        regs = written_registers(op, args)
+        if (RX_POP.match(op) or op.startswith('ldm')) and 'pc' in regs:
+            continue
+        for r in regs:
+            count[r] = count.get(r, 0) + 1
+    return {r for r in CALLEE_SAVED if count.get(r) == 1}
+
+
+def loop_heads(lines, lo, hi):
+    """The targets of the backward branches inside the function [lo, hi): loop heads, reached again from below with
+    whatever the code after them left in the registers. (A jump table's targets are taken to lie after it, as a
+    compiled switch's do.)"""
+    heads = set()
+    for pc, op, rest in lines:
+        if not (RX_B.match(op) or RX_CB.match(op) or RX_BL.match(op)):
+            continue
+        t = RX_TARGET.search(rest.split('@', 1)[0])
+        if t:
+            target = int(t.group(1), 16) & ~1
+            if lo <= target <= pc < hi:
+                heads.add(target)
+    return heads
+
+
+def fresh_state(addr, singles=(), heads=None):
+    """The linear pass's state of one function: function, SP offset, registers, literals since a call, SP copies,
+    registers written, register states at forward branch targets, "the instruction before does not fall through",
+    the registers written exactly once, their values once written, the register states the back edges bring to each
+    loop head ({head: dict}, None: not known yet - nothing taken away), and those this pass collects at its back
+    edges."""
+    return [addr, 0, {}, [], set(), set(), {}, [False], set(singles), {}, heads or {}, {}]
+
+
+# a register that holds one of a few known values, depending on the way it came: ('set', frozenset of ints)
+VALUE_SET_MAX = 8
+
+
+def constants(v):
+    """The known constants a register value stands for: {v} for an int, its members for a value set, None else."""
+    if isinstance(v, int):
+        return {v}
+    if isinstance(v, tuple) and v and v[0] == 'set':
+        return set(v[1])
+    return None
+
+
+def join_value(a, b):
+    """One register's value where two ways meet: equal values stay, known constants become the set of both (a call
+    through it reaches each), anything else is unknown (None)."""
+    if a == b:
+        return a
+    ca, cb = constants(a), constants(b)
+    if ca is None or cb is None:
+        return None
+    both = ca | cb
+    return ('set', frozenset(both)) if len(both) <= VALUE_SET_MAX else None
+
+
+def meet(a, b):
+    """The registers two ways into one place bring (a: None for a way not known yet): join_value of each."""
+    if a is None:
+        return dict(b)
+    out = {}
+    for k, v in a.items():
+        if k in b:
+            j = join_value(v, b[k])
+            if j is not None:
+                out[k] = j
+    return out
+
+
+# passes over one function until its loop heads' states settle; past that nothing is taken as known at them
+LOOP_PASSES = 12
+
+
+# an outlined function this short is followed through at each call: what it leaves in the registers is the caller's
+OUTLINED_FOLLOW = 32
 
 
 class Notes:
@@ -252,6 +436,12 @@ class Notes:
                      'once': 1, 'recurse': 2, 'cut': 2, 'fault': 1}
             if kind == 'calls' and len(args) >= 2:
                 self.calls.append((args[0], args[1:]))
+            elif kind == 'rom' and len(args) in (1, 2):
+                if len(args) == 2 and not args[1].isdigit():
+                    raise ValueError(
+                        f'{where}: rom wants a number of bytes, not {args[1]!r}')
+                self.rom.append(
+                    (args[0], int(args[1]) if len(args) == 2 else None))
             elif kind == 'rom_pointer' and args:
                 self.rom_pointer += [int(a, 0) for a in args]
             elif kind == 'rom_region' and len(args) == 2:
@@ -273,7 +463,7 @@ class Notes:
 
 class Function:
     __slots__ = ('addr', 'size', 'names', 'name', 'keys', 'record', 'source', 'code', 'calls', 'unknown', 'flags',
-                 'literals', 'derived', 'param_calls', 'rom_calls')
+                 'literals', 'derived', 'param_calls', 'rom_calls', 'typed_calls', 'via_outlined', 'noted')
 
     def __init__(self, addr, size, names):
         self.addr, self.size, self.names = addr, size, names
@@ -290,8 +480,14 @@ class Function:
         self.derived = False        # no FUNC symbol: a label of assembly without .type
         # bx/blx rN on a register the caller set (the machine outliner's tail calls)
         self.param_calls = []
-        # calls into the boot ROM (not measured: a LOWER BOUND)
+        # calls into the boot ROM (not measured: a LOWER BOUND, unless a `rom <fn> <bytes>` note budgets them)
         self.rom_calls = 0
+        # edges from -fsanitize=function type hashes (a `calls` note replaces them)
+        self.typed_calls = set()
+        # outlined functions whose unresolved calls were moved here (a note on this function covers them there too)
+        self.via_outlined = set()
+        # a `calls` note gave this function's targets (a later note adds to them)
+        self.noted = False
 
     @property
     def frame(self):
@@ -485,26 +681,30 @@ class Image:
                                   disassembly_cpu(self.attributes)) else []
         cmd = [self.objdump, '-d', '--no-show-raw-insn',
                '--print-imm-hex', *cpu, str(self.path)]
+        # the listing grouped by function first (each run of one function's lines, in listing order, data words of
+        # its literal pools left out): a function's own pre-pass (the registers it writes once) and the outlined
+        # functions a caller's pass follows need the lines before the pass that reads them
+        groups = []
         with subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, errors='replace') as proc:
-            state = None
+            cur, lines = None, None
             for line in proc.stdout:
                 m = RX_INSN.match(line)
                 if not m:
                     continue
                 pc = int(m.group(1), 16)
-                cur = self.owner(pc)
-                if cur is None:
-                    state = None
+                owner = self.owner(pc)
+                if owner is None:
+                    cur = None
                     continue
-                if state is None or state[0] != cur:
-                    # function, SP offset, registers, literals since a call, SP copies, registers written,
-                    # register states at forward branch targets, "the instruction before does not fall through"
-                    state = [cur, 0, {}, [], set(), set(), {}, [False]]
-                self._instruction(self.funcs[cur], state, pc, m.group(
-                    2), m.group(3), typed, init)
+                if owner != cur:
+                    cur, lines = owner, []
+                    groups.append((owner, lines))
+                if not data_line(m.group(2), m.group(3)):
+                    lines.append((pc, m.group(2), m.group(3)))
         if proc.returncode:
             raise RuntimeError(
                 f'{" ".join(cmd)} exited with {proc.returncode}')
+        self._run_groups(groups, typed, init)
         self._resolve_param_calls()
         for f, callee, site in self.pending_returns:
             # a call through what <callee> returned: the boot ROM's function when <callee> (or one it calls) looked it up
@@ -513,6 +713,101 @@ class Image:
                 f.rom_calls += 1
             else:
                 f.unknown.append(site + ' (what a call returned)')
+        self._attribute_outlined()
+
+    def _run_groups(self, groups, typed, init):
+        """The linear pass over each function's lines (`groups`: [(function address, [(pc, op, rest)])])."""
+        self.outlined = {a: lines for a, lines in groups
+                         if self.funcs[a].names[0].startswith('OUTLINED_FUNCTION') and len(lines) <= OUTLINED_FOLLOW}
+        for addr, lines in groups:
+            f = self.funcs[addr]
+            singles = single_written(lines)
+            heads = loop_heads(lines, f.addr, f.addr + f.size)
+            back = self._settle_loops(
+                f, lines, singles, heads, typed, init) if heads else {}
+            state = fresh_state(addr, singles, back)
+            for pc, op, rest in lines:
+                self._step(f, state, pc, op, rest, typed, init)
+
+    def _settle_loops(self, f, lines, singles, heads, typed, init):
+        """The register states the back edges bring to each loop head: the linear pass, without its effects (a
+        throwaway function, the image's call sites and returns set aside), again with what the back edges brought
+        last time, until nothing changes - the states only shrink, so it ends; LOOP_PASSES without settling, and
+        nothing is known at the heads. The pass that follows, with its effects, starts from these."""
+        back = {t: None for t in heads}
+        saved = self.callsites, self.pending_returns
+        try:
+            for _ in range(LOOP_PASSES):
+                self.callsites, self.pending_returns = {}, []
+                sink = Function(f.addr, f.size, f.names)
+                state = fresh_state(f.addr, singles, back)
+                for pc, op, rest in lines:
+                    self._step(sink, state, pc, op, rest, typed, init)
+                settled = {t: state[11].get(t, {}) for t in heads}
+                if settled == back:
+                    return back
+                back = settled
+        finally:
+            self.callsites, self.pending_returns = saved
+        return {t: {} for t in heads}
+
+    def _step(self, f, state, pc, op, rest, typed, init):
+        """One instruction, then the value of a register the function writes once, should this be its write."""
+        self._instruction(f, state, pc, op, rest, typed, init)
+        if state[8]:
+            for r in written_registers(op, rest.split('@', 1)[0].strip()) & state[8]:
+                v = state[2].get(r)
+                if v is not None and v != 'popped':
+                    state[9][r] = v
+
+    def _attribute_outlined(self):
+        """An outlined function's own unresolved calls (`ldr r3, [r1, #8]; bx r3`, the dispatch the outliner moved out
+        of its callers) are its callers' as much as its own: no note can name OUTLINED_FUNCTION_<n>, a number that
+        changes with every build. Each caller takes them, marked with the outlined function, and a note on a caller
+        then gives the targets to the outlined function as well (its frame is on the path)."""
+        for g in self.funcs.values():
+            if not g.unknown or not g.names[0].startswith('OUTLINED_FUNCTION'):
+                continue
+            callers = {caller for caller, _ in self.callsites.get(g.addr, [])}
+            if not callers:
+                continue
+            for caller in callers:
+                c = self.funcs[caller]
+                c.unknown += [f'{u} in {g.names[0]}' for u in g.unknown]
+                c.via_outlined.add(g.addr)
+            g.unknown = []
+
+    def _follow_outlined(self, caller, callee, state, typed, init):
+        """`bl OUTLINED_FUNCTION_<n>`: the outliner's code is the caller's, moved out (a `movs r0, #0x16; ldrh r2,
+        [r0]` boot-ROM lookup, a sanitize check's literals). A short body that calls nothing is run on a copy of the
+        caller's registers and its result is the caller's; one that calls something leaves what a call leaves.
+        True when followed."""
+        body = self.outlined.get(callee)
+        if not body:
+            return False
+        g = self.funcs[callee]
+        sim = Function(g.addr, g.size, [f'<{g.names[0]} for its caller>'])
+        sim_state = fresh_state(g.addr)
+        sim_state[2].update(state[2])
+        sim_state[3].extend(state[3])
+        sim_state[4].update(state[4])
+        saved = self.callsites, self.pending_returns
+        self.callsites, self.pending_returns = {}, []
+        try:
+            for pc, op, rest in body:
+                self._instruction(sim, sim_state, pc, op, rest, typed, init)
+        finally:
+            self.callsites, self.pending_returns = saved
+        if sim.calls or sim.unknown or sim.rom_calls or sim.param_calls or sim.flags & {'sets sp', 'dynamic sp'}:
+            return False
+        regs = state[2]
+        regs.clear()
+        regs.update(sim_state[2])
+        regs.pop('lr', None)
+        state[3][:] = sim_state[3]
+        state[5].update(sim_state[5])
+        caller.literals += sim.literals
+        return True
 
     def _resolve_param_calls(self):
         """An outlined function's `bx rN` on a register it never wrote is its caller's call: the outliner moved the
@@ -525,9 +820,9 @@ class Image:
                     f.unknown.append(
                         f'{op} {r} @{pc:#x} (a register its caller sets)')
                 for caller, snap in sites:
-                    v = snap.get(r)
-                    if isinstance(v, int) and (v & ~1) in self.funcs:
-                        self.funcs[caller].calls.add(v & ~1)
+                    members = constants(snap.get(r))
+                    if members and all((v & ~1) in self.funcs for v in members):
+                        self.funcs[caller].calls |= {v & ~1 for v in members}
                     else:
                         self.funcs[caller].unknown.append(
                             f'{op} {r} @{pc:#x} in {f.names[0]}')
@@ -537,26 +832,38 @@ class Image:
             # an instruction llvm-objdump could not decode for this CPU
             self.undecoded += 1
             return
-        if op.startswith('.') or op.startswith('<'):
-            # .word / .short: data in the function (literal pool)
+        if op.startswith('<') or data_line(op, rest):
+            # .word / .short: data in the function (literal pool); it neither falls through nor clears anything
             return
         args = rest.split('@', 1)[0].strip()
         regs, lits, spregs, written, targets, dead = state[
             2], state[3], state[4], state[5], state[6], state[7]
+        if dead[0] and op in ('nop', 'nop.n', 'nop.w') and pc not in targets:
+            # alignment padding after a jump (before a literal pool): nothing runs it
+            return
         # the register values one linear pass can know: at a forward branch target the states of both ways meet (only
         # the branch's when the code before it does not fall through: a return, a jump, an error path)
         if pc in targets:
             snap = targets.pop(pc)
-            if dead[0]:
-                regs.clear()
-                regs.update(snap)
-            else:
-                for k in [k for k in regs if regs[k] != snap.get(k)]:
-                    del regs[k]
+            joined = snap if dead[0] else meet(regs, snap)
+            regs.clear()
+            regs.update(joined)
         elif dead[0]:
             # reached from somewhere this pass has not seen: nothing known
             regs.clear()
         dead[0] = False
+        if len(state) > 10 and pc in state[10]:
+            # a loop head: what the back edges bring meets what came this way (the literals of a way in are not
+            # known on the other)
+            back = state[10][pc]
+            if back is not None:
+                joined = meet(regs, back)
+                regs.clear()
+                regs.update(joined)
+            lits.clear()
+        if len(state) > 9:
+            # a register the function writes once holds that value wherever it is read (single_written)
+            regs.update(state[9])
         dest0 = args.split(',')[0].strip() if args else ''
         if re.match(r'^(r\d+|lr|ip)$', dest0) and not op.startswith(('str', 'cmp', 'cmn', 'tst', 'teq', 'push', 'stm',
                                                                      'it', 'b', 'cb', 'dmb', 'dsb', 'isb', 'nop', 'vst')):
@@ -600,15 +907,16 @@ class Image:
                 state[1] += delta if op.startswith('sub') else -delta
             else:
                 f.flags.add('dynamic sp')
-        elif op.startswith('str') and re.search(r'\[sp, #-0x([0-9a-f]+)\]!', args):
-            state[1] += int(re.search(r'\[sp, #-0x([0-9a-f]+)\]!',
-                            args).group(1), 16)
-        elif op.startswith('ldr') and re.match(r'^(\w+), \[sp\], #0x([0-9a-f]+)', args):
-            mm = re.match(r'^(\w+), \[sp\], #0x([0-9a-f]+)', args)
+        elif op.startswith('str') and RX_PUSH_ONE.search(args):
+            # `str lr, [sp, #-8]!` (libgcc's soft-float compares): llvm-objdump prints a pre- or post-indexed
+            # immediate in decimal even with --print-imm-hex, so both spellings
+            state[1] += int(RX_PUSH_ONE.search(args).group(1), 0)
+        elif op.startswith('ldr') and RX_POP_ONE.match(args):
+            mm = RX_POP_ONE.match(args)
             if mm.group(1) == 'pc':
-                returns = True
+                returns = True                      # `ldr pc, [sp], #8`
             else:
-                state[1] -= int(mm.group(2), 16)
+                state[1] -= int(mm.group(2), 0)
         f.code = max(f.code, state[1])
         # --- SP moved by a register ---
         if (op.startswith('mov') and args.startswith('sp, r')) or (op.startswith('msr') and re.match(r'^msp\b', args)):
@@ -629,15 +937,19 @@ class Image:
             t = int(target.group(1), 16)
             if f.addr < (t & ~1) < f.addr + f.size:
                 # gcc on v6-M: a `bl` as the far jump inside a function (b reaches +-2 KiB), not a call
-                targets[t & ~1] = dict(regs) if (
-                    t & ~1) > pc else targets.get(t & ~1, {})
+                if (t & ~1) > pc:
+                    targets[t & ~1] = meet(targets.get(t & ~1), regs)
+                elif len(state) > 11:
+                    state[11][t & ~1] = meet(state[11].get(t & ~1), regs)
                 dead[0] = True
                 return
             self._edge(f, t)
             callee = self.owner(t & ~1)
             if callee is not None and self.funcs[callee].names[0].startswith('OUTLINED_FUNCTION'):
                 self.callsites.setdefault(callee, []).append(
-                    (f.addr, {k: v for k, v in regs.items() if isinstance(v, int)}))
+                    (f.addr, {k: v for k, v in regs.items() if constants(v) is not None}))
+                if self._follow_outlined(f, callee, state, typed, init):
+                    return
             clobber(regs)
             if callee is not None:
                 # what it returns, should r0 be called next
@@ -648,12 +960,17 @@ class Image:
         if (RX_B.match(op) or RX_CB.match(op)) and target:
             t = int(target.group(1), 16)
             if not (f.addr <= t < f.addr + f.size):
-                # leaves the function: a tail call
+                # leaves the function: a tail call (into an outlined function: its call site, as for a bl)
                 self._edge(f, t)
+                callee = self.owner(t & ~1)
+                if callee is not None and self.funcs[callee].names[0].startswith('OUTLINED_FUNCTION'):
+                    self.callsites.setdefault(callee, []).append(
+                        (f.addr, {k: v for k, v in regs.items() if constants(v) is not None}))
             elif t > pc:
-                old = targets.get(t)
-                targets[t] = dict(regs) if old is None else {
-                    k: v for k, v in old.items() if regs.get(k) == v}
+                targets[t] = meet(targets.get(t), regs)
+            elif len(state) > 11:
+                # a back edge: what it brings to the loop head, for the next pass (_run_groups)
+                state[11][t] = meet(state[11].get(t), regs)
             dead[0] = op in ('b', 'b.n', 'b.w')
             return
         if op == 'bx' and args == 'lr' or returns and op in ('pop', 'pop.w', 'ldr', 'ldr.w', 'ldm', 'ldmia', 'ldmia.w'):
@@ -677,6 +994,10 @@ class Image:
             lit = RX_LITERAL.search(rest)
             if returns:
                 return
+            if RX_JUMP_TABLE.match(args):
+                # gcc's switch: `adr rT, table; ldr.w pc, [rT, rI, lsl #2]` - a jump inside the function, no call
+                dead[0] = True
+                return
             if lit and '[pc' in args:
                 value = self.word(int(lit.group(1), 16))
                 if value is not None:
@@ -688,9 +1009,12 @@ class Image:
             return                                  # a jump table: stays in the function
         # --- register values: literals, movw/movt, copies ---
         dest = args.split(',')[0].strip() if args else ''
-        mm = re.match(r'^(r\d+), \[(r\d+)\]$',
+        # the boot ROM's lookup pointer read: clang `movs r0, #0x16; ldrh r2, [r0]`, gcc `movs r5, #0x0; ldrh r3,
+        # [r5, #0x16]`
+        mm = re.match(r'^(r\d+), \[(r\d+)(?:, #(0x[0-9a-f]+|\d+))?\]$',
                       args) if op.startswith('ldrh') else None
-        if mm and regs.get(mm.group(2)) in self.notes.rom_pointer:
+        if mm and isinstance(regs.get(mm.group(2)), int) and \
+                regs[mm.group(2)] + int(mm.group(3) or '0', 0) in self.notes.rom_pointer:
             regs[mm.group(1)] = 'romlookup'
             return
         if op.startswith('ldr') and '[pc' in args:
@@ -720,6 +1044,18 @@ class Image:
             regs[dest] = (regs[mm.group(2)] << int(
                 mm.group(3), 0)) & 0xFFFFFFFF
             return
+        mm = re.match(r'^(r\d+), (r\d+)$', args) if op in ('uxth',
+                                                           'uxth.w', 'uxtb', 'uxtb.w') else None
+        if mm:
+            # a zero-extension (gcc after its ldrh of the boot-ROM pointer): the lookup stays the lookup
+            v = regs.get(mm.group(2))
+            if v == 'romlookup' and op.startswith('uxth'):
+                regs[dest] = v
+            elif isinstance(v, int):
+                regs[dest] = v & (0xFFFF if op.startswith('uxth') else 0xFF)
+            else:
+                regs.pop(dest, None)
+            return
         if op in ('mov', 'movs') and re.match(r'^(r\d+|lr|ip), (r\d+|lr|ip)$', args):
             src = args.split(',')[1].strip()
             regs[dest] = regs.get(src)
@@ -747,6 +1083,15 @@ class Image:
         if isinstance(value, int) and (value & ~1) in self.funcs:
             f.calls.add(value & ~1)
             return
+        members = constants(value) if isinstance(value, tuple) else None
+        if members and all((v & ~1) in self.funcs or self.in_rom(v) for v in members):
+            # one of a few functions, by the way it came (join_value): each is a target
+            for v in members:
+                if (v & ~1) in self.funcs:
+                    f.calls.add(v & ~1)
+                else:
+                    f.rom_calls += 1
+            return
         if value in ('romlookup', 'romptr') or (isinstance(value, int) and self.in_rom(value)):
             f.rom_calls += 1
             if value == 'romlookup':
@@ -759,11 +1104,19 @@ class Image:
             f.calls |= {a for a in self.init_array if a in self.funcs}
             f.flags.add(f'init_array:{len(self.init_array)}')
             return
-        if SANITIZE_SIGNATURE in lits:
+        if SANITIZE_SIGNATURE in lits or SANITIZE_SIGNATURE in f.literals:
+            # -fsanitize=function: the signature compared against [f-8] may be loaded once (hoisted out of a loop);
+            # the type hash is loaded for the call, since the last one - or it is in a register (the union of what
+            # the registers hold: every one is a candidate)
             hashes = [x for x in lits if x in typed]
-            if hashes:
-                f.calls |= typed[hashes[-1]]
-                f.flags.add(f'typed:{len(typed[hashes[-1]])}')
+            cands = set(typed[hashes[-1]]) if hashes else set()
+            if not cands:
+                for v in {v for v in regs.values() if isinstance(v, int) and v in typed}:
+                    cands |= typed[v]
+            if cands:
+                f.calls |= cands
+                f.typed_calls |= cands
+                f.flags.add(f'typed:{len(cands)}')
                 return
         f.unknown.append(f'{op} {r} @{pc:#x}')
 
@@ -790,26 +1143,60 @@ class Image:
 
     def _apply_notes(self):
         n = self.notes
-        self.extra_nodes = {}       # ('budget', fn address) -> bytes
+        self.extra_nodes = {}       # ('budget' | 'rom', fn address) -> bytes
         self.rom = set()
+        self.rom_budget = {}        # fn address -> bytes its boot-ROM calls are budgeted at
         for pattern, size in n.frame:
             for f in self.matching(pattern):
                 f.record, f.source = size, 'note'
         for pattern, callees in n.calls:
+            targets = set()
+            for c in callees:
+                targets |= {g.addr for g in self.matching(c)}
             for f in self.matching(pattern):
-                for c in callees:
-                    f.calls |= {g.addr for g in self.matching(c)}
+                # the targets of what is indirect here - a function whose calls are all direct (a glob over a class
+                # matches its every member) takes no edges, they would only lengthen paths and close false cycles
+                if not (f.unknown or f.typed_calls or f.noted):
+                    continue
+                # the note names the targets: it replaces what the type hash matched (`void()` is every ISR)
+                f.calls -= f.typed_calls - targets
+                f.calls |= targets
+                for g in f.via_outlined:
+                    self.funcs[g].calls |= targets
                 f.unknown = []
+                f.noted = True
         for pattern, size in n.indirect:
             for f in self.matching(pattern):
                 if f.unknown:
                     self.extra_nodes[('budget', f.addr)] = size
                     f.calls.add(('budget', f.addr))
+                    for g in f.via_outlined:
+                        self.funcs[g].calls.add(('budget', f.addr))
                     f.unknown = []
-        for pattern in n.rom:
+        budgeted = {f.addr for pattern,
+                    size in n.rom if size is not None for f in self.matching(pattern)}
+        for pattern, size in n.rom:
             for f in self.matching(pattern):
-                if f.unknown or any(isinstance(c, tuple) and c[0] == '?' for c in f.calls):
-                    self.rom.add(f.addr)
+                foreign = {c for c in f.calls if isinstance(
+                    c, tuple) and c[0] == '?'}
+                if not (f.unknown or foreign or f.rom_calls):
+                    continue
+                if size is None:
+                    # its indirect calls go into the boot ROM: not measured (a LOWER BOUND) - unless another `rom`
+                    # line budgets the same function (a glob over a class, a budget for one member)
+                    if (f.unknown or foreign) and f.addr not in budgeted:
+                        self.rom.add(f.addr)
+                    continue
+                # budgeted: the deepest boot-ROM function it calls, measured elsewhere (the chip's notes say where)
+                node = ('rom', f.addr)
+                self.extra_nodes[node] = max(
+                    self.extra_nodes.get(node, 0), size)
+                self.rom_budget[f.addr] = self.extra_nodes[node]
+                f.calls -= foreign
+                f.calls.add(node)
+                for g in f.via_outlined:
+                    self.funcs[g].calls.add(node)
+                f.unknown = []
         for a, b in n.cut:
             drop = {g.addr for g in self.matching(b)}
             for f in self.matching(a):
@@ -832,6 +1219,8 @@ class Image:
         if isinstance(node, tuple):
             if node[0] == 'budget':
                 return f'<budgeted indirect calls of {short(self.funcs[node[1]].name)}>'
+            if node[0] == 'rom':
+                return f'<boot ROM calls of {short(self.funcs[node[1]].name)}>'
             return f'<{node[1]:#010x}>'
         return self.funcs[node].name
 
@@ -846,7 +1235,7 @@ class Image:
         f = self.funcs[node]
         nm = short(f.name)
         out = set()
-        if f.rom_calls:
+        if f.rom_calls and node not in self.rom_budget:
             out.add(
                 f'!{nm}: {f.rom_calls} call(s) into the boot ROM (not measured)')
         if f.unknown:
@@ -1060,6 +1449,49 @@ def fault_room(image, handler, top, bottom, protector=0):
     return {'reserve': reserve, 'effective_reserve': top - sp, 'room': sp - bottom - protector}
 
 
+def own_stack(image, handler, lo, hi):
+    """The stack of its own a Fault::HandlerFor<{.stackBytes = N}> runs on: the `faultStack` object (FaultHandler.hpp)
+    whose end is in the handler's literal pool (`ldr r0, =top; mov sp, r0`). None without one."""
+    lits = set(image.funcs[handler].literals)
+    for s in image.elf.symbols:
+        if s['type'] == STT_OBJECT and 'faultStack' in s['name'] and s['size'] and s['value'] + s['size'] in lits:
+            bottom, top = s['value'], s['value'] + s['size']
+            return {'symbol': s['name'], 'bottom': bottom, 'top': top, 'size': s['size'],
+                    'overlaps': None not in (lo, hi) and bottom < hi and lo < top}
+    return None
+
+
+def fault_failures(core, fault, frame, bound, fault_class, lo, hi):
+    """The fault handler's rules for one core: `fault` is the report's fault entry (None: no handler sets its SP),
+    `frame` the exception frame, `bound` the core's bound and `fault_class` the part of it the fault class takes."""
+    if not fault:
+        return []
+    out = []
+    own, room = fault.get('own_stack'), fault['room']
+    if own:
+        # a stack of its own: the faulting context's frames are untouched however deep it was; what is checked is
+        # the handler's path in it, with one more exception frame (a fault in a configurable-priority handler
+        # escalates to HardFault on the same SP)
+        if fault['depth'] + frame > own['size']:
+            out.append(f'core {core}: fault path {fault["depth"]} B + a nested exception frame {frame} B > its own '
+                       f'stack {own["size"]} B (Fault::Options::stackBytes)')
+        if own['overlaps']:
+            out.append(f'core {core}: the fault handler\'s own stack [{own["bottom"]:#x}, {own["top"]:#x}) overlaps '
+                       f'the main stack [{lo:#x}, {hi:#x})')
+    elif room:
+        if fault['depth'] > room['room']:
+            out.append(f'core {core}: fault path {fault["depth"]} B > the {room["room"]} B below the fault handler\'s '
+                       f'SP')
+        live = bound - fault_class
+        if live > room['effective_reserve']:
+            out.append(f'core {core}: bound without the fault class {live} B > the fault reserve '
+                       f'{room["effective_reserve"]} B (a fault would overwrite the live frames)')
+    else:
+        out.append(f'core {core}: {short(fault["handler"], 60)} sets SP to a stack that is neither this core\'s (both '
+                   f'ends in its literal pool) nor a Fault::Options::stackBytes one: its path is unchecked')
+    return out
+
+
 def analyse(image):
     image.solve()
     levels = read_levels(image.elf)
@@ -1104,11 +1536,12 @@ def analyse(image):
             d = image.depth[h] + frame
             f = image.funcs[h]
             if 'sets sp' in f.flags:
-                room = fault_room(image, h, hi, lo,
-                                  protector if core == 0 else 0)
+                own = own_stack(image, h, lo, hi)
+                room = None if own else fault_room(image, h, hi, lo,
+                                                   protector if core == 0 else 0)
                 fault = {'handler': f.name, 'vectors': vectors, 'depth': image.depth[h], 'on_stack': frame + f.frame,
-                         'room': room, 'lower': lower(image.reasons[h]), 'reasons': sorted(image.reasons[h]),
-                         'path': image.chain(h)}
+                         'room': room, 'own_stack': own, 'lower': lower(image.reasons[h]),
+                         'reasons': sorted(image.reasons[h]), 'path': image.chain(h)}
                 d, h_node = frame + f.frame, None     # its path runs below its own SP
             else:
                 h_node = h
@@ -1146,16 +1579,8 @@ def analyse(image):
         if limit['bytes'] is not None and bound > limit['bytes']:
             result['failures'].append(
                 f'core {core}: bound {bound} B > {limit["text"]} = {limit["bytes"]} B')
-        if fault and fault['room']:
-            room = fault['room']
-            if fault['depth'] > room['room']:
-                result['failures'].append(f'core {core}: fault path {fault["depth"]} B > the {room["room"]} B below '
-                                          f'the fault handler\'s SP')
-            live = bound - sum(g['depth']
-                               for k, g in groups.items() if k == ('fault',))
-            if live > room['effective_reserve']:
-                result['failures'].append(f'core {core}: bound without the fault class {live} B > the fault reserve '
-                                          f'{room["effective_reserve"]} B (a fault would overwrite the live frames)')
+        result['failures'] += fault_failures(core, fault, frame, bound,
+                                             sum(g['depth'] for k, g in groups.items() if k == ('fault',)), lo, hi)
         out['cores'].append(result)
     return out
 
@@ -1184,11 +1609,13 @@ def text_report(r, show_path=False):
                      + (f'; linked stack {c["linked_stack"]} B' if c['linked_stack'] else ''))
         if c['fault']:
             fl = c['fault']
-            room = fl['room']
+            room, own = fl['room'], fl.get('own_stack')
             lines.append(f'        fault {short(fl["handler"], 50)} (own SP) {fl["depth"]} B'
                          + (' LOWER BOUND' if fl['lower'] else '')
-                         + (f'; room below its SP {room["room"]} B, reserve {room["effective_reserve"]} B'
-                            if room else '') + f'; {fl["on_stack"]} B on the interrupted stack')
+                         + (f'; its own stack {own["size"]} B at {own["bottom"]:#x}' if own else
+                            f'; room below its SP {room["room"]} B, reserve {room["effective_reserve"]} B'
+                            if room else '; its stack not identified')
+                         + f'; {fl["on_stack"]} B on the interrupted stack')
         for f in c['failures']:
             lines.append(f'        ERROR {f}')
         bang = [w for w in c['reasons'] if w.startswith('!')]
@@ -1219,6 +1646,8 @@ def main(argv=None):
                     help='print the whole deepest chain')
     ap.add_argument('--check', action='store_true',
                     help='exit 1 when a bound is above its limit')
+    ap.add_argument('--exact', action='store_true',
+                    help='also exit 1 when a bound is a LOWER BOUND (implies --check)')
     ap.add_argument('--quiet', action='store_true',
                     help='print nothing unless --check fails')
     ap.add_argument('--fp', action='store_true',
@@ -1233,15 +1662,30 @@ def main(argv=None):
 DEFAULT_NOTES = Path(__file__).resolve().parent / 'stack_bound_default.txt'
 
 
+def exact_failures(report):
+    """--exact: every core whose bound (or fault path) is a LOWER BOUND fails, with the first reasons."""
+    for c in report['cores']:
+        bang = [w for w in c['reasons'] if w.startswith('!')]
+        if c['lower']:
+            c['failures'].append(f'core {c["core"]}: LOWER BOUND, {len(bang)} unresolved: ' + '; '.join(bang[:3])
+                                 + (' ...' if len(bang) > 3 else ''))
+        fl = c['fault']
+        if fl and fl['lower']:
+            fb = [w for w in fl['reasons'] if w.startswith('!')]
+            c['failures'].append(
+                f'core {c["core"]}: the fault path is a LOWER BOUND: ' + '; '.join(fb[:3]))
+
+
 def run(args, elf=None):
     notes = Notes()
+    check = args.check or getattr(args, 'exact', False)
     try:
         tool = args.objdump or Image._find_objdump()
     except FileNotFoundError as e:
         # no llvm-objdump on this machine: no report, one line in its place - not a link failure unless asked to check
         if args.txt:
             args.txt.write_text(f'{args.elf.name}: no stack bound: {e}\n')
-        if args.check:
+        if check:
             print(
                 f'stack_bound: {args.elf.name}: STACK_BOUND_CHECK needs {e}', file=sys.stderr)
             return 1
@@ -1255,6 +1699,8 @@ def run(args, elf=None):
         print(f'stack_bound: {args.elf}: {e}', file=sys.stderr)
         return 2
     report = analyse(image)
+    if getattr(args, 'exact', False):
+        exact_failures(report)
     text = text_report(report, args.path)
     if args.txt:
         args.txt.write_text(text)
@@ -1263,7 +1709,7 @@ def run(args, elf=None):
     failures = [f for c in report['cores'] for f in c['failures']]
     if not args.quiet:
         sys.stdout.write(text)
-    if args.check and failures:
+    if check and failures:
         if args.quiet:
             sys.stderr.write(text)
         print(f'stack_bound: {args.elf.name}: STACK_BOUND_CHECK failed: ' +

@@ -18,7 +18,40 @@ recurse __aeabi_fsub 1
 fault Kvasir::Nvic::DefaultIsrs::onIsr*
 
 # Function pointers the SDK fills with one function: the microsecond counter of the announced-reset waits
-# (Runtime/AnnouncedReset.hpp: Deadline, inlined into announce/waitForPrinter in debug) and of uc_log's panic-mode
+# (Runtime/AnnouncedReset.hpp: Detail::readCounter, out of line wherever the wait is inlined) and of uc_log's panic-mode
 # stall (uc_log detail/LossLedger.hpp StallWaiter).
 calls Kvasir::AnnouncedReset::* kvasir_announced_reset_time_us
 calls uc_log::*StallWaiter::* kvasir_announced_reset_time_us
+
+# StaticFunction (Util/StaticFunction.hpp) calls the invoker its constructor stored: the lambda `__invoke` (clang) or
+# `_FUN` (gcc) of one StaticFunction<Signature>. Every StaticFunction of a signature is made by that constructor, so
+# its invokers are the complete target set of a call through one, whatever the application stores.
+
+# Kvasir::Bus (kvasir_devices Bus/Callbacks.hpp): a request's outcome goes to its StaticFunction<void(Outcome)> callback
+calls Kvasir::Bus::Invoker::invoke Kvasir::StaticFunction<void?(Kvasir::Bus::*Outcome),*::__invoke* Kvasir::StaticFunction<void(Kvasir::Bus::*Outcome),*::_FUN*
+
+# Kvasir::SPI::QueueCore (kvasir_devices SPI/QueueCore.hpp): the finished request's StaticFunction<void(Outcome)>.
+# The request's chip-select lines (Lines: the application's select/deselect/prepare/between) are called through
+# Kvasir::SPI::Detail::callLine only, which no note here covers: the firmware's notes name its functions.
+calls Kvasir::SPI::QueueCore::* Kvasir::StaticFunction<void?(Kvasir::Bus::*Outcome),*::__invoke* Kvasir::StaticFunction<void(Kvasir::Bus::*Outcome),*::_FUN*
+
+# Kvasir::Engine (kvasir_devices Engine/): the engine's code is one copy for every device of a port and calls through
+# two tables. Ops, one per chip: every hook a static function of DeviceCore::ChipHooks. DeviceKnobs / DeviceOps, one
+# per device: Device<>::DeviceHooks (the gate, the bridge, the enable - the application's shared Config::enabledBy is
+# called from DeviceHooks::enabledBy, directly) and the lambdas of Device<>::knobs and Device<>::hooks (a reset line's
+# hold and release, the bus submit). DeviceCore::turn and ::restart, the engine's entries, stay out of line, so the
+# engine's own functions inlined into them are theirs and never an application function's.
+calls Kvasir::Engine::Detail::Engine::* Kvasir::Engine::DeviceCore::ChipHooks::* Kvasir::Engine::Device::DeviceHooks::* Kvasir::Engine::Device::knobs::* Kvasir::Engine::Device::hooks::*
+calls Kvasir::Engine::Detail::EngineState::* Kvasir::Engine::DeviceCore::ChipHooks::* Kvasir::Engine::Device::DeviceHooks::* Kvasir::Engine::Device::knobs::* Kvasir::Engine::Device::hooks::*
+calls Kvasir::Engine::DeviceCore::link Kvasir::Engine::DeviceCore::ChipHooks::* Kvasir::Engine::Device::DeviceHooks::* Kvasir::Engine::Device::knobs::* Kvasir::Engine::Device::hooks::*
+calls Kvasir::Engine::DeviceCore::restart Kvasir::Engine::DeviceCore::ChipHooks::* Kvasir::Engine::Device::DeviceHooks::* Kvasir::Engine::Device::knobs::* Kvasir::Engine::Device::hooks::*
+calls Kvasir::Engine::DeviceCore::turn Kvasir::Engine::DeviceCore::ChipHooks::* Kvasir::Engine::Device::DeviceHooks::* Kvasir::Engine::Device::knobs::* Kvasir::Engine::Device::hooks::*
+# A chip's write paths (DeviceCore.hpp WriteOps): one small function per write group, the lambdas of writeOpsTable
+calls Kvasir::Engine::DeviceCore::ChipHooks::* Kvasir::Engine::DeviceCore::writeOpsTable::*
+# The end of a bring-up goes through the finishInit thunk (Hooks.hpp: a device set passes its own ops) from beginInit
+# only: Engine::finishInit itself and releaseGate, which it calls, never call it back (Engine.hpp finishInit, releaseGate)
+cut Kvasir::Engine::Detail::Engine::finishInit Kvasir::Engine::DeviceCore::ChipHooks::finishInit
+cut Kvasir::Engine::Detail::Engine::releaseGate Kvasir::Engine::DeviceCore::ChipHooks::finishInit
+
+# llvm-libc's big integers (lib/libc __support/big_int.h) hand add_with_carry / sub_with_borrow to inplace_binop
+calls __llvm_libc::multiword::inplace_binop __llvm_libc::add_with_carry __llvm_libc::sub_with_borrow

@@ -164,15 +164,32 @@ set(KVASIR_LINK_INPUTS
 # block); kvasir_chip(UF2_FAMILY): the .uf2 artefacts, none without it. Registered before the J-Link and uc_log steps,
 # which read its artefacts. The stack bound (cmake/tools/stack_bound.py) writes <target>_stack.{txt,json} with the SDK's
 # notes, the chip's (<CHIP_ROOT>/stack_bound.txt) and the firmware's (stack_notes); stack_check fails the link when a
-# bound is over its limit.
-function(_kvasir_postlink target linker_file image_crc stack_notes stack_check)
+# bound is over its limit, stack_exact also when it is a LOWER BOUND (an indirect or boot-ROM call no note covers). It
+# disassembles with an llvm-objdump (KVASIR_LLVM_OBJDUMP, found once): a gcc toolchain's CMAKE_OBJDUMP is binutils'.
+function(
+    _kvasir_postlink
+    target
+    linker_file
+    image_crc
+    stack_notes
+    stack_check
+    stack_exact)
     set(_out "${CMAKE_CURRENT_BINARY_DIR}/${target}")
     set(_args --linker-file "${linker_file}" --objcopy ${CMAKE_OBJCOPY} --objdump ${CMAKE_OBJDUMP})
     foreach(_notes IN LISTS stack_notes)
         list(APPEND _args --stack-notes "${_notes}")
     endforeach()
-    if(stack_check)
+    if(stack_check OR stack_exact)
         list(APPEND _args --stack-check)
+    endif()
+    if(stack_exact)
+        list(APPEND _args --stack-exact)
+    endif()
+    if(NOT DEFINED KVASIR_LLVM_OBJDUMP)
+        find_program(KVASIR_LLVM_OBJDUMP NAMES llvm-objdump)
+    endif()
+    if(KVASIR_LLVM_OBJDUMP)
+        list(APPEND _args --stack-objdump "${KVASIR_LLVM_OBJDUMP}")
     endif()
     if(image_crc)
         list(APPEND _args --image-crc)
@@ -221,7 +238,8 @@ endfunction()
 # define goes `target_compile_definitions(<t> PRIVATE ...)` after the call; a per-variant keyword of
 # target_configure_kvasir through VARIANT_SETTINGS, tokens `<variant>:<KEYWORD>=<value>` / `<variant>:<OPTION>=ON|OFF`
 # (kvasir_variant_arguments, cmake/kvasir_variants.cmake): `MIN_STACK_SIZE 10k STACK_BOUND_CHECK VARIANT_SETTINGS
-# sanitize:MIN_STACK_SIZE=4k sanitize:STACK_BOUND_CHECK=OFF`.
+# sanitize:MIN_STACK_SIZE=4k sanitize:STACK_BOUND_CHECK=OFF`. STACK_BOUND_EXACT: STACK_BOUND_CHECK, and a LOWER BOUND
+# fails the link too.
 #
 # COVERAGE: one more image, <base>_coverage: release_log's image with clang's source-coverage instrumentation on the
 # firmware's own translation units, the bare-metal profile runtime (lib/compiler-rt/profile.cmake) and KVASIR_COVERAGE=1
@@ -575,7 +593,8 @@ function(target_configure_kvasir target)
         endif()
         list(APPEND _stack_notes "${_notes}")
     endif()
-    _kvasir_postlink(${target} ${_linker_file} "${A_IMAGE_CRC}" "${_stack_notes}" "${A_STACK_BOUND_CHECK}")
+    _kvasir_postlink(${target} ${_linker_file} "${A_IMAGE_CRC}" "${_stack_notes}" "${A_STACK_BOUND_CHECK}"
+                     "${A_STACK_BOUND_EXACT}")
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         # gcc's LTO link writes one <elf>.ltrans<N>.ltrans.{su,ci} per partition (the stack bound's frames,
         # arm_gcc.cmake): the files of an earlier link with more partitions must not be read as this one's

@@ -175,6 +175,11 @@ namespace Detail {
     // A counter that has not moved for this long is taken as stopped (a timer whose tick is not set up).
     inline constexpr std::uint64_t stillUs = 2'000;
 
+    // The counter, read out of line: wherever a wait is inlined (announce() into a fatal end, in a debug build), the
+    // call through the pointer stays in AnnouncedReset, where the static stack bound's SDK note names its one target
+    // (cmake/tools/stack_bound_default.txt, kvasir_announced_reset_time_us).
+    [[gnu::noinline]] inline std::uint32_t readCounter(std::uint32_t (*now)()) { return now(); }
+
     // One wait: `us` by the counter while it runs, else `polls` polls. A counter that has not moved after `still`
     // polls (stillUs at the fastest clock) is taken as stopped and the polls decide.
     struct Deadline {
@@ -182,14 +187,15 @@ namespace Detail {
         std::uint32_t us;
         std::uint32_t polls;
         std::uint32_t still;
-        std::uint32_t start{now != nullptr ? now() : 0};
+        std::uint32_t start{now != nullptr ? readCounter(now) : 0};
         std::uint32_t done{};
         bool          moving{};
 
         bool expired() {
             if(now != nullptr) {
-                auto const elapsed = now() - start;   // modulo 2^32: a wrap of the counter is fine
-                moving             = moving || elapsed != 0;
+                auto const elapsed
+                  = readCounter(now) - start;   // modulo 2^32: a wrap of the counter is fine
+                moving = moving || elapsed != 0;
                 if(moving) { return elapsed >= us; }
                 if(done >= still) { now = nullptr; }   // stopped: count from here on
             }

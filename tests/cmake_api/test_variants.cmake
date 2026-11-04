@@ -107,3 +107,8 @@ kvasir_variant_arguments(_a debug "${_fwd}" "${_settings}")
 expect("settings debug" "${_a}" "STACK_BOUND_CHECK;MIN_STACK_SIZE;10k;CORE1_STACK_SIZE;32k;IMAGE_CRC")
 kvasir_variant_arguments(_a release_log "" "")
 expect("settings none" "${_a}" "")
+# STACK_BOUND_EXACT is an option like the others: a debug image whose -Og keeps an indirect call can drop it alone
+kvasir_variant_arguments(_a debug "STACK_BOUND_CHECK;STACK_BOUND_EXACT" "debug:STACK_BOUND_EXACT=OFF")
+expect("settings exact off" "${_a}" "STACK_BOUND_CHECK")
+kvasir_variant_arguments(_a release "STACK_BOUND_CHECK;STACK_BOUND_EXACT" "debug:STACK_BOUND_EXACT=OFF")
+expect("settings exact kept" "${_a}" "STACK_BOUND_CHECK;STACK_BOUND_EXACT")

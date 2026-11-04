@@ -94,13 +94,20 @@ Recovery callOnStarved(Attempt a) {
     }
 }
 
+// The onStarved of check C, when `mine` (one term of Configs::onStarvedAt's fold): a direct call, so the static stack
+// bound (cmake/tools/stack_bound.py) follows it into the check's recovery - a table of pointers it could not.
 template<typename C>
-constexpr Recovery (*onStarvedOf())(Attempt) {
+inline bool onStarvedIf(bool const    mine,
+                        Attempt const a,
+                        Recovery&     r) {
     if constexpr(Recovers<C>) {
-        return &callOnStarved<C>;
+        if(mine) { r = callOnStarved<C>(a); }
     } else {
-        return nullptr;
+        // a check without one is never asked: callTimed runs only for a check with recovery attempts
+        static_cast<void>(a);
+        static_cast<void>(r);
     }
+    return mine;
 }
 
 // the supervisor's state for the ladder; nothing (never odr-used) in an image without onStarved
@@ -294,7 +301,7 @@ struct Ladder {
     static Recovery callTimed(std::size_t const  i,
                               std::uint8_t const rung) {
         auto const     t0 = Clock::now();
-        Recovery const r  = Cfg::onStarved[i](Attempt{.n = rung, .of = Cfg::attempts[i]});
+        Recovery const r  = Cfg::onStarvedAt(i, Attempt{.n = rung, .of = Cfg::attempts[i]});
         auto const     dt = Clock::now() - t0;
         if(dt > Sup::recoveryBudget) {
             Sup::rec_.overruns = Sup::rec_.overruns + 1;

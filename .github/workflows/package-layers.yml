@@ -3,8 +3,11 @@ name: Package layers
 # Reusable: the include layering of a library repository (a core, a chip, a common package, kvasir_devices) against
 # this repository's layer table: tools/layer_check.py --repo <name>=<checkout>. Any NEW finding or STALE keep
 # entry fails (there is no allow-list: fix the finding). The table and the tool come from SDK master, so a header
-# move in the caller changes tools/layers.toml here first. Only the caller is scanned: a detail name it uses from
-# another repository is found by the workspace-wide check, not here.
+# move in the caller changes tools/layers.toml here first. The caller is scanned with its submodules (a chip's
+# rp_common or atsam_common and core, the core's cortex_common) at the commits it records, each as its own
+# repository: an include cycle or a detail name between the caller and a submodule fails here. A submodule's name is
+# its URL's last part, a [repo.*] key of the table. A detail name the caller uses from any other repository is found
+# by the workspace-wide check only.
 # The fatal-path rules (tools/check_fatal_sites.py, from SDK master too) over the caller's own sources: every fatal path
 # calls Panic::beginFatal() before its log line, only a path that ends calls it, a crit line only on a fatal path
 # (Runtime/Check.hpp's error classes are the packages' too). src/ where the caller has one, else the whole checkout (a
@@ -55,10 +58,39 @@ jobs:
                 [ -n "$name" ] || { echo "no repository name: set the repo-name input" >&2; exit 1; }
                 echo "name=$name" >> "$GITHUB_OUTPUT"
 
+            # the caller with its submodules, for the layer check alone: a copy of repo/ with each submodule fetched
+            # at the commit the copy records, into its own path (the tool resolves an include from the including
+            # file's directory, so a submodule must sit where the build finds it), nested ones too. repo/ stays as it
+            # is: the fatal-site and compat steps scan the caller's own files only.
+            - name: Submodules
+              id: subs
+              run: |
+                cp -a repo full
+                args=()
+                fetch_submodules() {
+                  local top=$1 key path url name sha
+                  [ -f "$top/.gitmodules" ] || return 0
+                  while read -r key path; do
+                    url=$(git -C "$top" config -f .gitmodules --get "${key%.path}.url")
+                    name=$(basename "$url" .git)
+                    sha=$(git -C "$top" ls-tree HEAD -- "$path" | awk '$2 == "commit" { print $3 }')
+                    [ -n "$sha" ] || { echo "$top: no commit recorded for $path" >&2; exit 1; }
+                    git init -q "$top/$path"
+                    git -C "$top/$path" fetch -q --depth 1 "$url" "$sha"
+                    git -C "$top/$path" checkout -q FETCH_HEAD
+                    echo "$name: $top/$path at $sha"
+                    args+=(--repo "$name=$top/$path")
+                    fetch_submodules "$top/$path"
+                  done < <(git -C "$top" config -f .gitmodules --get-regexp '^submodule\..*\.path$')
+                }
+                fetch_submodules full
+                echo "args=${args[*]}" >> "$GITHUB_OUTPUT"
+
             - name: Layer check
               run: >
                 python3 -B kvasir_sdk/tools/layer_check.py
-                --repo "${{ steps.name.outputs.name }}=repo"
+                --repo "${{ steps.name.outputs.name }}=full"
+                ${{ steps.subs.outputs.args }}
 
             # also after a layer finding: the two checks are independent
             - name: Fatal sites

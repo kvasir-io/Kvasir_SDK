@@ -48,7 +48,8 @@ class Postlink(unittest.TestCase):
         def names(*extra):
             args = kvasir_postlink.argparse.Namespace(elf=Path('a.elf'), linker_file='x.ld', objcopy='o', objdump='d',
                                                       image_crc=bool(extra), exclude=[], uf2_family=None,
-                                                      stack_notes=[], stack_check=False)
+                                                      stack_notes=[], stack_check=False, stack_exact=False,
+                                                      stack_objdump=None)
             return [name for (name, _step) in kvasir_postlink.steps(args, None)]
         self.assertEqual(
             names(), ['ram_funcs', 'reset_entry', 'undefined_refs', 'stack', 'images', 'lst', 'size'])

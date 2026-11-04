@@ -4,7 +4,7 @@ util.cmake (target_configure_kvasir) registers it as the image's one SDK POST_BU
 
     kvasir_postlink.py <elf> --linker-file <ld> --objcopy <tool> --objdump <tool>
                        [--image-crc [--exclude START END]...] [--uf2-family <id>] [--stack-notes <file>]...
-                       [--stack-check] [--delete-on-failure]
+                       [--stack-check] [--stack-exact] [--stack-objdump <llvm-objdump>] [--delete-on-failure]
 
 The steps, in this order (checks, then the CRC, then the artefacts, then the listing, then the size):
   ram_funcs       check_ram_funcs.py        every RAM function in RAM, nothing it reaches in flash
@@ -13,7 +13,9 @@ The steps, in this order (checks, then the CRC, then the artefacts, then the lis
   image_crc       patch_image_crc.py        with --image-crc: the descriptor written into the ELF (before every
                                             artefact, so each one carries it)
   stack           stack_bound.py            <name>_stack.{txt,json}, the static stack bound per core (silent); with
-                                            --stack-check a bound over its limit fails the link (STACK_BOUND_CHECK).
+                                            --stack-check a bound over its limit fails the link (STACK_BOUND_CHECK),
+                                            with --stack-exact a LOWER BOUND too (STACK_BOUND_EXACT); it disassembles
+                                            with --stack-objdump (an llvm-objdump; default: the one in PATH).
                                             After image_crc: the report is newer than the ELF it describes
   images          elf_image.py              <name>_flash.{bin,hex,uf2,elf}, _eeprom*, from the load view
   lst             objdump | beautify_lst.py <name>.lst (streamed: no raw listing) of every section the image loads
@@ -93,8 +95,8 @@ def steps(args, elf):
     if args.image_crc:
         yield 'image_crc', lambda: run_tool(lambda: patch_image_crc.run(elf, args.elf, [tuple(p) for p in args.exclude]))
     stack = argparse.Namespace(elf=args.elf, notes=args.stack_notes, ci=[], txt=Path(f'{prefix}_stack.txt'),
-                               json=Path(f'{prefix}_stack.json'), path=False, check=args.stack_check, quiet=True,
-                               fp=False, objdump=None)
+                               json=Path(f'{prefix}_stack.json'), path=False, check=args.stack_check,
+                               exact=args.stack_exact, quiet=True, fp=False, objdump=args.stack_objdump)
     yield 'stack', lambda: run_tool(lambda: stack_bound.run(stack, elf=elf))
     uf2 = int(args.uf2_family, 0) if args.uf2_family else None
     yield 'images', lambda: run_tool(lambda: elf_image.run(elf, args.elf, prefix, uf2, args.objcopy))
@@ -131,6 +133,8 @@ def main(argv=None):
     ap.add_argument('--uf2-family')
     ap.add_argument('--stack-notes', action='append', default=[], type=Path)
     ap.add_argument('--stack-check', action='store_true')
+    ap.add_argument('--stack-exact', action='store_true')
+    ap.add_argument('--stack-objdump')
     ap.add_argument('--delete-on-failure', action='store_true')
     args = ap.parse_args(argv)
     try:

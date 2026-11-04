@@ -105,6 +105,14 @@ namespace Kvasir { namespace Fault {
         template<typename StackTop>
         inline std::uint32_t entryRegs[entryWords];   // the indexes: FullRecordBuild.hpp
 
+        // The stack a HandlerFor<{.stackBytes = N}> runs on, per handler (so per core): its own, in .bss, so no frame
+        // of the faulting context is under the handler's pushes however deep that context had grown. The name is what
+        // the static stack bound (cmake/tools/stack_bound.py, own_stack()) looks for: its end in the handler's literal
+        // pool is the handler's SP, and the handler's path is checked against its size.
+        template<std::size_t Words,
+                 typename StackTop>
+        alignas(8) inline std::uint64_t faultStack[Words];
+
         // The clean-ups HandlerFor chooses between (Options::cleanUp): nothing, or the image's fatal start.
         struct NoCleanUp {
             void operator()() {}
@@ -121,10 +129,15 @@ namespace Kvasir { namespace Fault {
         };
     }   // namespace Detail
 
-    // A HandlerFor's choices by name: `Fault::HandlerFor<{.reserveBytes = 2048, .cleanUp = false}, Core1StackTop>`.
+    // A HandlerFor's choices by name: `Fault::HandlerFor<{.reserveBytes = 2048, .cleanUp = false}, Core1StackTop>`,
+    // `Fault::HandlerFor<{.stackBytes = 2048}>`.
     struct Options {
-        // The top of the faulting stack the handler leaves alone (a multiple of 8; below).
+        // The top of the faulting stack the handler leaves alone (a multiple of 8; below). Not used with stackBytes.
         std::size_t reserveBytes = 16384;
+        // A stack of the handler's own, this many bytes in .bss (a multiple of 8), instead of running below the
+        // reserve of the faulting stack: for an image whose stack holds more than any reserve could leave alone (an
+        // application kept in main's frame). 0: below the reserve, and the image is the same as without the field.
+        std::size_t stackBytes = 0;
         // Run the image's fatal start (Panic::FatalStartReaction, its safe state) on the fault stack after the
         // record; false: nothing besides the record.
         bool cleanUp = true;
@@ -148,6 +161,13 @@ namespace Kvasir { namespace Fault {
     // the stack (rounded down to 8 bytes), and the handler always has the lower half of it.
     // Without the cap the 16 KB default would put SP below RAM on a 16 KB part, and the first
     // push would lock the core up without a fault record.
+    //
+    // Options::stackBytes instead: the handler runs on a stack of its own (Detail::faultStack), so the faulting
+    // context's frames all survive, whatever its depth - for an image whose main path is deeper than half its
+    // stack, which no reserve can cover. Its size is the handler's path (record, clean-up, reaction: the static
+    // stack bound's fault line, cmake/tools/stack_bound.py) plus one exception frame (a fault inside a
+    // configurable-priority handler escalates to HardFault on the same SP). The boot core's handler only: the panic
+    // path tells core 1 by its SP lying in .stack1 (Panic::Detail::coreOf).
     template<Options Opts = Options{}, typename StackTop = Startup::PrimaryStackTop>
     struct HandlerFor {
         static constexpr std::size_t reserveBytes = Opts.reserveBytes;
@@ -160,11 +180,20 @@ namespace Kvasir { namespace Fault {
         static_assert(reserveBytes % 8 == 0,
                       "Fault::Options::reserveBytes must be a multiple of 8");
 
+        // a stack of its own (Options::stackBytes) rather than below the reserve
+        static constexpr bool ownStack = Opts.stackBytes != 0;
+        static_assert(Opts.stackBytes % 8 == 0,
+                      "Fault::Options::stackBytes must be a multiple of 8");
+        static_assert(!ownStack || primaryStack,
+                      "Fault::Options::stackBytes: the boot core's handler only "
+                      "(Panic::Detail::coreOf tells core 1 by "
+                      "its SP in .stack1)");
+
 #ifdef KVASIR_CORE1_STACK_BYTES
         // util.cmake's CORE1_STACK_SIZE in bytes: the default 16 KB reserve is more than any
         // core 1 stack in use (and 4x the RP2040's scratch-bank one); the run-time cap would
         // halve it, but a core 1 handler is written for its stack and should say what it wants.
-        static_assert(primaryStack || reserveBytes < KVASIR_CORE1_STACK_BYTES,
+        static_assert(primaryStack || ownStack || reserveBytes < KVASIR_CORE1_STACK_BYTES,
                       "Fault::HandlerFor on Core1StackTop: reserveBytes must be less than "
                       "CORE1_STACK_SIZE (and more than core 1's stack high-water mark)");
 #endif
@@ -392,6 +421,48 @@ namespace Kvasir { namespace Fault {
                          : "r0", "r1", "r2", "r3", "r4", "r5", "r6", "memory");
         }
 
+        // The top of the handler's own stack (Options::stackBytes): one past the end of Detail::faultStack.
+        static constexpr std::uint64_t* ownStackTop()
+            requires(ownStack)
+        {
+            return Detail::faultStack<Opts.stackBytes / 8, StackTop> + (Opts.stackBytes / 8);
+        }
+
+#if KVASIR_CORE_HAS_STACK_LIMITS
+    #define KVASIR_FAULT_CLEAR_LIMIT \
+        "movs r0, #0        \n"      \
+        "msr msplim, r0     \n"
+#else
+    #define KVASIR_FAULT_CLEAR_LIMIT ""
+#endif
+
+        // On a stack of its own (Options::stackBytes): the limits saved first, MSPLIM cleared (Armv8-M: the array is
+        // in .bss, which lies below the main stack's limit in a RAM image), then SP to the array's top. The top is
+        // added up by the assembler (`ldr r0, =stack + bytes`, as KVASIR_FAULT_SAFE_SP's `top - reserve`): a naked
+        // function has no code but its asm, yet C++ in an operand is code - ownStackTop() there made clang's -Oz
+        // sanitize build emit `bl ownStackTop` ahead of the asm, which overwrote LR (EXC_RETURN) before the entry saved
+        // it, so the record took its frame from PSP; the pointer sum made UBSan's overflow check run there.
+        [[gnu::naked]] static void onIsrOwnStack() {
+            asm volatile(KVASIR_FAULT_ASM_BEGIN KVASIR_FAULT_SAVE_ENTRY
+                           KVASIR_FAULT_PICK_FRAME KVASIR_FAULT_CLEAR_LIMIT
+                         "ldr r0, =%c[ownStack] + %c[ownBytes] \n"
+                         "mov sp, r0         \n"
+                         "mov r0, r5         \n"
+                         "mov r1, r4         \n"
+                         "bl %c[record]      \n"
+                         "ldr r6, =%c[cleanUp] \n"
+                         "blx r6             \n"
+                         "ldr r6, =%c[react] \n"
+                         "blx r6             \n"
+                         ".ltorg             \n"
+                         :
+                         : KVASIR_FAULT_OPERANDS,
+                           [ownStack] "i"(Detail::faultStack<Opts.stackBytes / 8, StackTop>),
+                           [ownBytes] "n"(Opts.stackBytes)
+                         : "r0", "r1", "r2", "r3", "r4", "r5", "r6", "memory");
+        }
+
+#undef KVASIR_FAULT_CLEAR_LIMIT
 #undef KVASIR_FAULT_OPERANDS
 #undef KVASIR_FAULT_PICK_FRAME
 #undef KVASIR_FAULT_SAVE_ENTRY
@@ -400,7 +471,9 @@ namespace Kvasir { namespace Fault {
 #undef KVASIR_FAULT_ASM_BEGIN
 
         static constexpr auto getIsrFunc() {
-            if constexpr(primaryStack || !hasStackLimit) {
+            if constexpr(ownStack) {
+                return std::addressof(onIsrOwnStack);
+            } else if constexpr(primaryStack || !hasStackLimit) {
                 return std::addressof(onIsr);
             } else {
                 return std::addressof(onIsrSecondary);

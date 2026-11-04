@@ -5,7 +5,7 @@
 # own those two) - and so every keyword kvasir_executable_variants forwards to it. Both functions parse this one table:
 # forwarding "${ARGN} minus the wrapper's own keywords" instead lets a multi-value keyword (SOURCES, LIBRARIES) swallow
 # every word up to the next keyword its parser knows, so `LIBRARIES l MIN_STACK_SIZE 8k` would link -lMIN_STACK_SIZE.
-set(KVASIR_CONFIGURE_OPTIONS RAM_ONLY SCRATCH_BANKS IMAGE_CRC STACK_BOUND_CHECK)
+set(KVASIR_CONFIGURE_OPTIONS RAM_ONLY SCRATCH_BANKS IMAGE_CRC STACK_BOUND_CHECK STACK_BOUND_EXACT)
 set(KVASIR_CONFIGURE_ONE_VALUE
     MIN_STACK_SIZE
     CORE1_STACK_SIZE
