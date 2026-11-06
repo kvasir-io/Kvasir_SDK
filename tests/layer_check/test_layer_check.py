@@ -10,7 +10,8 @@ a finding for another macro or another shape), a file-level include cycle (a.hpp
 entry. A copy in a temporary directory adds the cases that need extra files or another table (a nested checkout, a
 glob that matches no file, an unknown table, malformed entries, check (d) mmio: one hit per rule, shapes it must not
 match, an exemption, a stale keep, a keep's count; check (e): a cycle through a layer spelling, a kept and a stale
-cycle; the overlay's `[default_repo]` taken from a list file).
+cycle; the overlay's `[default_repo]` taken from a list file; a `*` inside braces, and the hint for a file
+the table may not name yet).
 No clock, no network.
 """
 
@@ -324,6 +325,33 @@ class LayerCheck(unittest.TestCase):
             rc, _, err = run("--overlay", str(overlay), root=root)
             self.assertEqual(rc, 2)
             self.assertIn("default_repo.require: unknown key", err)
+
+    def test_brace_wildcard_and_hint(self):
+        # a `*` inside braces is a glob (OldQueued.hpp is "high" by name); a file the glob misses (NewMaster.hpp)
+        # with a NEW upward include gets a hint naming that glob; a kept upward include (c.hpp) gets none
+        rc, data, err = run()
+        self.assertEqual(data["hints"], [], err)
+        named = '[repo.lib_low]\npaths = { "src/low/{*Queued,Bus}.hpp" = "high", "src/**" = "low" }\n'
+        with Copy(lambda s: s.replace('[repo.lib_low]\npaths = { "src/**" = "low" }\n', named)) as root:
+            low = root / "lib_low" / "src" / "low"
+            for name in ("OldQueued", "NewMaster"):
+                (low / f"{name}.hpp").write_text('#pragma once\n#include "high/b.hpp"\n')
+            rc, data, err = run(root=root)
+            self.assertEqual(rc, 1, err)
+            new = keys(data, "new")
+            self.assertNotIn(
+                ("include", "lib_low/src/low/OldQueued.hpp -> high/b.hpp"), new)
+            self.assertIn(
+                ("include", "lib_low/src/low/NewMaster.hpp -> high/b.hpp"), new)
+            to = [{"glob": "src/low/{*Queued,Bus}.hpp", "layer": "high"}]
+            self.assertEqual(data["hints"], [
+                {"file": f"lib_low/src/low/{n}.hpp", "repo": "lib_low",
+                    "layer": "low", "glob": "src/**", "to": to}
+                for n in ("NewMaster", "a")])
+            text = subprocess.run([sys.executable, "-B", str(TOOL), "--table", str(root / "layers.toml"),
+                                   "--root", str(root)], capture_output=True, text=True).stdout
+            self.assertIn('  hint: lib_low/src/low/NewMaster.hpp is "low" by "src/**" of [repo.lib_low.paths], '
+                          'which also has "src/low/{*Queued,Bus}.hpp" = "high"', text)
 
     def test_sdk_table_loads(self):
         # the real table parses, has only tables the tool knows, and every layer and spelling it names exists (nothing

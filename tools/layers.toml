@@ -124,14 +124,14 @@ paths = { "src/core/**" = "core" }
 [repo.chip_rp_common]
 exclude = ["tests/**"]
 [repo.chip_rp_common.paths]
-"{I2CQueued,SPIQueued,usb}.hpp" = "chip_drivers"
+"{*Queued,usb}.hpp" = "chip_drivers"   # every *Queued.hpp is a queued master: a new one needs no entry
 "usb/**" = "chip_drivers"
 "**" = "chip"
 
 [repo.chip_atsam_common]
 exclude = ["tests/**"]
 [repo.chip_atsam_common.paths]
-"{Sercom_I2CQueued,Sercom_SPIQueued,SamPushButton,SamRotaryEncoder,SamQuadratureEncoder}.hpp" = "chip_drivers"
+"{Sercom_*Queued,SamPushButton,SamRotaryEncoder,SamQuadratureEncoder}.hpp" = "chip_drivers"
 "usb/**" = "chip_drivers"
 "**" = "chip"
 

@@ -62,6 +62,8 @@ entry).
 
 A NEW finding is fixed - the include goes down, the name becomes public, the switch comes from the build - not
 listed. A header that moves, or a new layer edge, changes the table in the same change.
+Under NEW, a hint names each file with a NEW upward include whose repository maps other path globs to the target's
+layer: the file may be one the table does not name yet (a new driver) rather than its include wrong.
 """
 
 from __future__ import annotations
@@ -96,7 +98,12 @@ class TableError(Exception):
 # --- globs ------------------------------------------------------------------
 
 def glob_regex(pattern: str) -> re.Pattern:
-    """`**` any path (also empty, `**/` zero or more directories), `*` and `?` within one path part, `{a,b}`."""
+    """`**` any path (also empty, `**/` zero or more directories), `*` and `?` within one path part, `{a,b}` (each
+    alternative a glob itself: `{*Queued,usb}`; no nested braces)."""
+    return re.compile(glob_body(pattern) + r"\Z")
+
+
+def glob_body(pattern: str) -> str:
     out, i = [], 0
     while i < len(pattern):
         c = pattern[i]
@@ -114,13 +121,13 @@ def glob_regex(pattern: str) -> re.Pattern:
             i += 1
         elif c == "{":
             j = pattern.index("}", i)
-            out.append("(?:" + "|".join(re.escape(p)
+            out.append("(?:" + "|".join(glob_body(p)
                        for p in pattern[i + 1:j].split(",")) + ")")
             i = j + 1
         else:
             out.append(re.escape(c))
             i += 1
-    return re.compile("".join(out) + r"\Z")
+    return "".join(out)
 
 
 # --- source text --------------------------------------------------------------
@@ -320,16 +327,22 @@ class Repo:
     parent: str | None = None
     subdir: str | None = None
     root: Path | None = None
-    # repo-relative path -> layer
+    # repo-relative path -> layer, and the path glob that gave it
     files: dict[str, str] = field(default_factory=dict)
+    globs: dict[str, str] = field(default_factory=dict)
 
-    def layer_of(self, relpath: str) -> str | None:
+    def classify(self, relpath: str) -> tuple[str, str] | None:
+        """(glob, layer) of the first path glob that matches, None when excluded or unmatched."""
         if any(p.match(relpath) for p in self.exclude):
             return None
-        for _, rx, layer in self.paths:
+        for glob, rx, layer in self.paths:
             if rx.match(relpath):
-                return layer
+                return glob, layer
         return None
+
+    def layer_of(self, relpath: str) -> str | None:
+        c = self.classify(relpath)
+        return c[1] if c else None
 
 
 def entries_of(data: dict) -> tuple[dict[str, dict[str, str]], dict[str, int]]:
@@ -619,18 +632,22 @@ class Checker:
             return None if src.log_adapter else f"{src.name} -> log adapter"
         if tgt.kind == "log":
             return None if src.log else f"{src.name} (log = false) -> log"
-        if tgt.rank > src.rank:
+        if self.upward_layer(src, tgt):
             return f"{src.name} -> {tgt.name} (upward)"
         return None
+
+    @staticmethod
+    def upward_layer(src: Layer, tgt: Layer) -> bool:
+        return src.rank is not None and tgt.rank is not None and tgt.rank > src.rank
 
     def run(self) -> dict:
         found = [r for r in self.repos.values() if r.root is not None]
         roots = {os.path.realpath(r.root) for r in found}
         for r in found:
             for f in walk_cache(r, roots, self.skip_dirs):
-                layer = r.layer_of(f)
-                if layer:
-                    r.files[f] = layer
+                c = r.classify(f)
+                if c:
+                    r.globs[f], r.files[f] = c
             for glob, rx, _ in r.paths:
                 if not any(rx.match(f) for f in walk_cache(r, roots, self.skip_dirs)):
                     self.errors.append(
@@ -646,6 +663,8 @@ class Checker:
         file_edges: dict[tuple[str, str], str] = {}
 
         findings: list[Finding] = []
+        # (repo, file) -> include key -> the target layer, for each upward include (the hints below)
+        upward_to: dict[tuple[str, str], dict[str, str]] = defaultdict(dict)
         matrix: dict[tuple[str, str], int] = defaultdict(int)
         decls: dict[str, list[tuple[tuple[str, ...], str]]] = defaultdict(list)
         uses = []
@@ -680,6 +699,8 @@ class Checker:
                         inc_hits[key].append(
                             f"{r.name}/{f}:{line_of(code, m.start())}")
                         inc_why[key] = why
+                        if self.upward_layer(src, self.layers[tlayer]):
+                            upward_to[(r.name, f)][key] = tlayer
                 findings += [Finding("include", k, v, inc_why[k], r.name, f)
                              for k, v in inc_hits.items()]
                 if not src.has_include:
@@ -777,6 +798,8 @@ class Checker:
                 if applies:
                     result["stale"].append(
                         {"check": check, "key": key, "reason": reason})
+        result["hints"] = self.hints(
+            upward_to, {e["key"] for e in result["new"] if e["check"] == "include"})
         result["matrix"] = [{"from": a, "to": b, "count": n, "upward": self.upward(a, b)}
                             for (a, b), n in sorted(matrix.items())]
         # cycles between layers (a target named only by its spelling, "chip/...", names no repository): every pair
@@ -789,6 +812,20 @@ class Checker:
         result["scanned"] = {r.name: len(r.files) for r in found}
         result["errors"] = self.errors
         return result
+
+    def hints(self, upward_to: dict[tuple[str, str], dict[str, str]], new: set[str]) -> list[dict]:
+        """A file with a NEW upward include whose own repository maps other path globs to that target layer: the
+        file may be one of those (a new driver the table does not name yet) rather than the include wrong."""
+        out = []
+        for (repo, f), targets in sorted(upward_to.items()):
+            reached = {layer for key, layer in targets.items() if key in new}
+            r = self.repos[repo]
+            to = [{"glob": g, "layer": l}
+                  for g, _, l in r.paths if l in reached and g != r.globs[f]]
+            if to:
+                out.append({"file": f"{repo}/{f}", "repo": repo, "layer": r.files[f], "glob": r.globs[f],
+                            "to": to})
+        return out
 
     def guarded(self, code: str, m: re.Match) -> bool:
         """`#if defined(MACRO) && __has_include(H)` (or #elif) with MACRO in rules.guarded_has_include."""
@@ -894,6 +931,12 @@ def print_report(res: dict, report: bool, quiet: bool) -> None:
             if "reason" in e and label != "new":
                 line += f"\n      reason: {e['reason']}"
             print(line)
+        if label == "new":
+            for h in res["hints"]:
+                to = ", ".join(
+                    f'"{t["glob"]}" = "{t["layer"]}"' for t in h["to"])
+                print(f'  hint: {h["file"]} is "{h["layer"]}" by "{h["glob"]}" of [repo.{h["repo"]}.paths], which '
+                      f"also has {to}: if the file belongs there, name it in one of those globs; if not, its include goes down")
         if not res[label]:
             print("  -")
     for err in res["errors"]:
