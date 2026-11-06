@@ -9,6 +9,7 @@ CASE 11 and 12 include core_cortex_common's InterruptMask.hpp / Delay.hpp: the d
 the sibling checkout or a fetched one), else the sibling ../core_cortex_common, else that case is skipped.
 """
 
+import struct
 import subprocess
 import sys
 import tempfile
@@ -19,7 +20,9 @@ HERE = Path(__file__).resolve().parent
 SDK = HERE.parent.parent
 CHECK = SDK / 'cmake' / 'tools' / 'check_ram_funcs.py'
 sys.path.insert(0, str(SDK / 'tests' / 'tooling'))
+sys.path.insert(0, str(SDK / 'cmake' / 'tools'))
 import armtc  # noqa: E402  the toolchain table, and when a missing tool is a skip or a failure
+from kvasir_elf import Elf  # noqa: E402  the check's own ELF reader
 
 
 def take_core_common():
@@ -175,6 +178,24 @@ class CheckRamFuncs(unittest.TestCase):
     def test_no_inline_mode_shows_std_array_call(self):
         self.each(lambda tc: self.expect_fail(tc, 9, 'stdArrayIndex(int)', 'reaches flash', 'operator[]',
                                               extra=self.no_inline(tc)))
+
+    # a RAM function the compiler kept (used) and the linker dropped, its mark after the prologue: the mark resolves to
+    # the tombstone plus its offset, an address in no section - a dropped function, not a problem. clang shows it; gcc's
+    # LTO keeps the function, and the image passes there as it is.
+    def test_dropped_function_mark_after_prologue(self):
+        def run(toolchain):
+            elf = self.build(toolchain, 13)
+            if toolchain == 'clang':
+                image = Elf.from_path(elf)
+                sec = image.section('kvasir_ram_funcs')
+                body = image.data[sec['offset']:sec['offset'] + sec['size']]
+                stray = [a for (a,) in struct.iter_unpack('<I', body)
+                         if a not in (0, 0xFFFFFFFF) and image.alloc_section_at(a) is None]
+                self.assertTrue(
+                    stray, 'no mark of a dropped function in no section: the case shows nothing')
+            rc, err = self.check(elf)
+            self.assertEqual(rc, 0, err)
+        self.each(run)
 
     # the check reads the source list with llvm-dwarfdump and only notes its absence
     def test_unmarked_ram_function(self):

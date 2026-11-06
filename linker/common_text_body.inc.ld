@@ -6,6 +6,9 @@ FILL(0xFFDEFFDE); /* ARM "udf #255" instruction - triggers HardFault if PC goes 
 _LINKER_INTERN_core1_vectors_start_ = .;
 KEEP(*(.core1_vectors*))
 _LINKER_INTERN_core1_vectors_end_ = .;
+/* Hot functions in flash (KVASIR_HOT_FUNC with HOT_FUNCS flash): together, ahead of the rest of the code. With
+   HOT_FUNCS ram they are .hotfunc instead (common_data_body.inc.ld); with off, plain .text. */
+*(SORT_BY_ALIGNMENT(.text.hotfunc))
 *(SORT_BY_ALIGNMENT(.text*))
 /* libc++'s replaceable operator new/delete; it checks the bounds symbols (overridable_function.h) */
 __start___lcxx_override = .;

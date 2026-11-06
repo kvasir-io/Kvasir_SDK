@@ -45,6 +45,7 @@
  * ├─────────────────────────────────────┤ _LINKER_INTERN_stack_end_
  * │ .data (initialized globals)         │ <- LMA=flash, VMA=RAM, copied at startup
  * │  - .ramfunc* (RAM functions)        │
+ * │  - .hotfunc* (HOT_FUNCS ram)        │
  * ├─────────────────────────────────────┤ _LINKER_INTERN_bss_start_
  * │ .bss (zero-initialized globals)     │ <- Cleared at startup
  * ├─────────────────────────────────────┤ _LINKER_INTERN_noInit_start_
@@ -81,6 +82,7 @@
  * │  - .rodata* (const data)            │
  * │  - .init_array (C++ constructors)   │
  * │  - .ramfunc* (RAM functions)        │
+ * │  - .hotfunc* (HOT_FUNCS ram)        │
  * ├─────────────────────────────────────┤ _LINKER_INTERN_data_start_
  * │ .data (initialized globals)         │ <- No AT(), already in RAM!
  * ├─────────────────────────────────────┤ _LINKER_INTERN_bss_start_

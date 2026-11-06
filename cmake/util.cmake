@@ -507,6 +507,23 @@ function(target_configure_kvasir target)
         target_compile_definitions(${target} PUBLIC KVASIR_CORE_SCRATCH=1)
     endif()
 
+    # HOT_FUNCS: where the KVASIR_HOT_FUNC functions go (Util/attributes.hpp). `off` is the default: the attribute is
+    # empty and the image unchanged. `flash` groups them at the start of .text; `ram` copies them from flash with .data
+    # at boot. clang only: with gcc the attribute stays empty whatever is asked.
+    if(A_HOT_FUNCS AND NOT A_HOT_FUNCS STREQUAL "off")
+        if(NOT A_HOT_FUNCS MATCHES "^(flash|ram)$")
+            message(FATAL_ERROR "${target}: HOT_FUNCS ${A_HOT_FUNCS}: off, flash or ram")
+        endif()
+        if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+            message(STATUS "${target}: HOT_FUNCS ${A_HOT_FUNCS} does nothing with ${CMAKE_CXX_COMPILER_ID} "
+                           "(KVASIR_HOT_FUNC is empty there)")
+        elseif(A_HOT_FUNCS STREQUAL "ram")
+            target_compile_definitions(${target} PUBLIC KVASIR_HOT_FUNCS_RAM=1)
+        else()
+            target_compile_definitions(${target} PUBLIC KVASIR_HOT_FUNCS_FLASH=1)
+        endif()
+    endif()
+
     if(NOT A_HEAP_SIZE)
         set(A_HEAP_SIZE 0k)
     endif()

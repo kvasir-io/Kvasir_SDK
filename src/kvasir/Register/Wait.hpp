@@ -47,7 +47,13 @@ struct WaitResult {
     std::uint32_t polls{};   // reads it took (0 under Unbounded)
     bool          timedOut{};
 
-    [[nodiscard]] constexpr explicit operator bool() const { return !timedOut; }
+    // always_inline: RAM functions convert it too (a chip's watchdog reset path, reached from code that runs while the
+    // flash is not readable), and gcc left it out of line in a sanitize build - a call into flash (check_ram_funcs).
+    [[nodiscard,
+      gnu::always_inline]] constexpr explicit
+    operator bool() const {
+        return !timedOut;
+    }
 };
 
 // ---- conditions ----

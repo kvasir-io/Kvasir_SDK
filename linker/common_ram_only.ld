@@ -22,6 +22,8 @@ SECTIONS {
            covered by an IMAGE_CRC check of the running image. */
         . = ALIGN(4);
         *(SORT_BY_ALIGNMENT(.ramfunc*))
+        /* hot functions (KVASIR_HOT_FUNC with HOT_FUNCS ram): in RAM already, with the code for the same reason */
+        *(SORT_BY_ALIGNMENT(.hotfunc*))
         /* the code's MPU region ends here: .data must not share its last 32 bytes */
         . = ALIGN(32);
         _LINKER_INTERN_text_end_ = .;

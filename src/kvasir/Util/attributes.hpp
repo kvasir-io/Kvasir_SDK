@@ -133,6 +133,28 @@
     #define KVASIR_CORE1_CODE
 #endif
 
+// A function on a hot path (the per-frame or per-pass code of a driver or a protocol stack) whose speed depends on where
+// it runs: from the RP2350's flash, a loop larger than the XIP cache waits on the flash for most of its fetches. The
+// image's HOT_FUNCS option (target_configure_kvasir) places these functions:
+//   off    the default: the attribute is empty and the image is the same as without it;
+//   flash  grouped at the start of .text (input section .text.hotfunc), so that they evict each other from the XIP
+//          cache rather than whatever the link order put beside them;
+//   ram    copied from flash with .data at boot (input section .hotfunc, linker/common_data_body.inc.ld), running from
+//          RAM at the cost of their size in RAM.
+//   [[KVASIR_HOT_FUNC]] void onFrame(std::span<std::byte> frame);
+// A speed placement like KVASIR_COREn_CODE, not a RAM function. It may call flash: a call between RAM and flash is out
+// of BL range and goes through a linker thunk. It keeps its sanitizer checks, and check_ram_funcs.py does not check it.
+// Inlined into a caller, the code runs wherever the caller runs. clang only: gcc rejects a section attribute on an
+// inline or template function, and its LTO drops one on a member unless it is noipa, which would stop inlining. With gcc
+// the attribute is empty, whatever HOT_FUNCS says.
+#if defined(__clang__) && defined(KVASIR_HOT_FUNCS_RAM)
+    #define KVASIR_HOT_FUNC gnu::section(".hotfunc")
+#elif defined(__clang__) && defined(KVASIR_HOT_FUNCS_FLASH)
+    #define KVASIR_HOT_FUNC gnu::section(".text.hotfunc")
+#else
+    #define KVASIR_HOT_FUNC
+#endif
+
 // The first statement of every KVASIR_RAM_FUNC_ATTRIBUTES function. It costs no instruction: a label
 // whose address goes into the non-loaded section kvasir_ram_funcs (linker/common.ld). The label
 // travels with the code, so it names where the compiler really put the function, and the post-link

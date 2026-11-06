@@ -227,8 +227,11 @@ def marks(elf, section):
     if sec is None:
         return []
     body = elf.data[sec['offset']:sec['offset'] + sec['size']]
-    # 0 / all ones: the linker's tombstone for a mark whose function was garbage-collected
-    return [a for (a,) in struct.iter_unpack('<I', body[:len(body) // 4 * 4]) if a not in (0, 0xFFFFFFFF)]
+    # A mark whose function was garbage-collected resolves to the linker's tombstone (0 or all ones) plus the mark's
+    # offset in the function - not 0 once the compiler put code before the mark (a prologue). A kept function lies in
+    # an allocated section, so a mark in none is a dropped one.
+    return [a for (a,) in struct.iter_unpack('<I', body[:len(body) // 4 * 4])
+            if a not in (0, 0xFFFFFFFF) and elf.alloc_section_at(a) is not None]
 
 
 def check(elf, all_ram_functions, name):

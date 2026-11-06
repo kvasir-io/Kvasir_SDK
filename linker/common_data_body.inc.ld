@@ -5,6 +5,9 @@ _LINKER_INTERN_data_start_ = .;
 *(SORT_BY_ALIGNMENT(.data*))
 /* RAM functions (KVASIR_RAM_FUNC_ATTRIBUTES), copied from flash with .data; a RAM-only image puts them in .text */
 *(SORT_BY_ALIGNMENT(.ramfunc*))
+/* Hot functions run from RAM (KVASIR_HOT_FUNC with HOT_FUNCS ram): copied from flash with .data, like the RAM functions
+   above, and executable for the same reason (chip Mpu.hpp). A RAM-only image puts them in .text. */
+*(SORT_BY_ALIGNMENT(.hotfunc*))
 /* Source-coverage counters (the `coverage` variant, -fprofile-instr-generate): initial values from flash like any
    .data. Empty in every other image: no bytes, no padding (no ALIGN here, the input sections carry theirs). */
 __start___llvm_prf_cnts = .;

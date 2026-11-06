@@ -217,6 +217,19 @@ struct RegB {
     #include "unmarked.hpp"   // a file of its own: the source check reads text, not #if
 #endif
 
+#if CASE == 13
+// Kept by the compiler (used), dropped by the linker's garbage collection (nothing refers to it): a COMDAT RAM function
+// whose mark comes after its prologue (it calls, so it saves lr first). The mark's relocation then resolves to the
+// linker's tombstone plus the mark's offset in the function - an address in no section, which is no problem.
+[[noreturn,
+  KVASIR_RAM_FUNC_ATTRIBUTES,
+  gnu::used]] inline void
+droppedAfterPrologue() {
+    KVASIR_RAM_FUNC_MARK();
+    while(true) { caller(sink); }
+}
+#endif
+
 extern "C" [[gnu::section(".text.main")]] void entry() {
     Member::run(sink);
     templated<2>(sink);
