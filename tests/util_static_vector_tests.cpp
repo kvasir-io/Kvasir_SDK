@@ -889,6 +889,41 @@ static_assert([] {
     return v.try_push_back(3) == nullptr && v.size() == 2;
 }());
 
+// ---------------------------------------------------------------------------
+// a static of a non-trivial StaticVector is constinit: the storage's default constructor zeroes its raw bytes in a
+// constant evaluation (an indeterminate byte is no constant initializer). All default-initialized, the spelling
+// neither gcc nor clang accepted before; a value-initialized `x{}` clang took because it zeroes first.
+struct ConstinitHolder {
+    int                      port = 1;   // a non-zero member beside the vector
+    StaticVector<Tracked, 4> v;
+};
+
+constinit StaticVector<Tracked, 4> constinitTracked;
+// the element type StaticMap stores
+constinit StaticVector<std::pair<int, short>, 4> constinitPairs;
+constinit ConstinitHolder                        constinitHolder;
+
+// ... and at run time each is an ordinary empty vector
+void constinitStatics(char const* name) {
+    Kvasir::Test::test(name);
+
+    CHECK(constinitTracked.empty());
+    CHECK(constinitPairs.empty());
+    CHECK(constinitHolder.v.empty());
+    CHECK_EQ(constinitHolder.port, 1);
+
+    constinitTracked.emplace_back(3);
+    constinitHolder.v.push_back(Tracked{4});
+    constinitPairs.emplace_back(5, short{6});
+    CHECK(contents(constinitTracked) == std::vector<int>{3});
+    CHECK(contents(constinitHolder.v) == std::vector<int>{4});
+    CHECK(constinitPairs.size() == 1 && constinitPairs[0] == std::pair<int, short>{5, short{6}});
+
+    // the statics outlive the scenario: emptied, so noLeaks sees every Tracked destroyed
+    constinitTracked.clear();
+    constinitHolder.v.clear();
+}
+
 }   // namespace
 
 int main() {
@@ -926,6 +961,7 @@ int main() {
     noLeaks("constructorsAndAssign<Tracked>", &constructorsAndAssign<Tracked>);
     noLeaks("comparisons<Tracked>", &comparisons<Tracked>);
     noLeaks("fillToCapacity<Tracked>", &fillToCapacity<Tracked>);
+    noLeaks("constinitStatics", &constinitStatics);
 
     byteResize();
     resizeAndOverwrite();

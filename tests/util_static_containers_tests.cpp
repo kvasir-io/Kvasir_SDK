@@ -275,7 +275,18 @@ static_assert(!HasMappedType<StaticSet<int,
 // nor trivially default constructible, so StaticVector selects the non_trivial storage backend -- and that
 // backend manages lifetimes with placement new and explicit destructor calls, neither of
 // which is allowed during constant evaluation. StaticSet<int, N> stores plain ints and so
-// does stay constexpr usable (see below).
+// does stay constexpr usable (see below). Its construction is a constant, though: a static
+// StaticMap can be constinit (the storage zeroes its raw bytes in a constant evaluation).
+constinit StaticMap<int, int, 4> constinitMap;
+
+void mapConstinit() {
+    Kvasir::Test::test("mapConstinit");
+
+    CHECK(constinitMap.empty());
+    constinitMap.insert({7, 70});
+    CHECK(constinitMap.at(7) == 70);
+    CHECK_EQ(constinitMap.size(), 1U);
+}
 
 void mapInsertAndLookup() {
     Kvasir::Test::test("mapInsertAndLookup");
@@ -622,6 +633,7 @@ int main() {
     mapErase();
     mapConstructionAndEquality();
     mapWithNonTrivialKey();
+    mapConstinit();
 
     setInsertAndLookup();
     setErase();

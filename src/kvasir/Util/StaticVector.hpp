@@ -224,9 +224,15 @@ namespace sv_detail {
 
             // the storage is raw, so the special members cannot be defaulted: each has to
             // construct or destroy exactly [0, size()). The default constructor is user
-            // provided so that `non_trivial const x;` stays well-formed.
-            // NOLINTNEXTLINE(modernize-use-equals-default) // user provided on purpose: see above
-            constexpr Managed() noexcept {}
+            // provided so that `non_trivial const x;` stays well-formed. In a constant
+            // evaluation it zeroes the raw bytes, which nothing reads: no byte of a constant
+            // initializer may stay indeterminate, so without it no static holding a
+            // StaticVector of a non-trivial T is `constinit` - gcc refuses every one, clang
+            // all but a value-initialized holder (`Holder h{};` with a defaulted default
+            // constructor: zeroed first). At run time it does nothing.
+            constexpr Managed() noexcept {
+                if consteval { std::ranges::fill(data_, std::byte{}); }
+            }
 
             /// A T that is only "non-trivial" because of its assignment operators -- std::pair,
             /// what every StaticMap stores -- still copies as bytes: an implicit-lifetime type,
