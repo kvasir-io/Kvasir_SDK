@@ -40,6 +40,14 @@
 //                                                                        stores, STM32 ODR toggle); the chip names its
 //                                                                        header in KVASIR_CHIP_REGISTER_SEAM, which
 //                                                                        Exec.hpp includes at its end
+//   Register::SharedState            Register/Exec.hpp; 0 (every         `static constexpr unsigned value`: the state an
+//                                    register a state of its own)        Address writes with others, the lowest address
+//                                                                        that writes it (SAM PORT OUT via
+//                                                                        OUTCLR/OUTSET/OUTTGL, RP SIO GPIO_OUT via
+//                                                                        _SET/_CLR/_XOR); apply() refuses two of
+//                                                                        them on one bit in one step; optional `static
+//                                                                        consteval void describe(Text&, unsigned mask)`;
+//                                                                        in the KVASIR_CHIP_REGISTER_SEAM header
 //   Hal::BlockGates                  Hal/Block.hpp; declared only (no    `using type = Hal::BlockTable<rows...>` (the
 //                                    gate check)                         chip's chip/Blocks.hpp)
 //   Startup::Diagnostics::           StartUp/InterruptNames.hpp; no      `static consteval std::string_view of(int)`

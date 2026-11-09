@@ -15,10 +15,11 @@ from pathlib import Path
 
 from cxx_names import display_name  # noqa: E402
 from uc_log_client import (LEVELS, READ_PIECES, Connection, ControlError, history, log_line_text, message_kind,  # noqa: E402
-                           metric_key, read_bytes, req_flash, req_go, req_halt, req_messages, req_raise_panic, req_read,
-                           req_read_words, req_registers, req_reset, req_subscribe, req_wait, req_write, request, words)
+                           metric_key, metric_sample_text, metric_text, read_bytes, req_flash, req_go, req_halt,
+                           req_messages, req_raise_panic, req_read, req_read_words, req_registers, req_reset,
+                           req_subscribe, req_unit, req_wait, req_write, request, words)
 
-from . import die, gdb_stub, printer, profiling, records, refuse, trees
+from . import die, gdb_stub, note, printer, profiling, records, refuse, trees
 from .coverage_data import assemble_profraw, image_reader
 from .image import addr2line
 from .session import Session, arg, command
@@ -341,29 +342,74 @@ def messages(s: Session, args) -> None:
     print("\n".join(lines) if lines else "no status messages")
 
 
+def sent_number(value: float) -> str:
+    """A number as the firmware sent it: an integer whole (2.12e+10 hides digits), anything else to 15 digits."""
+    if value == int(value) and abs(value) < 2 ** 53:
+        return str(int(value))
+    return f"{value:.15g}"
+
+
+UNTIL_OPS = {"==": lambda a, b: a == b, "!=": lambda a, b: a != b, "<": lambda a, b: a < b,
+             ">": lambda a, b: a > b, "<=": lambda a, b: a <= b, ">=": lambda a, b: a >= b}
+
+
+class Until(typing.NamedTuple):
+    """--until 'NAME OP NUMBER [UNIT]'; `unit` None: the number is in the unit the metric is shown in."""
+    name: str
+    op: str
+    number: float
+    unit: str | None
+
+    @staticmethod
+    def parse(text: str) -> "Until":
+        m = re.fullmatch(r"\s*(\S+?)\s*(==|!=|<=|>=|<|>)\s*(-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\s*(.*?)\s*",
+                         text)
+        if not m:
+            die(
+                "--until takes 'NAME OP NUMBER [UNIT]', e.g. 'position >= 50' or 'tip >= 300 °C'")
+        return Until(m.group(1), m.group(2), float(m.group(3)), m.group(4) or None)
+
+    def threshold(self, ask, sample: dict) -> float:
+        """The number in the unit `sample` is shown in: given in another unit of the same quantity, converted by the
+        printer's reading of both (its `unit` request); in none, as it is - and said."""
+        shown = sample["display_unit"]
+        key = metric_key(sample)
+        sent = f", sent in {sample['unit']}" if sample["unit"] != shown else ""
+        if self.unit is None:
+            note(
+                f"--until: {key} compared in {shown or 'a plain number'}, the unit it is shown in{sent}")
+            return self.number
+        given, own = ask(req_unit(self.unit)), ask(req_unit(shown))
+        if given["base"] != own["base"]:
+            die(f"--until: {self.unit!r} is no unit of {key} (shown in {shown or 'a plain number'}{sent}): "
+                f"{given['base'] or 'a plain number'} against {own['base'] or 'a plain number'}")
+        number = self.number * given["to_base"] / own["to_base"]
+        if given["display"] != shown or number != self.number:
+            note(
+                f"--until: {self.number:g} {self.unit} is {number:g} {shown}, the unit {key} is shown in{sent}")
+        return number
+
+
 @command("metrics", args=[arg("--seconds", type=float, default=3, help="how long to listen (the timeout of --until)"),
                           arg("--name", help="regex on scope::name"),
                           arg("--raw", action="store_true",
-                              help="every sample, not the summary"),
-                          arg("--until", help="'NAME OP NUMBER': stop when a sample satisfies it")])
+                              help="every sample as sent, not the summary"),
+                          arg("--until", help="'NAME OP NUMBER [UNIT]': stop when a sample satisfies it; without a "
+                              "unit the number is in the unit the metric is shown in")])
 def metrics(s: Session, args) -> None:
-    """What the firmware logs through uc_log::metric<"name"_sc, "unit"_sc, "scope"_sc>(value):
-    the printer takes every such value out of the log and streams it to the subscribers of its
-    control socket's metrics stream, one {"cmd":"metric","name":..,"scope":..,"unit":..,
-    "time":<uc seconds>,"value":..} a sample - numbers on the target's clock, no text to parse."""
+    """What the firmware logs through uc_log::metric<"name"_sc, "unit"_sc, "scope"_sc>(value) or an mp-units
+    quantity's metric<"name"_sc, "scope"_sc>(q): the printer takes every such value out of the log and streams it to
+    the subscribers of its control socket's metrics stream, one {"cmd":"metric","name":..,"scope":..,"unit":..,
+    "time":<uc seconds>,"value":..,"display_value":..,"display_unit":..,"decimals":..} a sample - the number as sent
+    and in the unit it is shown in (31250 c℃ as 312.50 °C, 160000 mA s as 160.000 A·s), on the target's clock. The
+    summary and --until are in the shown unit; --raw prints the samples as sent."""
     control = s.control
     wanted = re.compile(args.name) if args.name else None
-    until = None
-    if args.until:
-        m = re.fullmatch(
-            r"\s*(\S+)\s*(==|!=|<=|>=|<|>)\s*(-?[\d.eE+-]+)\s*", args.until)
-        if not m:
-            die("--until takes 'NAME OP NUMBER', e.g. 'position >= 50'")
-        ops = {"==": lambda a, b: a == b, "!=": lambda a, b: a != b, "<": lambda a, b: a < b,
-               ">": lambda a, b: a > b, "<=": lambda a, b: a <= b, ">=": lambda a, b: a >= b}
-        until = (m.group(1), ops[m.group(2)], float(m.group(3)))
-    seen: dict[str, list[tuple[float, float]]] = {}
-    units: dict[str, str] = {}
+    until = Until.parse(args.until) if args.until else None
+    threshold: float | None = None
+    seen: dict[str, list[tuple[float, float]]] = {}   # shown values
+    # shown unit, the most decimals a sample needed, the unit sent
+    units: dict[str, tuple[str, int, str]] = {}
     with Connection(control, 2) as stream:
         stream.ask(req_subscribe(["metrics"]))
         for sample in printer.events(stream, args.seconds):
@@ -373,20 +419,34 @@ def metrics(s: Session, args) -> None:
                 continue
             if sample.get("cmd") != "metric":
                 continue
+            missing = [k for k in ("name", "scope", "unit", "time", "value", "display_value", "display_unit",
+                                   "decimals") if k not in sample]
+            if missing:
+                die(
+                    f"the printer's metric event lacks {', '.join(missing)}: {json.dumps(sample, ensure_ascii=False)}")
             key = metric_key(sample)
             if wanted and not wanted.search(key):
                 continue
-            units[key] = sample["unit"]
-            seen.setdefault(key, []).append((sample["time"], sample["value"]))
+            decimals = max(sample["decimals"], units[key]
+                           [1] if key in units else 0)
+            units[key] = (sample["display_unit"], decimals, sample["unit"])
+            seen.setdefault(key, []).append(
+                (sample["time"], sample["display_value"]))
             if args.raw:
                 print(
-                    f"{sample['time']:12.6f} s  {key} = {sample['value']:g} {sample['unit']}")
-            if until and sample["name"] == until[0] and until[1](sample["value"], until[2]):
-                print(f"{key} = {sample['value']:g} {sample['unit']} at "
-                      f"{sample['time']:.6f} s (uc_time)")
-                return
+                    f"{sample['time']:12.6f} s  {key} = {sent_number(sample['value'])} {sample['unit']}")
+            if until and sample["name"] == until.name:
+                if threshold is None:
+                    threshold = until.threshold(s.ask, sample)
+                if UNTIL_OPS[until.op](sample["display_value"], threshold):
+                    sent = (f" (sent {sent_number(sample['value'])} {sample['unit']})"
+                            if sample["unit"] != sample["display_unit"] else "")
+                    print(f"{key} = {metric_sample_text(sample)}{sent} at "
+                          f"{sample['time']:.6f} s (uc_time)")
+                    return
     if until:
-        last = {k: v[-1][1] for k, v in seen.items()}
+        last = {k: metric_text(v[-1][1], units[k][0], units[k][1])
+                for k, v in seen.items()}
         print(
             f"TIMEOUT after {args.seconds:g} s: '{args.until}' never held; last values: {last}")
         sys.exit(2)
@@ -397,12 +457,16 @@ def metrics(s: Session, args) -> None:
     if args.raw:
         return
     for key, samples in sorted(seen.items()):
+        unit, decimals, sent = units[key]
         values = [v for _, v in samples]
         span = samples[-1][0] - samples[0][0]
         rate = f"{(len(samples) - 1) / span:.1f}/s" if span > 0 else "-"
-        print(f"{key:28} [{units[key] or '-':>3}] n={len(samples):<5} rate={rate:<7} "
-              f"min={min(values):g} mean={sum(values) / len(values):g} max={max(values):g} "
-              f"last={values[-1]:g}")
+
+        def number(v: float) -> str:
+            return metric_text(v, "", decimals)
+        print(f"{key:28} [{unit or '-':>3}] n={len(samples):<5} rate={rate:<7} "
+              f"min={number(min(values))} mean={number(sum(values) / len(values))} max={number(max(values))} "
+              f"last={number(values[-1])}" + (f"  (sent in {sent})" if sent != unit else ""))
 
 
 @command("status", target=False, args=[arg("build", nargs="?"), arg("target", nargs="?")])

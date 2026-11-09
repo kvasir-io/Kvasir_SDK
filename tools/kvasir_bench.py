@@ -40,10 +40,12 @@ COMMANDS
                           per entry: `uc_time level [module] file:line message`. --module i2c
                           also takes i2c.bus (prefix, repeatable)
   messages B T [--last N] [--errors] [--grep RE]
-                          the printer's Status tab (firmware check, RTT overflow, core halted,
+                          the printer's Messages tab (firmware check, RTT overflow, core halted,
                           J-Link) - none of that is in the log
-  metrics  B T [--seconds S] [--name RE] [--raw] [--until 'NAME OP NUMBER']
-                          uc_log::metric values live: min/mean/max/last and rate per metric
+  metrics  B T [--seconds S] [--name RE] [--raw] [--until 'NAME OP NUMBER [UNIT]']
+                          uc_log::metric values live: min/mean/max/last and rate per metric, in
+                          the unit each is shown in (31250 c℃ as 312.50 °C); --until 'tip >= 300 °C'
+                          converts through the printer, without a unit compares in the shown one
   peek     B T SYMBOL... [--watch N --interval-ms MS] [--typed]
                           statics read while the core runs (~2 ms a read through the printer,
                           stamped on the log's clock)

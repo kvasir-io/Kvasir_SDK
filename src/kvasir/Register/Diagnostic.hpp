@@ -409,4 +409,28 @@ struct FieldNotRead<FL<A, Mask, Acc, T>> {
         return t;
     }
 };
+
+/// apply(): two writes of one step reach the same bits of one hardware state through two registers (Register::
+/// SharedState, Exec.hpp). First and Last are their RegisterTraits in execution order (address descending), S the
+/// chip's SharedState of them: its describe(Text&, Mask), where it has one, names the bits and the fix in its words.
+template<typename First, typename Last, unsigned Mask, typename S>
+struct OneStateTwoRegisters {
+    consteval Text operator()() const {
+        Text t;
+        t << "two writes in one step reach the same bits of one hardware state through two "
+             "registers, ";
+        field<First>(t, Mask);
+        t << " and ";
+        field<Last>(t, Mask);
+        t << ": a step runs by register address, highest first, not in the order written, so the "
+             "last one decides";
+        if constexpr(requires(Text& x) { S::describe(x, Mask); }) {
+            t << ". ";
+            S::describe(t, Mask);
+        } else {
+            t << " - write them in two apply() calls, or separate them with a sequencePoint";
+        }
+        return t;
+    }
+};
 }   // namespace Kvasir::Register::Diagnostic

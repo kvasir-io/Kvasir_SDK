@@ -30,22 +30,24 @@ configs := "gcc gcc-asan gcc-ubsan clang clang-asan clang-ubsan tsan"
 
 default: test
 
-# Print the cmake flags for a configuration (see the CI matrix)
+# Print the C++ compiler and the cmake flags for a configuration (the CI matrix): every one Release with its assert()s
+# (-O3 without -DNDEBUG; USE_* for the nested svd_converter: no NDEBUG, LTO or -march=native), as CI builds it. Every
+# option a configuration differs in is spelled out, so `configure` can switch an older tree to it in place.
 [private]
 flags config:
     #!/usr/bin/env bash
     set -euo pipefail
-    gcc="-DCMAKE_CXX_COMPILER=g++"
-    clang="-DCMAKE_CXX_COMPILER=clang++"
+    asserts="-DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS_RELEASE=-O3 -DCMAKE_C_FLAGS_RELEASE=-O3"
+    asserts+=" -DUSE_NDEBUG=OFF -DUSE_LTO=OFF -DUSE_NATIVE_FLAG=OFF"
     libcxx="-DKVASIR_TEST_STD_LIB=libc++"
     case "{{config}}" in
-        gcc)        echo "$gcc" ;;
-        gcc-asan)   echo "$gcc -DKVASIR_TEST_SANITIZER=address -DKVASIR_TEST_STDLIB_DEBUG=true" ;;
-        gcc-ubsan)  echo "$gcc -DKVASIR_TEST_SANITIZER=undefined" ;;
-        clang)      echo "$clang" ;;
-        clang-asan) echo "$clang $libcxx -DKVASIR_TEST_SANITIZER=address -DKVASIR_TEST_STDLIB_DEBUG=true" ;;
-        clang-ubsan) echo "$clang $libcxx -DKVASIR_TEST_SANITIZER=undefined" ;;
-        tsan)       echo "$clang $libcxx -DKVASIR_TEST_SANITIZER=thread" ;;
+        gcc)        echo "g++ $asserts" ;;
+        gcc-asan)   echo "g++ $asserts -DKVASIR_TEST_SANITIZER=address -DKVASIR_TEST_STDLIB_DEBUG=true" ;;
+        gcc-ubsan)  echo "g++ $asserts -DKVASIR_TEST_SANITIZER=undefined" ;;
+        clang)      echo "clang++ $asserts" ;;
+        clang-asan) echo "clang++ $asserts $libcxx -DKVASIR_TEST_SANITIZER=address -DKVASIR_TEST_STDLIB_DEBUG=true" ;;
+        clang-ubsan) echo "clang++ $asserts $libcxx -DKVASIR_TEST_SANITIZER=undefined" ;;
+        tsan)       echo "clang++ $asserts $libcxx -DKVASIR_TEST_SANITIZER=thread" ;;
         *)
             echo "unknown config '{{config}}'; known: {{configs}}" >&2
             exit 1 ;;
@@ -60,21 +62,28 @@ flags config:
 guard dir src:
     @python3 -B "{{ root }}/tools/fw.py" guard --tree "{{ dir }}" --source "{{ src }}"
 
-# Configure build/<config> if it does not exist yet (no-op afterwards)
+# Configure build/<config> if it does not exist yet, with the options of its CI entry (`flags`): a tree configured with
+# other values (the Debug trees of before, -O0) gets them in place, once.
 configure config=default_config: (guard (build_root / config) (root / "tests"))
     #!/usr/bin/env bash
     set -euo pipefail
     dir="{{build_root}}/{{config}}"
+    read -r cxx flags < <(just --justfile "{{ self }}" flags "{{config}}")
     if [ -f "$dir/build.ninja" ]; then
+        stale=()
+        for opt in $flags; do
+            kv=${opt#-D}
+            [ "$(sed -n "s/^${kv%%=*}:[A-Z]*=//p" "$dir/CMakeCache.txt")" = "${kv#*=}" ] || stale+=("$opt")
+        done
+        [ ${#stale[@]} -eq 0 ] || cmake -S "{{ root }}/tests" -B "$dir" "${stale[@]}" > /dev/null
         exit 0
     fi
-    flags="$(just --justfile "{{ self }}" flags "{{config}}")"
     launcher=""
     if command -v ccache >/dev/null; then
         launcher="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
     fi
     cmake -S "{{ root }}/tests" -B "$dir" -G Ninja \
-        -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+        -DCMAKE_CXX_COMPILER="$cxx" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
         $launcher $flags
 
 # Wipe build/<config> and configure it again

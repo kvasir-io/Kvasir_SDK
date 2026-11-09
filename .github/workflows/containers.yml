@@ -51,7 +51,7 @@ jobs:
             env-changed: ${{ steps.plan.outputs.env-changed }}
         steps:
             - name: Checkout the tested commit
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                 ref: ${{ github.event.workflow_run.head_sha || github.sha }}
                 fetch-depth: 0
@@ -93,7 +93,7 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - name: Checkout the tested commit
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                 ref: ${{ needs.plan.outputs.sha }}
                 submodules: recursive
@@ -127,7 +127,7 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - name: Checkout the tested commit
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                 ref: ${{ needs.plan.outputs.sha }}
                 submodules: recursive
@@ -188,7 +188,7 @@ jobs:
                 echo "BUILD_MESSAGE=$message" >> "$GITHUB_ENV"
 
             - name: Update commit status
-              uses: actions/github-script@v8
+              uses: actions/github-script@v9
               env:
                 SHA: ${{ needs.plan.outputs.sha }}
               with:

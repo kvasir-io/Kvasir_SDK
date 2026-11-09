@@ -129,6 +129,23 @@ constexpr bool imageC = C::ImageChecks<CtxC<Set>, void, Clocks, brigand::list<Ps
 """
 
 # (name, snippet, extra flags, substrings every compiler prints; None: a control that must compile)
+# a GPIO group shaped like the SAM PORT's, its four registers one shared state (Register::SharedState, Exec.hpp; the
+# compile-time plan rows: tests/shared_state_tests.cpp); {0} is the specialisation's body after `value`
+GROUP = """using ClrAcc = R::Access<R::AccessType::readWrite, R::ReadActionType::normal, R::ModifiedWriteValueType::oneToClear>;
+using SetAcc = R::Access<R::AccessType::readWrite, R::ReadActionType::normal, R::ModifiedWriteValueType::oneToSet>;
+struct OutClrReg {{ using Addr = R::Address<0x304, 0xFFFFFFFF, 0, std::uint32_t>;
+    static constexpr Kvasir::Test::Field<Addr, 3, 3, ClrAcc> pin3{{}}; }};
+struct OutSetReg {{ using Addr = R::Address<0x308, 0xFFFFFFFF, 0, std::uint32_t>;
+    static constexpr Kvasir::Test::Field<Addr, 3, 3, SetAcc> pin3{{}}; }};
+template<unsigned A, unsigned Z, unsigned O, typename T, typename M> requires(A >= 0x300 && A <= 0x30C)
+struct Kvasir::Register::SharedState<Kvasir::Tag::User, R::Address<A, Z, O, T, M>> {{
+    static constexpr unsigned value = 0x300;
+    {0}
+}};
+"""
+DESCRIBE = ("static consteval void describe(Kvasir::Diagnostic::Text& t, unsigned mask) "
+            "{ t << \"test pins \"; t.bits(mask); t << \": one level per step\"; }")
+
 ROWS = [
     # Register::atomic of a one-to-set trigger: set() only; a flag stays refused (AtomicFactories.hpp)
     ("atomic set of a one-to-set trigger and of an enable (a control: want None)",
@@ -315,6 +332,21 @@ struct Kvasir::Startup::Diagnostics::DeviceInterruptNames<Kvasir::Tag::User, Ts.
     ("a runtime value inside a list",
      "void f(unsigned v) { apply(Kvasir::MPL::list(write(CtrlReg::div, Kvasir::Test::runtimeValue(v)))); }\n", [],
      ["runtime values can only be executed in an apply, they cannot be stored in a list"]),
+    # one shared state through two registers in one step (Apply.hpp findStateConflict, Diagnostic::OneStateTwoRegisters)
+    ("one pin's clear and set in two steps (a control: want None)",
+     GROUP.format(
+         "") + "void f() { apply(reset(OutClrReg::pin3), R::sequencePoint, set(OutSetReg::pin3)); }\n", [],
+     None),
+    ("one pin's clear and set in one step, the chip's words",
+     GROUP.format(
+         DESCRIBE) + "void f() { apply(reset(OutClrReg::pin3), set(OutSetReg::pin3)); }\n", [],
+     ["two writes in one step reach the same bits of one hardware state through two registers, bit 3 of register "
+      "0x00000308 and bit 3 of register 0x00000304: a step runs by register address, highest first, not in the order "
+      "written, so the last one decides. test pins 3: one level per step"]),
+    ("one pin's clear and set in one list, no words of the chip",
+     GROUP.format(
+         "") + "void f() { apply(Kvasir::MPL::list(set(OutSetReg::pin3), reset(OutClrReg::pin3))); }\n", [],
+     ["so the last one decides - write them in two apply() calls, or separate them with a sequencePoint"]),
     # R::overrideDefaults with a runtime value: a bundle apply() takes alone (Register.hpp, Apply.hpp Defaulted)
     ("an overrideDefaults bundle alone (a control: want None)",
      "void f(unsigned v) { apply(SimpleTestReg::overrideDefaults(write(SimpleTestReg::dat, Kvasir::Test::runtimeValue(v)))); }\n",

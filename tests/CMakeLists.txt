@@ -42,9 +42,18 @@ if("${KVASIR_TEST_STD_LIB}" STREQUAL "libc++")
     add_link_options(-stdlib=libc++ -fuse-ld=lld)
 endif()
 
+# -g: a sanitizer report names file and line, in the optimised build too
 if(KVASIR_TEST_SANITIZER)
-    add_compile_options(-fsanitize=${KVASIR_TEST_SANITIZER} -fno-omit-frame-pointer)
+    add_compile_options(-fsanitize=${KVASIR_TEST_SANITIZER} -fno-omit-frame-pointer -g)
     add_link_options(-fsanitize=${KVASIR_TEST_SANITIZER})
+    # gcc's middle-end warnings misread sanitizer-instrumented code at -O3: maybe-uninitialized on the iterators
+    # StaticVector's range assert compares under UBSan (nothing is read; cmake_helpers' gcc sanitizer flags list the
+    # others) - code the build without a sanitizer compiles warning-free. Off in sanitizer builds only; a -Wno- of a
+    # specific warning beats -Wall whatever the order.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        add_compile_options(-Wno-maybe-uninitialized -Wno-uninitialized -Wno-stringop-overflow
+                            -Wno-disabled-optimization)
+    endif()
 endif()
 
 # kvasir::sdk and kvasir::test_support, as other repos' host tests use them
@@ -143,6 +152,9 @@ kvasir_add_mock_test(kvasir_test_register_merge merge_tests.cpp)
 # list)
 kvasir_add_mock_test(kvasir_test_register_apply_order apply_order_tests.cpp)
 kvasir_add_mock_test(kvasir_test_register_apply_plan apply_plan_tests.cpp LABELS compile)
+# a chip's Register::SharedState (Exec.hpp): one step writing the same bits of one state through two registers is
+# refused (the plan's error, checked at compile time; the messages: diagnostics_must_fail), the legal lists run
+kvasir_add_mock_test(kvasir_test_register_shared_state shared_state_tests.cpp)
 kvasir_add_mock_test(kvasir_test_register_atomic_default atomic_default_tests.cpp)
 # the RP alias backend on this mock (chip_rp_common's RegisterAlias.hpp) is tested in chip_rp_common/tests
 kvasir_add_mock_test(kvasir_test_register_model model_tests.cpp)
@@ -541,6 +553,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../uc_log/host/uc_log/printer/AnnouncedRes
     target_compile_definitions(kvasir_test_announced_reset PRIVATE KVASIR_TEST_UC_LOG_PRINTER=1)
 endif()
 kvasir_add_host_test(kvasir_test_util_control_pid util_control_pid_tests.cpp)
+kvasir_add_host_test(kvasir_test_util_control_pid_fixed util_control_pid_fixed_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_control_filters util_control_filters_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_literals util_literals_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_bitfield util_bitfield_tests.cpp)
@@ -720,7 +733,7 @@ set_source_files_properties(${kvasir_udivmoddi4_source} PROPERTIES COMPILE_DEFIN
 set(kvasir_udivmoddi4_options -O2 -Wall -Wextra -Werror)
 set(kvasir_udivmoddi4_link_options)
 if(KVASIR_TEST_SANITIZER)
-    list(APPEND kvasir_udivmoddi4_options -fsanitize=${KVASIR_TEST_SANITIZER} -fno-omit-frame-pointer)
+    list(APPEND kvasir_udivmoddi4_options -fsanitize=${KVASIR_TEST_SANITIZER} -fno-omit-frame-pointer -g)
     list(APPEND kvasir_udivmoddi4_link_options -fsanitize=${KVASIR_TEST_SANITIZER})
 endif()
 set_target_properties(kvasir_udivmoddi4_tests PROPERTIES COMPILE_OPTIONS "${kvasir_udivmoddi4_options}"

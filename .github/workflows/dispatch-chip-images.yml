@@ -20,7 +20,7 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - name: Dispatch the chip image builds
-              uses: actions/github-script@v8
+              uses: actions/github-script@v9
               with:
                 github-token: ${{ secrets.CROSS_REPO_TOKEN }}
                 script: |

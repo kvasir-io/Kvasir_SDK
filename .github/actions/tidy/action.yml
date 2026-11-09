@@ -84,7 +84,7 @@ runs:
 
         - name: tidy - cache
           if: env.ACT == ''
-          uses: actions/cache@v4
+          uses: actions/cache@v6
           with:
               path: ${{ steps.paths.outputs.list }}
               key: ${{ steps.paths.outputs.key }}-${{ github.sha }}

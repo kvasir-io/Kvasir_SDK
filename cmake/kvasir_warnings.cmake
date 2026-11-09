@@ -66,7 +66,8 @@ set(kvasir_gcc_warning_flags
 # The firmware's warnings and language flags for a host test target (no exceptions, no RTTI), plus what only a host test
 # needs: static fixtures are fine there (-Wno-exit-time-destructors -Wno-global-constructors), gcc adds -Wconversion
 # -Wsign-conversion (clang has them in -Weverything), and clang builds with ASan and UBSan that stop at the first
-# report. Set UBSAN_OPTIONS=halt_on_error=1 on the tests as well.
+# report, with -g so the report names file and line in an optimised build. Set UBSAN_OPTIONS=halt_on_error=1 on the
+# tests as well.
 function(kvasir_host_test_flags target)
     cmake_parse_arguments(PARSE_ARGV 1 arg "" "" "CLANG_OPTIONS;GCC_OPTIONS")
     set(language_flags -fno-exceptions -fno-rtti)
@@ -81,6 +82,7 @@ function(kvasir_host_test_flags target)
                     ${language_flags}
                     ${sanitizers}
                     -fno-omit-frame-pointer
+                    -g
                     ${arg_CLANG_OPTIONS})
         target_link_options(${target} PRIVATE ${sanitizers})
     else()

@@ -43,13 +43,13 @@ jobs:
             build-date: ${{ steps.set-date.outputs.build-date }}
         steps:
             - name: Checkout the chip repository
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                 path: chip
                 submodules: recursive
 
             - name: Checkout the chip Dockerfile
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                 repository: kvasir-io/Kvasir_SDK
                 ref: master
@@ -110,7 +110,7 @@ jobs:
                 fi
 
             - name: Update commit status
-              uses: actions/github-script@v8
+              uses: actions/github-script@v9
               env:
                 STATUS_CONTEXT: ${{ inputs.title }} Container Build
               with:

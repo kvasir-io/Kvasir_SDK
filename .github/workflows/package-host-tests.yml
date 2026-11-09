@@ -48,14 +48,19 @@ jobs:
                 pacman -S --noconfirm --disable-download-timeout git cmake ninja base-devel python ${{ inputs.extra-packages }} ${{ matrix.compiler.cc == 'clang' && 'clang' || '' }}
 
             - name: Checkout repository
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                 submodules: ${{ inputs.submodules }}
 
+            # Release with its assert()s, the way firmware ships (no firmware defines NDEBUG): -O3 without -DNDEBUG; the
+            # sanitizer entries add -g. The USE_* options are for a tree with the SDK's svd_converter in it (a
+            # cmake_helpers project: no NDEBUG, LTO or -march=native); -Wno-unused-cli for one without it.
             - name: Configure CMake
               run: >
-                cmake -S ${{ inputs.source-dir }} -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-                ${{ matrix.compiler.sanitizer && format('"-DCMAKE_CXX_FLAGS=-fsanitize={0} -fno-sanitize-recover=all"', matrix.compiler.sanitizer) || '' }}
+                cmake -S ${{ inputs.source-dir }} -B build -G Ninja -Wno-unused-cli -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+                -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS_RELEASE=-O3 -DCMAKE_C_FLAGS_RELEASE=-O3
+                -DUSE_NDEBUG=OFF -DUSE_LTO=OFF -DUSE_NATIVE_FLAG=OFF
+                ${{ matrix.compiler.sanitizer && format('"-DCMAKE_CXX_FLAGS=-fsanitize={0} -fno-sanitize-recover=all -g"', matrix.compiler.sanitizer) || '' }}
               env:
                 CC: ${{ matrix.compiler.cc }}
                 CXX: ${{ matrix.compiler.cxx }}
@@ -64,7 +69,7 @@ jobs:
               run: cmake --build build -j"$(nproc)"
 
             - name: Run tests
-              run: ctest --test-dir build --output-on-failure
+              run: ctest --test-dir build --output-on-failure -j"$(nproc)"
 
             # clang-tidy (Kvasir_SDK master's tools/tidy.py and .clang-tidy) over the package's host tests, plain clang
             # job only: the package's findings fail, the SDK's and other packages' are counted as foreign

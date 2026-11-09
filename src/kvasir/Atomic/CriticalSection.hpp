@@ -139,7 +139,7 @@ inline namespace KVASIR_ATOMIC_ABI { namespace Policy {
         template<typename Tag,
                  typename F>
         static decltype(auto) run(F&& f) {
-            std::lock_guard const lock{mutex<Tag>};
+            std::scoped_lock<std::mutex> const lock{mutex<Tag>};
             return std::forward<F>(f)();
         }
 
@@ -150,7 +150,7 @@ inline namespace KVASIR_ATOMIC_ABI { namespace Policy {
                                   Pred&& pred) {
             while(true) {
                 {
-                    std::unique_lock const lock{mutex<Tag>};
+                    std::unique_lock<std::mutex> const lock{mutex<Tag>};
                     if(pred()) { return std::forward<F>(f)(); }
                 }
                 std::this_thread::yield();

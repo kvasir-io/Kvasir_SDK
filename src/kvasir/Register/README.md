@@ -15,7 +15,7 @@ silently ignore, and lets a chip replace the access itself.
 | `Utility.hpp` | `RegisterTraits`: a register's address, masks and whole-word `read()` / `write()` from any of its locations or actions; the field checks every factory asserts |
 | `Factories.hpp`, `AtomicFactories.hpp` | the actions: `set`, `clear`, `toggle`, `write`, `read`, `reset` (a flag's clear), `Register::atomic(...)` |
 | `Apply.hpp` | `apply(...)`: the planner - flattens the actions, orders and merges them into accesses, executes each |
-| `Exec.hpp` | the executors of one access (a store, a read-modify-write, a masked read-modify-write for `atomic`) and the hook `ExecuteSeam` |
+| `Exec.hpp` | the executors of one access (a store, a read-modify-write, a masked read-modify-write for `atomic`) and the hooks `ExecuteSeam` and `SharedState` |
 | `Register.hpp` | the umbrella: `value<>()`, `overrideDefaults`, `Register::fromReset<R>(...)`, `readWhole` / `writeWhole`, `extract` / `deposit`, `Register::Array` |
 | `Memory.hpp` | memory that is no register (flash and XIP windows, OTP and NVM rows, ROM tables) as plain words of a width, through `Mmio` |
 | `Wait.hpp`, `WaitLog.hpp` | bounded waits `waitUntil<Bound, Policy>(condition)`, the image's `WaitPolicy` hook, `OnTimeout::Log`'s main-loop line (runtime layer: they may panic and log) |
@@ -70,6 +70,15 @@ STM32 ODR toggle through BSRR. The chip names the header in `KVASIR_CHIP_REGISTE
 its end, so every TU that reaches `apply()` sees the chip's access before the first instantiation. An `ExecuteSeam`
 specialisation keeps the action's meaning: the same bits end up written, only the instructions differ. Two writers
 of the SAME field still race; atomic protects the other fields.
+
+The same header may name the chip's shared states: `SharedState<Tag::User, Address>` (`value`: the state a register
+writes, 0 by default) for registers that write one hardware state through several addresses - SAM PORT's OUT through
+OUT, OUTCLR, OUTSET and OUTTGL (chip_atsam_common `RegisterSeam.hpp`), RP SIO's GPIO_OUT and GPIO_OE through their
+_SET, _CLR and _XOR registers (chip_rp_common `RegisterAlias.hpp`). One step of `apply()` runs by address, not as
+written, so two of them on the same bits in one step are refused (SAM: `makeOutput(pin)`, OUTCLR, with `set(pin)`,
+OUTSET, would end low; RP: `makeOutputInitHigh(pin)`, GPIO_OUT_SET, with `clear(pin)`, GPIO_OUT_CLR, high); the bits a
+write reaches are its mask less a literal's zeros in write-ignored-if-zero bits (RP's pin actions write the SET/CLR
+field of every pin with one bit set); the chip's `describe(Text&, mask)` names the bits and the fix in the message.
 
 ## Bounded waits
 

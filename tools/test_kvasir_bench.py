@@ -142,7 +142,8 @@ class MetricsDropped(unittest.TestCase):
             server.listen(1)
 
             def metric(value, time_):
-                return {"cmd": "metric", "name": "a", "scope": "s", "unit": "mm", "time": time_, "value": value}
+                return {"cmd": "metric", "name": "a", "scope": "s", "unit": "mm", "time": time_, "value": value,
+                        "display_value": value, "display_unit": "mm", "decimals": 0}
 
             def printer_side():
                 conn, _ = server.accept()
@@ -168,6 +169,121 @@ class MetricsDropped(unittest.TestCase):
                 f"{0.75:12.6f} s  {uc_log_client.metric_key(metric(2, 0.75))} = 2 mm",
                 f"{uc_log_client.metric_key(metric(2, 0.75))} = 2 mm at 0.750000 s (uc_time)"])
             self.assertIn("3 samples dropped for this client", err.getvalue())
+            self.assertIn(
+                "--until: s::a compared in mm, the unit it is shown in", err.getvalue())
+
+
+class MetricsUnits(unittest.TestCase):
+    """metrics in the unit each metric is shown in: a fake printer streams uc_log's golden metric samples (an integer
+    firmware's c℃, mA s, µs, a scaled gain, mA x a 48 MHz tick) and answers `unit` requests with the golden
+    transcript's answers - the summary, --until with a unit, without one, and in a unit of another quantity."""
+
+    GOLDEN = HERE.parent / "uc_log" / "doc" / "control_protocol"
+
+    def setUp(self):
+        streams = [json.loads(l) for l in (
+            self.GOLDEN / "stream.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.samples = [e for e in next(x for x in streams if x["name"] == "messages_metrics")["events"]
+                        if e["cmd"] == "metric"]
+        transcript = [json.loads(l) for l in (self.GOLDEN / "transcript.jsonl").read_text(
+            encoding="utf-8").splitlines()]
+        self.units = {x["answer"]["unit"]: x["answer"]
+                      for x in transcript if x["answer"]["cmd"] == "unit"}
+        self.dir = tempfile.TemporaryDirectory()
+        self.path = Path(self.dir.name) / "control.sock"
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.server.bind(str(self.path))
+        self.server.listen(4)
+        threading.Thread(target=self.serve, daemon=True).start()
+
+    def tearDown(self):
+        self.server.close()
+        self.dir.cleanup()
+
+    def serve(self):
+        while True:
+            try:
+                conn, _ = self.server.accept()
+            except OSError:
+                return
+            threading.Thread(target=self.answer, args=(
+                conn,), daemon=True).start()
+
+    def answer(self, conn):
+        with conn, conn.makefile("r", encoding="utf-8") as lines:
+            for line in lines:
+                req = json.loads(line)
+                if req["cmd"] == "subscribe":
+                    out = [{"cmd": "subscribe"}] + self.samples
+                elif req["cmd"] == "unit":
+                    # a unit the golden lacks: a KeyError, the test fails
+                    out = [self.units[req["unit"]]]
+                else:
+                    out = [{"cmd": "error", "error": "not in this fake"}]
+                conn.sendall(
+                    "".join(json.dumps(x, ensure_ascii=False) + "\n" for x in out).encode())
+
+    def run_metrics(self, until=None, seconds=1e6):
+        args = types.SimpleNamespace(
+            build="b", target="t", seconds=seconds, name=None, raw=False, until=until)
+        out, err = io.StringIO(), io.StringIO()
+        code = 0
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                commands.metrics(fake_session(control=self.path), args)
+            except SystemExit as e:
+                code = e.code
+        return code, out.getvalue().splitlines(), err.getvalue()
+
+    def test_until_in_another_unit_of_the_quantity(self):
+        code, out, err = self.run_metrics("er2Owed >= 100000 mA s")
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            out, ["heater::er2Owed = 160.000 A·s (sent 160000 mA s) at 2.100000 s (uc_time)"])
+        self.assertIn(
+            "--until: 100000 mA s is 100 A·s, the unit heater::er2Owed is shown in, sent in mA s", err)
+
+    def test_until_in_the_shown_unit(self):
+        code, out, err = self.run_metrics("tip >= 300 °C")
+        self.assertEqual((code, out), (0, [
+                         "heater::tip = 312.50 °C (sent 31250 c℃) at 2.100000 s (uc_time)"]))
+        self.assertNotIn(
+            "--until: 300", err, "the shown unit itself: nothing converted, nothing said")
+        code, out, _ = self.run_metrics("charge >= 160 A·s")
+        self.assertEqual(code, 0, "mA x a 48 MHz tick against A·s")
+        self.assertEqual(out, ["heater::charge = 160.000000 A·s (sent 7680000000000 (1/48 × 10⁻⁶ s) mA) at 2.100000 s "
+                               "(uc_time)"], "the number as sent whole, not 7.68e+12")
+
+    def test_until_without_a_unit_says_which(self):
+        code, out, err = self.run_metrics("kp > 2")
+        self.assertEqual((code, out[0][:22]), (0, "heater::kp = 2.500 1/°"))
+        self.assertIn(
+            "--until: heater::kp compared in 1/°C, the unit it is shown in, sent in (10⁻³ 1/℃)", err)
+
+    def test_until_in_a_unit_of_another_quantity_dies(self):
+        code, out, err = self.run_metrics("er2Owed >= 5 mV")
+        self.assertEqual((code, out), (1, []))
+        self.assertIn(
+            "'mV' is no unit of heater::er2Owed (shown in A·s, sent in mA s)", err)
+
+    def test_a_sample_without_its_shown_value_is_malformed(self):
+        for sample in self.samples:
+            del sample["display_value"]
+        code, out, err = self.run_metrics("tip >= 300 °C")
+        self.assertEqual((code, out), (1, []))
+        self.assertIn("the printer's metric event lacks display_value", err)
+
+    def test_summary_in_the_shown_units(self):
+        code, out, _ = self.run_metrics(seconds=0.5)
+        self.assertEqual(code, 0)
+        rows = {line.split()[0]: line for line in out}
+        self.assertIn("[ °C] n=1     rate=-       min=312.50 mean=312.50 max=312.50 last=312.50  (sent in c℃)",
+                      rows["heater::tip"])
+        self.assertIn(
+            "min=160.000 mean=160.000 max=160.000 last=160.000  (sent in mA s)", rows["heater::er2Owed"])
+        self.assertIn("[ µs] n=1", rows["adc::isr"])
+        self.assertNotIn("sent in", rows["adc::isr"], "sent as shown: no note")
+        self.assertIn("[half-cycles] n=1", rows["heater::cycles"])
 
 
 class PrinterGdbStub(unittest.TestCase):
@@ -1167,8 +1283,9 @@ class CliShape(unittest.TestCase):
         shape = json.loads(json.dumps(
             parser_shape(kb.build_parser()), sort_keys=True))
         if os.environ.get("KVASIR_BENCH_WRITE_GOLDEN"):
+            # as `jq .` writes it (the formatter runs it over every *.json): two spaces
             self.GOLDEN.write_text(json.dumps(
-                shape, indent=1, sort_keys=True) + "\n")
+                shape, indent=2, sort_keys=True) + "\n")
         golden = json.loads(self.GOLDEN.read_text())
         self.assertEqual(len(
             golden), 23, "the top level, 19 commands, printer and its start / stop / status")

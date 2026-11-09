@@ -31,12 +31,12 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                 path: repo
 
             - name: Kvasir_SDK layer table and tool
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                 repository: kvasir-io/Kvasir_SDK
                 path: kvasir_sdk

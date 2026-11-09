@@ -219,7 +219,7 @@ def control_socket(tree: Tree) -> Path | None:
 
 
 def status_messages(tree: Tree, count: int) -> list[str]:
-    """The printer's Status tab, newest `count` lines, oldest first: from the running printer's
+    """The printer's Messages tab, newest `count` lines, oldest first: from the running printer's
     control socket, else from the newest <stamp>.status.log next to the .rttlog."""
     control = control_socket(tree)
     if control:

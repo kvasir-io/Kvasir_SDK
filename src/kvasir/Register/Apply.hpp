@@ -23,7 +23,10 @@
 // argument order (after flattening). A write that must follow another goes into its own apply() or after a
 // sequencePoint. Merging is between neighbours of that order (walked ascending, the merged access as the "last"),
 // of the same Address TYPE only (a hand-built Address of the same number stays apart), judged by the table at
-// mergeOf(). Tests: tests/apply_order_tests.cpp, tests/apply_plan_tests.cpp, tests/merge_tests.cpp.
+// mergeOf(). Two writes of one step that reach the same bits of one hardware state through two registers (the chip's
+// Register::SharedState, Exec.hpp - SAM PORT: makeOutput(pin) writes OUTCLR, set(pin) OUTSET; RP SIO: GPIO_OUT_CLR
+// and _SET) are refused: the address order, not the list, would decide (findStateConflict). Tests:
+// tests/apply_order_tests.cpp, tests/apply_plan_tests.cpp, tests/merge_tests.cpp, tests/shared_state_tests.cpp.
 
 namespace Kvasir { namespace Register {
 
@@ -230,6 +233,7 @@ namespace Kvasir { namespace Register {
             unsigned runtimeMask{};
             unsigned arg{noArg};    // the argument index of a runtime value, else noArg
             bool     fromReset{};   // the Address is Register::fromReset's
+            unsigned state{};       // the chip's SharedState of the register (Exec.hpp), 0: its own
         };
 
         template<typename TFlat>
@@ -253,17 +257,19 @@ namespace Kvasir { namespace Register {
             static_assert(
               Top || kind != Kind::runtime,
               "runtime values can only be executed in an apply, they cannot be stored in a list");
-            static constexpr Rec rec{kind,
-                                     RegisterTraits<TAddress>::address,
-                                     RegisterTraits<TAddress>::writeIgnoredIfZeroMask,
-                                     kind == Kind::read     ? 3U
-                                     : kind == Kind::toggle ? 2U
-                                                            : 1U,
-                                     Mask,
-                                     KindOf<TKind>::value,
-                                     KindOf<TKind>::runtimeMask,
-                                     kind == Kind::runtime ? static_cast<unsigned>(Arg) : noArg,
-                                     RegisterTraits<TAddress>::fromReset};
+            static constexpr Rec rec{
+              kind,
+              RegisterTraits<TAddress>::address,
+              RegisterTraits<TAddress>::writeIgnoredIfZeroMask,
+              kind == Kind::read     ? 3U
+              : kind == Kind::toggle ? 2U
+                                     : 1U,
+              Mask,
+              KindOf<TKind>::value,
+              KindOf<TKind>::runtimeMask,
+              kind == Kind::runtime ? static_cast<unsigned>(Arg) : noArg,
+              RegisterTraits<TAddress>::fromReset,
+              ::Kvasir::Port::LateT<SharedState<::Kvasir::Tag::User, TAddress>, TAddress>::value};
         };
 
         template<typename TAction>
@@ -302,7 +308,8 @@ namespace Kvasir { namespace Register {
             runtimeOverlap,
             literalOverRuntime,
             toggleOrAtomicOverRuntime,
-            fromResetAndPlainWrite
+            fromResetAndPlainWrite,
+            oneStateTwoRegisters
         };
 
         struct Merged {
@@ -459,6 +466,47 @@ namespace Kvasir { namespace Register {
             return o;
         }
 
+        // Two writes of one step that reach the same bits of one hardware state through two registers (the chip's
+        // SharedState, Exec.hpp; SAM PORT: OUTCLR and OUTSET of one pin): the step runs them by address, so the
+        // address, not the list, would pick what the state keeps. The pair as flattened elements in execution order
+        // (first: the higher address) and the bits they share; the pair of the highest address when there are more.
+        struct StateConflict {
+            bool     found{};
+            unsigned first{};
+            unsigned last{};
+            unsigned mask{};
+        };
+
+        // The bits a write reaches: its mask, less a literal's zeros in write-ignored-if-zero bits, which write
+        // nothing (RP SIO: a pin's set writes GPIO_OUT_SET's one field of every pin, that pin's bit a one)
+        constexpr unsigned writtenBits(Rec const& r) {
+            return r.kind == Kind::literal ? r.mask & ~(r.ignoredIfZero & ~r.value) : r.mask;
+        }
+
+        template<std::size_t N>
+        consteval StateConflict findStateConflict(Rec const (&rec)[N + 1],
+                                                  Order<N> const& o) {
+            // sorted (step, address ascending): from the top, each write of a shared state against the ones below it
+            // in its step, down to the state's own register - the lowest that writes it (SharedState, Exec.hpp)
+            for(std::size_t i = o.count; i-- > 0;) {
+                Rec const& a = rec[o.idx[i]];
+                if(a.state == 0 || a.kind == Kind::read) { continue; }
+                unsigned const step = o.step[o.idx[i]];
+                for(std::size_t j = i; j-- > 0;) {
+                    unsigned const k = o.idx[j];
+                    Rec const&     b = rec[k];
+                    if(o.step[k] != step || b.address < a.state) { break; }
+                    if(b.state != a.state || b.address == a.address || b.kind == Kind::read) {
+                        continue;
+                    }
+                    if(unsigned const shared = writtenBits(a) & writtenBits(b); shared != 0) {
+                        return StateConflict{true, o.idx[i], k, shared};
+                    }
+                }
+            }
+            return StateConflict{};
+        }
+
         // the accesses in execution order
         template<std::size_t N>
         struct Accesses {
@@ -476,11 +524,12 @@ namespace Kvasir { namespace Register {
                 unsigned inputEnd{};
             };
 
-            Access      acc[N + 1]{};
-            unsigned    inputs[N + 1]{};
-            std::size_t count{};
-            MergeError  error{MergeError::none};
-            bool        reads{};
+            Access        acc[N + 1]{};
+            unsigned      inputs[N + 1]{};
+            std::size_t   count{};
+            MergeError    error{MergeError::none};
+            StateConflict conflict{};   // the pair of MergeError::oneStateTwoRegisters
+            bool          reads{};
         };
 
         template<std::size_t N>
@@ -555,6 +604,10 @@ namespace Kvasir { namespace Register {
                     }
                 }
                 out.acc[a].inputEnd = next;
+            }
+            if(out.error == MergeError::none) {
+                out.conflict = findStateConflict<N>(rec, o);
+                if(out.conflict.found) { out.error = MergeError::oneStateTwoRegisters; }
             }
             return out;
         }
@@ -786,6 +839,57 @@ namespace Kvasir { namespace Register {
             }
         };
 
+        // apply()'s message for its plan's error (MergeError), named by the KVASIR_STATIC_ASSERT in apply(): built only
+        // when that fails, so the conflicting pair's types are named only then
+        template<typename P>
+        struct PlanErrorText {
+            consteval Diagnostic::Text operator()() const {
+                using enum MergeError;
+                constexpr MergeError error = P::plan.error;
+                if constexpr(error == oneStateTwoRegisters) {
+                    using First = typename AddressOf<
+                      typename P::template Element<P::plan.conflict.first>>::type;
+                    using Last =
+                      typename AddressOf<typename P::template Element<P::plan.conflict.last>>::type;
+                    return Diagnostic::OneStateTwoRegisters<
+                      RegisterTraits<First>,
+                      RegisterTraits<Last>,
+                      P::plan.conflict.mask,
+                      ::Kvasir::Port::LateT<SharedState<::Kvasir::Tag::User, First>, First>>{}();
+                } else {
+                    Diagnostic::Text t;
+                    if constexpr(error == literalsDisagree) {
+                        t << "two actions in one step write different values to the same bits of "
+                             "one register: a set and a clear of one bit, or two writes of one "
+                             "field (separate them with a sequencePoint if both are meant)";
+                    } else if constexpr(error == twoToggles) {
+                        t << "two toggles of the same bits in one step: one would undo the other "
+                             "(separate them with a sequencePoint if both are meant)";
+                    } else if constexpr(error == runtimeOverlap) {
+                        t << "two writes in one apply() cover the same bits of one register and at "
+                             "least one of them is a runtime value: the result would be the OR of "
+                             "both (separate them with a sequencePoint if both are meant)";
+                    } else if constexpr(error == literalOverRuntime) {
+                        t << "a literal and a runtime write in one apply() cover the same bits and "
+                             "the literal writes ones there: the result would be the OR of both "
+                             "(separate them with a sequencePoint if both are meant)";
+                    } else if constexpr(error == fromResetAndPlainWrite) {
+                        t << "a Register::fromReset write and a plain write of the same register "
+                             "in one step: the reset value fill of the one would undo the other "
+                             "(name every field in the fromReset, or separate them with a "
+                             "sequencePoint)";
+                    } else {
+                        static_assert(error == toggleOrAtomicOverRuntime);
+                        t << "a toggle or an atomic write and a runtime write of the same bits in "
+                             "one apply(): they cannot merge into one access, and as two the "
+                             "runtime write undoes the other (separate them with a "
+                             "sequencePoint if both are meant)";
+                    }
+                    return t;
+                }
+            }
+        };
+
         template<typename T>
         [[gnu::always_inline]] inline unsigned argValue(T const& arg) {
             if constexpr(requires { arg.value_; }) {
@@ -808,34 +912,9 @@ namespace Kvasir { namespace Register {
         } else {
             using P = Detail::PlanOf<Args...>;
             using E = Detail::MergeError;
-            static_assert(P::plan.error != E::literalsDisagree,
-                          "two actions in one step write different values to the same bits of "
-                          "one register: a set and a clear of one bit, or two writes of one "
-                          "field (separate them with a sequencePoint if both are meant)");
-            static_assert(P::plan.error != E::twoToggles,
-                          "two toggles of the same bits in one step: one would undo the other "
-                          "(separate them with a sequencePoint if both are meant)");
-            static_assert(
-              P::plan.error != E::runtimeOverlap,
-              "two writes in one apply() cover the same bits of one register and at "
-              "least one of them is a runtime value: the result would be the OR of both "
-              "(separate them with a sequencePoint if both are meant)");
-            static_assert(
-              P::plan.error != E::literalOverRuntime,
-              "a literal and a runtime write in one apply() cover the same bits and the "
-              "literal writes ones there: the result would be the OR of both (separate "
-              "them with a sequencePoint if both are meant)");
-            static_assert(
-              P::plan.error != E::fromResetAndPlainWrite,
-              "a Register::fromReset write and a plain write of the same register in one step: the "
-              "reset value fill of the one would undo the other (name every field in the "
-              "fromReset, or "
-              "separate them with a sequencePoint)");
-            static_assert(
-              P::plan.error != E::toggleOrAtomicOverRuntime,
-              "a toggle or an atomic write and a runtime write of the same bits in one apply(): "
-              "they cannot merge into one access, and as two the runtime write undoes the other "
-              "(separate them with a sequencePoint if both are meant)");
+            // one assert for every plan error, its message built only when it fails: each static_assert here cost
+            // clang ~3 % of an apply() (a 400-apply probe, -fsyntax-only: seven of them as one, -13 % per apply)
+            KVASIR_STATIC_ASSERT(P::plan.error == E::none, (Detail::PlanErrorText<P>));
             return Detail::Run<P, typename P::Result, std::make_index_sequence<P::plan.count>>::run(
               Detail::argValue(args)...);
         }

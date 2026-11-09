@@ -47,13 +47,19 @@ jobs:
                 pacman -S --noconfirm git cmake base-devel python arm-none-eabi-gcc arm-none-eabi-newlib ${{ matrix.compiler.cc == 'clang' && 'clang llvm lld' || '' }} ${{ matrix.compiler.stdlib == 'libc++' && 'libc++ lld' || '' }}
 
             - name: Checkout repository
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                 submodules: recursive
 
+            # Release with its assert()s, the way firmware ships (no firmware defines NDEBUG): -O3 without -DNDEBUG on
+            # the tests (C++ and the C udivmoddi4 test) and on what they fetch (fmt, glaze); the sanitizer entries add
+            # -g (tests/CMakeLists.txt). The USE_* options reach the nested svd_converter, a cmake_helpers project: no
+            # NDEBUG, LTO or -march=native.
             - name: Configure CMake
               run: >
                 cmake -S tests -B build
+                -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS_RELEASE=-O3 -DCMAKE_C_FLAGS_RELEASE=-O3
+                -DUSE_NDEBUG=OFF -DUSE_LTO=OFF -DUSE_NATIVE_FLAG=OFF
                 ${{ matrix.compiler.sanitizer && format('-DKVASIR_TEST_SANITIZER={0}', matrix.compiler.sanitizer) || '' }}
                 ${{ matrix.compiler.stdlib && format('-DKVASIR_TEST_STD_LIB={0}', matrix.compiler.stdlib) || '' }}
                 ${{ matrix.compiler.stdlib_debug && '-DKVASIR_TEST_STDLIB_DEBUG=true' || '' }}
@@ -67,7 +73,7 @@ jobs:
             # the sanitizer jobs leave out the tool tests: none of them runs code of this tree's sanitizer (they compile
             # for ARM or run Python), so the plain gcc and clang jobs cover them
             - name: Run tests
-              run: cd build && ctest --output-on-failure ${{ matrix.compiler.sanitizer && '-LE tool' || '' }}
+              run: cd build && ctest --output-on-failure -j"$(nproc)" ${{ matrix.compiler.sanitizer && '-LE tool' || '' }}
 
             # clang-tidy (tools/tidy.py with .clang-tidy of this checkout) over this tree: the tests, the self-contained
             # headers on the volatile path, uc_log and svd_converter as the tests compile them; the nested checkouts

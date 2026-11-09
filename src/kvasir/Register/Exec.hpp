@@ -165,6 +165,21 @@ namespace Kvasir { namespace Register {
     template<typename T, typename... Ts>
     struct ExecuteSeam : Detail::RegisterExec<Ts...> {};
 
+    // The hook that names the hardware state a register writes, where a chip reaches one state through several
+    // registers (Port/Hooks.hpp's table): SharedState<Tag::User, Address> with `static constexpr unsigned value`, the
+    // state (the address of its own register, the lowest that writes it - apply() looks for the others from there up;
+    // 0, the default: the register is a state of its own) and, optionally, `static consteval void
+    // describe(Kvasir::Diagnostic::Text&, unsigned mask)`: the bits and the fix in the chip's words. apply() refuses
+    // two writes of one step that reach the same bits of one state through two registers (Apply.hpp,
+    // Diagnostic::OneStateTwoRegisters): a step runs by register address, not in the order written, so the address
+    // order would pick what the state keeps (chip_atsam_common RegisterSeam.hpp: a SAM PORT pin's level through OUT,
+    // OUTCLR, OUTSET and OUTTGL; chip_rp_common RegisterAlias.hpp: an RP pin's through SIO GPIO_OUT, _SET, _CLR and
+    // _XOR). Specialised in the KVASIR_CHIP_REGISTER_SEAM header, as ExecuteSeam.
+    template<typename T, typename... Ts>
+    struct SharedState {
+        static constexpr unsigned value = 0;
+    };
+
     namespace Detail {
 #if defined(__arm__) && !defined(KVASIR_REGISTER_MOCK)
         // PRIMASK saved, interrupts off, restored: Core::IrqGuard (core/InterruptMask.hpp) by hand, because the
@@ -213,9 +228,9 @@ namespace Kvasir { namespace Register {
     }   // namespace Detail
 }}   // namespace Kvasir::Register
 
-// The chip's ExecuteSeam specialisations (above): the chip package's kvasir_chip(DEFINITIONS) names the header. It
-// includes this file first (#pragma once ends the cycle), so it may be included on its own too. Host tests and chips
-// without a seam have no macro and get the plain access.
+// The chip's ExecuteSeam and SharedState specialisations (above): the chip package's kvasir_chip(DEFINITIONS) names the
+// header. It includes this file first (#pragma once ends the cycle), so it may be included on its own too. Host tests
+// and chips without a seam have no macro and get the plain access, every register a state of its own.
 #ifdef KVASIR_CHIP_REGISTER_SEAM
     #include KVASIR_CHIP_REGISTER_SEAM
 #endif

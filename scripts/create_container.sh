@@ -35,7 +35,7 @@ if [ "$1" = "--local" ]; then
     docker buildx use kvasir-builder
 
     echo "Building build environment container..."
-    docker pull archlinux
+    docker pull archlinux:latest
     docker buildx build -f ${SCRIPT_DIR}/Dockerfile.build-env ${SCRIPT_DIR} \
         --tag kvasirio/build_environment:local \
         --load
