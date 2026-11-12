@@ -6,6 +6,7 @@
 #include "kvasir/Register/Memory.hpp"
 #include "kvasir/Register/Register.hpp"
 #include "kvasir/StartUp/Resources.hpp"
+#include "kvasir/Util/BusAddress.hpp"
 
 #include <array>
 #include <cstddef>
@@ -61,8 +62,7 @@ namespace Kvasir { namespace Startup {
                                       table.data(),
                                       Entries);
             Kvasir::Core::dsb();
-            Kvasir::Register::writeWhole(Vtor::FULLREGISTER,
-                                         reinterpret_cast<std::uint32_t>(table.data()));
+            Kvasir::Register::writeWhole(Vtor::FULLREGISTER, Kvasir::busAddress(table.data()));
             Kvasir::Core::dsb();
             Kvasir::Core::isb();
         }
@@ -70,7 +70,7 @@ namespace Kvasir { namespace Startup {
         /// Whether VTOR points at the RAM copy.
         [[nodiscard]] static bool active() {
             return Kvasir::Register::readWhole(Vtor::FULLREGISTER)
-                == reinterpret_cast<std::uint32_t>(table.data());
+                == Kvasir::busAddress(table.data());
         }
     };
 }}   // namespace Kvasir::Startup

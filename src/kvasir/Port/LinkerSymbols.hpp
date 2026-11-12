@@ -1,5 +1,7 @@
 #pragma once
 
+#include "kvasir/Util/BusAddress.hpp"
+
 #include <cstddef>
 #include <cstdint>
 
@@ -59,7 +61,7 @@ namespace Kvasir::Startup {
 template<auto& Symbol>
 [[gnu::always_inline]] inline std::uint32_t linkerAddress() {
     // a linker symbol's address
-    auto address = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(&Symbol));
+    auto address = Kvasir::busAddress(&Symbol);
     asm("" : "+r"(address));
     return address;
 }

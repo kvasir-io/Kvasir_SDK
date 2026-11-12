@@ -7,6 +7,7 @@
 #include "kvasir/Port/Hooks.hpp"
 #include "kvasir/Port/LinkerSymbols.hpp"
 #include "kvasir/StartUp/StartUp.hpp"
+#include "kvasir/Util/BusAddress.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -222,9 +223,9 @@ struct SecondaryCore {
     [[nodiscard]] static bool launch() {
         ready.store(false, std::memory_order_relaxed);
 
-        auto const pc = reinterpret_cast<std::uint32_t>(std::addressof(entry));
-        auto const sp = reinterpret_cast<std::uint32_t>(std::addressof(_LINKER_stack1_end_));
-        auto const vt = reinterpret_cast<std::uint32_t>(std::addressof(nvicIsrVectors));
+        auto const pc = Kvasir::busAddress(std::addressof(entry));
+        auto const sp = Kvasir::busAddress(std::addressof(_LINKER_stack1_end_));
+        auto const vt = Kvasir::busAddress(std::addressof(nvicIsrVectors));
 
         OnEntries::template callEach<Detail::RuntimeHook::PrimaryPrepare>();
         bool launched = handshake(pc, sp, vt);

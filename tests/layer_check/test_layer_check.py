@@ -73,8 +73,9 @@ STALE = {("include", "lib_low/src/low/a.hpp -> high/gone.hpp")}
 
 
 # check (d): every rule once (R1 twice with the same spelling, R4 by a type pattern with a template address and a
-# matched action), and what must not match - a cast without volatile, a commented-out cast, a logical && after
-# readWhole, a literal address counted under R3 only, the spelling inside a string
+# matched action, R5 by a fixed-width and a plain integer), and what must not match - a cast without volatile, a
+# commented-out cast, a logical && after readWhole, a literal address counted under R3 only, the spelling inside a
+# string, a pointer cast to an integer of its own width (std::uintptr_t, then narrowed; std::size_t)
 MMIO_SOURCE = """#pragma once
 inline unsigned a(unsigned x) { return *reinterpret_cast<std::uint32_t volatile*>(x); }
 inline unsigned b(unsigned x) { return *reinterpret_cast<std::uint32_t volatile*>(x + 4); }
@@ -89,6 +90,10 @@ inline unsigned h(unsigned x) { return *reinterpret_cast<std::uint32_t*>(x); }
 // inline unsigned i(unsigned x) { return *reinterpret_cast<std::uint64_t volatile*>(x); }
 template<typename T, typename U> struct P<Register::Action<T, U>> {};
 static_assert(true, "expected a Register::Action<...>");
+inline std::uint32_t j(int* p) { return reinterpret_cast<std::uint32_t>(p); }
+inline unsigned k(int* p) { return reinterpret_cast<unsigned>(p); }
+inline std::uint32_t l(int* p) { return static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(p)); }
+inline std::size_t m(int* p) { return reinterpret_cast<std::size_t>(p); }
 """
 MMIO_NEW = [
     "lib_high/src/high/mmio.hpp: R1 reinterpret_cast<std::uint32_t volatile*>",
@@ -99,6 +104,8 @@ MMIO_NEW = [
     "lib_high/src/high/mmio.hpp: R3 Register::Address<0x4000'0000",
     "lib_high/src/high/mmio.hpp: R4 Register::Address<",
     "lib_high/src/high/mmio.hpp: R4 Register::Action<",
+    "lib_high/src/high/mmio.hpp: R5 reinterpret_cast<std::uint32_t>",
+    "lib_high/src/high/mmio.hpp: R5 reinterpret_cast<unsigned>",
 ]
 
 
@@ -241,6 +248,8 @@ class LayerCheck(unittest.TestCase):
                 where["lib_high/src/high/mmio.hpp: R4 Register::Address<"], ["lib_high/src/high/mmio.hpp:10"])
             self.assertEqual(
                 where["lib_high/src/high/mmio.hpp: R4 Register::Action<"], ["lib_high/src/high/mmio.hpp:13"])
+            self.assertEqual(where["lib_high/src/high/mmio.hpp: R5 reinterpret_cast<std::uint32_t>"],
+                             ["lib_high/src/high/mmio.hpp:15"])
 
     def test_mmio_exempt_keep_count_and_stale(self):
         hits = MMIO_NEW

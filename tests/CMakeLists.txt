@@ -210,6 +210,7 @@ kvasir_add_host_test(kvasir_test_critical_section_injected critical_section_inje
 kvasir_add_host_test(kvasir_test_util_saturating_value util_saturating_value_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_rollover util_rollover_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_pass_count util_pass_count_tests.cpp)
+kvasir_add_host_test(kvasir_test_util_bus_address util_bus_address_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_crc util_crc_tests.cpp)
 # Crc::ImageEngine and its hook: the image's set where it computes the CRC, the software elsewhere and in constant
 # expressions, CellStore's default on it

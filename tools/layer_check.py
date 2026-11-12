@@ -16,7 +16,11 @@ repositories:
                 readWhole...`), R3 a literal register address (`Register::Address<0x...>`), R4 any other hand-spelled
                 register type (`Register::Address<` or `Register::Action<`: the generated headers and the factories
                 build them; a kept entry is a partial specialisation that matches the factories' types, e.g. a
-                Startup resource or interrupt of a field's action). A register goes through
+                Startup resource or interrupt of a field's action), R5 a pointer turned into an integer narrower than
+                a host's pointers (`reinterpret_cast<std::uint32_t>(p)`, also 8/16 bit, `unsigned`, `int`): ill-formed
+                where a pointer has 64 bits, so the header cannot be included in a host test - write
+                `static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(p))`, the same code on the chip. A
+                register goes through
                 the field API (apply), memory that is not a register through Kvasir::Memory (Register/Memory.hpp), an
                 object shared with an ISR or another core through std::atomic / std::atomic_ref. `[rules]
                 mmio_exempt = { R1 = ["<repo>/<file glob>", ...], ... }` names the files a rule does not apply to (the
@@ -197,6 +201,8 @@ MMIO_RULES = {
                      r"|\bwriteWhole\s*\([^,;]+,\s*(?:Kvasir::)?(?:Register::)?readWhole\b"),
     "R3": re.compile(r"\bRegister::Address<\s*(?:0[xX][0-9A-Fa-f']+|\d[\d']*)\b"),
     "R4": re.compile(r"\bRegister::(?:Address|Action)\s*<(?!\s*(?:0[xX][0-9A-Fa-f']+|\d[\d']*)\b)"),
+    "R5": re.compile(r"\breinterpret_cast\s*<\s*(?:const\s+)?(?:(?:std\s*::\s*)?u?int(?:8|16|32)_t"
+                     r"|unsigned(?:\s+(?:int|short|char))?|int|short)(?:\s+const)?\s*>"),
 }
 TYPE_DECL = re.compile(r"^\s*(?:struct|class|union|enum(?:\s+class|\s+struct)?|concept|using)\s+"
                        r"(?:\[\[[^\]]*\]\]\s*)?(?:alignas\s*\([^)]*\)\s*)?([A-Za-z_]\w*)")
