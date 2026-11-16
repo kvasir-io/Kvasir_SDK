@@ -32,6 +32,13 @@ CASES = [
     Case("not trivially copyable",
          "struct S { std::string s; };\nauto x = Kvasir::Flash::CellStore<F<2>, S>::forget;\n",
          ["trivially copyable"]),
+    Case("a record with padding",
+         "struct Gap { std::uint8_t a; std::uint32_t b; };\nauto x = Kvasir::Flash::CellStore<F<2>, Gap>::forget;\n",
+         ["T has no padding"]),
+    Case("a record of floats has none",
+         "struct Gains { float p; float i; std::uint32_t count; };\n"
+         "auto x = Kvasir::Flash::CellStore<F<2>, Gains>::forget;\n",
+         None),
     Case("CellBytes not a page multiple",
          "struct C : Kvasir::Flash::CellStoreDefaults { static constexpr std::size_t cellBytes = 4000; };\n"
          "auto x = Kvasir::Flash::CellStore<F<2>, Small, C>::forget;\n",

@@ -105,6 +105,43 @@ void loadsBytesInOrder() {
     });
 }
 
+void storesBytesInOrder() {
+    test(
+      "Memory::storeBytes: the bytes in address order, in[i] to address + i; a count of 0 writes "
+      "nothing");
+    std::array<std::byte, 3> const bytes{std::byte{0x1A}, std::byte{0x2B}, std::byte{0x3C}};
+    Kvasir::Memory::storeBytes(runtimeValue(0x900), bytes.data(), bytes.size());
+    Kvasir::Memory::storeBytes(0xA00, bytes.data(), 0);
+    checkActions({
+      W{0x900, 0x1AU},
+      W{0x901, 0x2BU},
+      W{0x902, 0x3CU}
+    });
+}
+
+void alignedBytesAndFill() {
+    test(
+      "Memory::loadBytesAligned / storeBytesAligned / fillBytes: on the mock one access per byte, "
+      "in address order");
+    recorder.setReadValues(0xB00, {0x11U});
+    recorder.setReadValues(0xB01, {0x22U});
+    std::array<std::byte, 2> in{};
+    Kvasir::Memory::loadBytesAligned(runtimeValue(0xB00), in.data(), in.size());
+    CHECK(in == (std::array<std::byte, 2>{std::byte{0x11}, std::byte{0x22}}));
+    std::array<std::byte, 2> const out{std::byte{0x33}, std::byte{0x44}};
+    Kvasir::Memory::storeBytesAligned(runtimeValue(0xC00), out.data(), out.size());
+    Kvasir::Memory::fillBytes(runtimeValue(0xD00), std::byte{0}, 2);
+    Kvasir::Memory::fillBytes(0xE00, std::byte{0xFF}, 0);
+    checkActions({
+      R{0xB00, 0x11U},
+      R{0xB01, 0x22U},
+      W{0xC00, 0x33U},
+      W{0xC01, 0x44U},
+      W{0xD00,  0x0U},
+      W{0xD01,  0x0U}
+    });
+}
+
 void loadsPlainWords() {
     test("Memory::loadPlain: one load of a T at the address, as a word");
     recorder.setReadValues(0x800, {0x1234'5678U});
@@ -121,6 +158,8 @@ int main() {
     loadsWordsInOrder();
     wordsByIndex();
     loadsBytesInOrder();
+    storesBytesInOrder();
+    alignedBytesAndFill();
     loadsPlainWords();
 
     return Kvasir::Test::report();

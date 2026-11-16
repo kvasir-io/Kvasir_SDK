@@ -19,6 +19,7 @@
 // Safe from a fault or panic handler: word loads and stores and the CRC loop, no library calls, no locks.
 // Not safe against two writers at once (two cores, an ISR and main): the writer makes sure there is one.
 #include "kvasir/Util/Crc.hpp"
+#include "kvasir/Util/PaddingFree.hpp"
 
 #include <array>
 #include <bit>
@@ -68,6 +69,9 @@ class Persistent {
                   "a Persistent value is read back as raw words after a reset");
     static_assert(sizeof(T) % 4 == 0 && alignof(T) <= 4,
                   "a Persistent value is whole words");
+    static_assert(PaddingFree<T>,
+                  "a Persistent value's CRC runs over its bytes: T has no padding - name it "
+                  "(kvasir/Util/PaddingFree.hpp)");
 
 public:
     static constexpr std::size_t valueWords = sizeof(T) / 4;
@@ -126,10 +130,11 @@ public:
     /// anywhere in between leaves a record that fails load(), never a mix of old and new. Word by word
     /// with the CRC computed on the way, so a large T (a stack snapshot) needs no copy on the stack.
     void store(T const& value) {
-        storeWords([&value](std::size_t i) {
-            std::uint32_t w{};
-            std::memcpy(&w, reinterpret_cast<std::byte const*>(&value) + i * 4, 4);
-            return w;
+        // word i of T: four of its bytes, as the value they have as a word ([bit.cast])
+        std::byte const* const bytes = std::as_bytes(std::span{std::addressof(value), 1}).data();
+        storeWords([bytes](std::size_t i) {
+            return std::bit_cast<std::uint32_t>(
+              std::array{bytes[4 * i], bytes[4 * i + 1], bytes[4 * i + 2], bytes[4 * i + 3]});
         });
     }
 

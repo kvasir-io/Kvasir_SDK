@@ -259,8 +259,8 @@ mmio_exempt = { R1 = ["Kvasir_SDK/src/kvasir/Register/Mmio.hpp"], R2 = ["Kvasir_
 # the debug probe writes through rtt's loadOffset() - both a load through a `T const volatile&` (no cast; what C++26's
 # atomic_ref<T const volatile>, P3323, will spell; kvasir/Hal/DmaHandoff.hpp, rtt.hpp). What stays is the atomics'
 # own implementation.
-"Kvasir_SDK/src/kvasir/StartUp/Runtime/LibAtomicBlocks.hpp: R1 static_cast<T const volatile*>" = ["the libatomic entry points' implementation (what std::atomic calls on a core without the operation): it cannot itself be an atomic", 2]
-"Kvasir_SDK/src/kvasir/StartUp/Runtime/LibAtomicBlocks.hpp: R1 static_cast<T volatile*>" = ["the libatomic entry points' implementation (what std::atomic calls on a core without the operation): it cannot itself be an atomic", 2]
+"Kvasir_SDK/src/kvasir/StartUp/Runtime/LibAtomicBlocks.hpp: R1 static_cast<Aliased const volatile*>" = ["the libatomic entry points' implementation (what std::atomic calls on a core without the operation): it cannot itself be an atomic", 2]
+"Kvasir_SDK/src/kvasir/StartUp/Runtime/LibAtomicBlocks.hpp: R1 static_cast<Aliased volatile*>" = ["the libatomic entry points' implementation (what std::atomic calls on a core without the operation): it cannot itself be an atomic", 2]
 # R4: a register type spelled by hand outside the register layer. The generated headers and the factories build every
 # Address and Action; what is left are partial specialisations that MATCH the factories' types (no type is built):
 # what a Startup action provides (a pin, an interrupt, a priority), what a Hal block's action writes.

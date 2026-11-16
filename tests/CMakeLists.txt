@@ -17,7 +17,7 @@ enable_testing()
 # and remote_fmt builds, and forwarded to every host build) mean other values
 set(KVASIR_TEST_SANITIZER
     ""
-    CACHE STRING "sanitizer to enable, passed to -fsanitize= (address, undefined, thread, ...)")
+    CACHE STRING "sanitizer to enable, passed to -fsanitize= (address, undefined, thread, type, ...)")
 set(KVASIR_TEST_STD_LIB
     ""
     CACHE STRING "standard library to use (libc++ or empty for the default)")
@@ -54,6 +54,17 @@ if(KVASIR_TEST_SANITIZER)
         add_compile_options(-Wno-maybe-uninitialized -Wno-uninitialized -Wno-stringop-overflow
                             -Wno-disabled-optimization)
     endif()
+endif()
+
+# TypeSanitizer: every executable of the tree drops the types recorded for its globals when it starts
+# (support/tysan_forget_globals.cpp says why), and the functions of tysan_ignorelist.txt are not instrumented (each with
+# its reason there). Not -mllvm -tysan-writes-always-set-type, which would take the storage-reuse reports away: a struct
+# copy the optimizer made one wide store then types the whole struct as its first member, and the read of the second
+# member is reported (12 tests of this tree).
+if("${KVASIR_TEST_SANITIZER}" STREQUAL "type")
+    add_compile_options(-fsanitize-ignorelist=${CMAKE_CURRENT_LIST_DIR}/tysan_ignorelist.txt)
+    add_library(kvasir_tysan_forget_globals OBJECT ${CMAKE_CURRENT_LIST_DIR}/support/tysan_forget_globals.cpp)
+    link_libraries($<TARGET_OBJECTS:kvasir_tysan_forget_globals>)
 endif()
 
 # kvasir::sdk and kvasir::test_support, as other repos' host tests use them
@@ -216,6 +227,8 @@ kvasir_add_host_test(kvasir_test_util_crc util_crc_tests.cpp)
 # expressions, CellStore's default on it
 kvasir_add_host_test(kvasir_test_util_crc_image_engine util_crc_image_engine_tests.cpp)
 kvasir_add_host_test(kvasir_test_persistent persistent_tests.cpp)
+# a Persistent value with padding and a struct through Memory::loadPlain are compile errors naming the reason
+kvasir_add_must_fail_test(kvasir_test_object_bytes_must_fail object_bytes_must_fail)
 kvasir_add_host_test(kvasir_test_crash_record crash_record_tests.cpp)
 # the default format (Full<>, no specialisation), and a format of the application's own (the CrashRecord::Format
 # extension point)
@@ -560,6 +573,8 @@ kvasir_add_host_test(kvasir_test_util_literals util_literals_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_bitfield util_bitfield_tests.cpp)
 # BitField wider than 32 bits or with High below Low is a compile error naming the limit, with this compiler
 kvasir_add_must_fail_test(kvasir_test_util_bitfield_must_fail bitfield_must_fail)
+# Util/PaddingFree.hpp: structs with and without padding, floating point, arrays, nesting, the author's declaration
+kvasir_add_host_test(kvasir_test_util_padding_free util_padding_free_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_static_vector util_static_vector_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_static_containers util_static_containers_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_static_function util_static_function_tests.cpp LABELS threaded)
@@ -726,6 +741,10 @@ kvasir_add_python_test(kvasir_test_device_runner ${CMAKE_CURRENT_LIST_DIR}/../to
 # against the host's own division; C, as the routine. Its options are its own: the directory's are for C++
 # (-stdlib=libc++ in the libc++ configurations, which the C compiler - gcc there - rejects).
 enable_language(C)
+if("${KVASIR_TEST_SANITIZER}" STREQUAL "type" AND NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "KVASIR_TEST_SANITIZER=type: only clang has it, and this tree compiles C as well - "
+                        "configure with CC=clang (-DCMAKE_C_COMPILER=clang)")
+endif()
 set(kvasir_udivmoddi4_source ${CMAKE_CURRENT_LIST_DIR}/../lib/compiler-rt/builtins/kvasir/udivmoddi4_udiv.c)
 add_executable(kvasir_udivmoddi4_tests udivmoddi4/udivmoddi4_tests.c ${kvasir_udivmoddi4_source})
 # the routine under a name of its own, so the host's libgcc/compiler-rt __udivmoddi4 stays out of the comparison
@@ -887,3 +906,30 @@ endblock()
 kvasir_add_threaded_test(kvasir_test_clock_sync clock_sync_tests.cpp)
 # Runtime/StackUsage.hpp over a buffer: the paint, free(), StackHighWater's passes
 kvasir_add_host_test(kvasir_test_stack_usage stack_usage_tests.cpp)
+
+# A TypeSanitizer report fails its test: the runtime prints a report and goes on (exit code 0), clang accepts
+# -fno-sanitize-recover=type without effect and the runtime reads no __tysan_default_options, so the option goes through
+# the environment - of every test of the tree, whichever function or subdirectory added it.
+function(kvasir_tests_environment dir option)
+    get_property(
+        tests
+        DIRECTORY ${dir}
+        PROPERTY TESTS)
+    foreach(test IN LISTS tests)
+        set_property(
+            TEST ${test}
+            DIRECTORY ${dir}
+            APPEND
+            PROPERTY ENVIRONMENT ${option})
+    endforeach()
+    get_property(
+        subdirs
+        DIRECTORY ${dir}
+        PROPERTY SUBDIRECTORIES)
+    foreach(subdir IN LISTS subdirs)
+        kvasir_tests_environment(${subdir} ${option})
+    endforeach()
+endfunction()
+if("${KVASIR_TEST_SANITIZER}" STREQUAL "type")
+    kvasir_tests_environment(${CMAKE_CURRENT_SOURCE_DIR} "TYSAN_OPTIONS=halt_on_error=1")
+endif()

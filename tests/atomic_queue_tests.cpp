@@ -629,6 +629,54 @@ void byteElements() {
     CHECK(q.empty());
 }
 
+// wipeFree() zeroes every slot no element is in - what was popped lies there until a push writes over it - and leaves
+// the queued elements, at every head offset (the free run wraps) and for elements wider than a byte. Mutation: the
+// count of free slots taken as Size - 1 (or the walk started at the head): a popped byte survives, or a queued one is
+// zeroed.
+void wipeFreeZeroesWhatWasPopped() {
+    Kvasir::Test::test("wipeFreeZeroesWhatWasPopped");
+    resetOverflow();
+
+    constexpr std::size_t size = 8;
+    for(std::size_t offset = 0; offset != size; ++offset) {
+        for(std::size_t kept = 0; kept != size; ++kept) {
+            TestQueue<std::uint32_t, size> q;
+            // move the head to `offset`, then fill the whole queue and pop all but `kept`
+            for(std::size_t i = 0; i != offset; ++i) {
+                q.push(std::uint32_t{0xDEADBEEF});
+                q.pop();
+            }
+            for(std::size_t i = 0; i != size - 1; ++i) {
+                q.push(static_cast<std::uint32_t>(0xA5A50000U + i));
+            }
+            std::uint32_t out    = 0;
+            std::size_t   popped = 0;
+            while(q.size() > kept && q.popInto(out)) { ++popped; }
+            q.wipeFree();
+
+            // every slot outside [head, tail) is zero; the queued elements still come out as pushed
+            auto const& bytes = QueueTestAccess::slots(q).bytes;
+            auto const  head  = static_cast<std::size_t>(QueueTestAccess::head(q));
+            for(std::size_t slot = 0; slot != size; ++slot) {
+                std::size_t const fromHead = (slot + size - head) % size;
+                bool const        queued   = fromHead < q.size();
+                bool              zero     = true;
+                for(std::size_t i = 0; i != sizeof(std::uint32_t); ++i) {
+                    zero = zero && bytes[(slot * sizeof(std::uint32_t)) + i] == std::byte{};
+                }
+                CHECK(queued || zero);
+                CHECK(!queued || !zero);
+            }
+            for(std::size_t i = popped; i != size - 1; ++i) {
+                CHECK(q.popInto(out));
+                CHECK_EQ(out, 0xA5A50000U + i);
+            }
+            CHECK(q.empty());
+        }
+    }
+    CHECK_EQ(overflowCount, 0);
+}
+
 void largerQueueUsesWiderIndex() {
     Kvasir::Test::test("largerQueueUsesWiderIndex");
     resetOverflow();
@@ -803,6 +851,7 @@ int main() {
 
     overflowPolicyIgnore();
     byteElements();
+    wipeFreeZeroesWhatWasPopped();
     largerQueueUsesWiderIndex();
 
     interleavedProducerConsumer();

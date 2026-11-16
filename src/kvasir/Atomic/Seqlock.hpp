@@ -28,9 +28,9 @@ namespace Detail {
     void seqlockCopy(T&       dst,
                      T const& src) {
 #if KVASIR_SEQLOCK_TSAN
-        // atomic_ref<T const> is C++26 (P3323); libc++ does not have it yet. The referenced
-        // object is never const itself (a Seqlock member or the caller's value), so
-        // casting the constness away for the relaxed load is well defined.
+        // atomic_ref<T const> is C++26 (P3323); libc++ does not have it yet. The source may be
+        // a const object (publish() takes a T const&): the cast only makes the type atomic_ref
+        // wants, and the relaxed load through it never writes.
         auto* d = reinterpret_cast<unsigned char*>(&dst);
         auto* s = const_cast<unsigned char*>(reinterpret_cast<unsigned char const*>(&src));
         for(std::size_t i = 0; i < sizeof(T); ++i) {

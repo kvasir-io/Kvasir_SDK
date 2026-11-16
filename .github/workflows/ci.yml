@@ -38,6 +38,9 @@ jobs:
                     - {cc: clang, cxx: clang++, stdlib: libc++, sanitizer: undefined}
                     # the threaded tests' memory ordering (and every other test) under TSan: the justfile's tsan config
                     - {cc: clang, cxx: clang++, stdlib: libc++, sanitizer: thread}
+                    # an access through a pointer of another type (TypeSanitizer): the justfile's clang-tysan config;
+                    # what it needs to say anything is in tests/CMakeLists.txt
+                    - {cc: clang, cxx: clang++, stdlib: libc++, sanitizer: type}
 
         steps:
             - name: Set up C++ environment

@@ -46,6 +46,9 @@ namespace Kvasir { namespace Atomic {
         // implicit-lifetime type: the byte array's lifetime starts the elements' as well.
         template<typename T, std::size_t Size>
         struct RawSlots {
+            static_assert(std::is_implicit_lifetime_v<T>,
+                          "raw slots hold implicit-lifetime elements: the byte array creates them");
+
             alignas(T) std::array<std::byte,
                                   sizeof(T) * Size> bytes;
 
@@ -66,10 +69,11 @@ namespace Kvasir { namespace Atomic {
         };
 
         template<typename T, std::size_t Size>
-        using Slots = std::conditional_t<std::is_trivially_copyable_v<T>
-                                           && std::is_trivially_destructible_v<T>,
-                                         RawSlots<T, Size>,
-                                         std::array<T, Size>>;
+        using Slots
+          = std::conditional_t<std::is_implicit_lifetime_v<T> && std::is_trivially_copyable_v<T>
+                                 && std::is_trivially_destructible_v<T>,
+                               RawSlots<T, Size>,
+                               std::array<T, Size>>;
 
     }   // namespace Detail
 
@@ -268,6 +272,31 @@ namespace Kvasir { namespace Atomic {
         void clear() {
             head_.store(0, storeMemoryOrder);
             tail_.store(0, storeMemoryOrder);
+        }
+
+        // Zero every slot that holds no element. A pop only moves the head: what was popped stays in its slot until a
+        // push writes over it, so a queue that carried something secret (a key in a request) keeps it. The queued
+        // elements are left as they are. Byte by byte through volatile stores, which no compiler drops as dead. Only
+        // with the producer and the consumer both excluded, as forEachQueued (the interrupt that pushes masked).
+        // The slots have to be the raw byte array (Detail::Slots picks it for every element it can hold).
+        void wipeFree()
+            requires std::same_as<Detail::Slots<TDataType,
+                                                Size>,
+                                  Detail::RawSlots<TDataType,
+                                                   Size>>
+        {
+            auto const        tail = tail_.load(loadMemoryOrder);
+            auto const        head = head_.load(loadMemoryOrder);
+            std::size_t const free = Size - distance(head, tail);
+            auto              slot = tail;
+            for(std::size_t n = 0; n != free; ++n) {
+                std::size_t const first = std::size_t{slot} * sizeof(TDataType);
+                for(std::size_t i = 0; i != sizeof(TDataType); ++i) {
+                    static_cast<std::byte volatile&>(data_.bytes[first + i]) = std::byte{};
+                }
+                slot = next(slot);
+            }
+            TSync::fence();
         }
     };
 

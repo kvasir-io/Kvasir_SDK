@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cassert>
 #include <cstddef>
 #include <cstring>
@@ -42,17 +43,24 @@ struct StaticFunction<R(Args...), Size> {
 
     constexpr ~StaticFunction() = default;
 
+    // Not constexpr, like everything below that stores or calls a function: the object is built in byte storage,
+    // which no constant expression can do. An empty StaticFunction, operator bool and reset() are constexpr.
     template<typename F>
         requires(!Detail::isStaticFunctionV<F>)
-    constexpr StaticFunction(F&& f)
+    StaticFunction(F&& f)
       : invokePtr{[](std::byte const* s,
                      Args... args) -> R {
           // Calls a copy of the function object - its own size, not the slot's: a function that
           // replaces itself (or is replaced by a nested interrupt) while it runs keeps its own
-          // captures to the end. Via void*: storage is aligned for F (static_assert below), gcc
-          // -Wcast-align cannot tell.
-          std::remove_cvref_t<F> const copy
-            = *static_cast<std::remove_cvref_t<F> const*>(static_cast<void const*>(s));
+          // captures to the end. The copy is made from the slot's bytes ([bit.cast]), not read
+          // through a pointer to a function object: a slot is filled by a placement new or by a
+          // byte copy of another slot's storage, and only the first puts an object there that
+          // such a pointer could point to ([basic.life]). The storage is aligned for F
+          // (static_assert below).
+          using Callable = std::remove_cvref_t<F>;
+          alignas(Callable) std::array<std::byte, sizeof(Callable)> bytes;
+          std::memcpy(bytes.data(), std::assume_aligned<alignof(Callable)>(s), sizeof(Callable));
+          Callable const copy = std::bit_cast<Callable>(bytes);
           return copy(args...);
       }} {
         using FF = std::remove_cvref_t<F>;
@@ -69,22 +77,22 @@ struct StaticFunction<R(Args...), Size> {
     // publish(), so a slot an interrupt calls can be assigned while that interrupt is live
     template<typename F>
         requires(!Detail::isStaticFunctionV<F>)
-    constexpr StaticFunction& operator=(F&& f) {
+    StaticFunction& operator=(F&& f) {
         publish(std::forward<F>(f));
         return *this;
     }
 
     template<std::size_t OtherSize>
-    constexpr StaticFunction(StaticFunction<R(Args...),
-                                            OtherSize> const& other)
+    StaticFunction(StaticFunction<R(Args...),
+                                  OtherSize> const& other)
       : invokePtr{other.invokePtr} {
         static_assert(Size >= OtherSize, "other function too big to store");
         std::memcpy(storage.data(), other.storage.data(), OtherSize);
     }
 
     template<std::size_t OtherSize>
-    constexpr StaticFunction& operator=(StaticFunction<R(Args...),
-                                                       OtherSize> const& other) {
+    StaticFunction& operator=(StaticFunction<R(Args...),
+                                             OtherSize> const& other) {
         publish(other);
         return *this;
     }
@@ -101,18 +109,13 @@ struct StaticFunction<R(Args...), Size> {
     // Copy and move assignment stay the defaulted, trivial ones (queues of requests depend on
     // the type being trivially copyable): use publish() for a slot an interrupt reads.
     template<typename F>
-    constexpr void publish(F&& f) {
+    void publish(F&& f) {
         StaticFunction const tmp{std::forward<F>(f)};
-        if consteval {
-            storage   = tmp.storage;
-            invokePtr = tmp.invokePtr;
-        } else {
-            storeInvoker(nullptr);
-            std::atomic_signal_fence(std::memory_order_seq_cst);
-            storage = tmp.storage;
-            std::atomic_signal_fence(std::memory_order_seq_cst);
-            storeInvoker(tmp.invokePtr);
-        }
+        storeInvoker(nullptr);
+        std::atomic_signal_fence(std::memory_order_seq_cst);
+        storage = tmp.storage;
+        std::atomic_signal_fence(std::memory_order_seq_cst);
+        storeInvoker(tmp.invokePtr);
     }
 
     constexpr explicit operator bool() const { return loadInvoker() != nullptr; }   // if(cb), !cb
@@ -132,15 +135,11 @@ struct StaticFunction<R(Args...), Size> {
     // publish() into while it runs: that direction (an interrupt assigning what thread code
     // calls) no driver has.
     template<typename... AArgs>
-    constexpr R operator()(AArgs&&... args) const {
-        if consteval {
-            return std::invoke(invokePtr, storage.data(), std::forward<AArgs>(args)...);
-        } else {
-            auto const fn = loadInvoker();
-            assert(fn != nullptr);
-            std::atomic_signal_fence(std::memory_order_seq_cst);
-            return std::invoke(fn, storage.data(), std::forward<AArgs>(args)...);
-        }
+    R operator()(AArgs&&... args) const {
+        auto const fn = loadInvoker();
+        assert(fn != nullptr);
+        std::atomic_signal_fence(std::memory_order_seq_cst);
+        return std::invoke(fn, storage.data(), std::forward<AArgs>(args)...);
     }
 
 private:

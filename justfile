@@ -2,8 +2,9 @@
 #
 # Native builds live in build/<config>/ (one Ninja tree per configuration, so
 # switching configs never throws away another config's objects). The configs
-# mirror the CI matrix in .github/workflows/ci.yml, plus `tsan` for the
-# multicore primitives.
+# mirror the CI matrix in .github/workflows/ci.yml: `tsan` for the multicore
+# primitives, `clang-tysan` (TypeSanitizer) for accesses through a pointer of
+# another type.
 #
 #   just                    # build + run the tests with the default config
 #   just test clang         # same, with clang
@@ -26,7 +27,7 @@ build_root := root / "build"
 jobs := num_cpus()
 
 # All configurations, in CI order. Used by test-all / build-all.
-configs := "gcc gcc-asan gcc-ubsan clang clang-asan clang-ubsan tsan"
+configs := "gcc gcc-asan gcc-ubsan clang clang-asan clang-ubsan tsan clang-tysan"
 
 default: test
 
@@ -48,6 +49,8 @@ flags config:
         clang-asan) echo "clang++ $asserts $libcxx -DKVASIR_TEST_SANITIZER=address -DKVASIR_TEST_STDLIB_DEBUG=true" ;;
         clang-ubsan) echo "clang++ $asserts $libcxx -DKVASIR_TEST_SANITIZER=undefined" ;;
         tsan)       echo "clang++ $asserts $libcxx -DKVASIR_TEST_SANITIZER=thread" ;;
+        # the tree's one C test goes through the same sanitizer, and gcc has no -fsanitize=type
+        clang-tysan) echo "clang++ $asserts $libcxx -DKVASIR_TEST_SANITIZER=type -DCMAKE_C_COMPILER=$(command -v clang)" ;;
         *)
             echo "unknown config '{{config}}'; known: {{configs}}" >&2
             exit 1 ;;

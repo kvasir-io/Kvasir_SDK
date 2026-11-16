@@ -250,6 +250,15 @@ void staysTriviallyCopyable() {
     // operator bool is explicit: tested in a condition, never converted in an overload set
     static_assert(!std::is_convertible_v<StaticFunction<void(), 4>, bool>);
     static_assert(std::is_constructible_v<bool, StaticFunction<void(), 4>>);
+    // What a constant expression can do with one: be empty, be tested, be reset - a static slot is constant
+    // initialized. Storing or calling a function is not constexpr (the object is built in byte storage).
+    static constexpr StaticFunction<void(), 4> constantEmpty{};
+    static_assert(!constantEmpty);
+    static_assert([] {
+        StaticFunction<int(int), 16> f{};
+        f.reset();
+        return !f;
+    }());
     CHECK(true);
 }
 
@@ -425,10 +434,13 @@ void plainAssignmentDoesTear() {
         Slot const tmp = (k & 1U) != 0 ? Slot{first(k)} : Slot{second(k)};
         // the old operator=: the captures, then the invoker, each a plain store (the invoker one
         // whole word, as before). Volatile only so the compiler keeps this order.
-        static_assert(sizeof(Slot) % sizeof(std::uint64_t) == 0);
-        auto* const       dst   = reinterpret_cast<std::uint64_t volatile*>(&slot);
-        auto const* const src   = reinterpret_cast<std::uint64_t const*>(&tmp);
-        std::size_t const words = sizeof(Slot) / sizeof(std::uint64_t);
+        // The words are not the slot's own types (bytes and a function pointer): a word type that may alias
+        // ([basic.lval] has no std::uint64_t access to them).
+        using Word [[gnu::may_alias]] = std::uint64_t;
+        static_assert(sizeof(Slot) % sizeof(Word) == 0);
+        auto* const       dst   = reinterpret_cast<Word volatile*>(&slot);
+        auto const* const src   = reinterpret_cast<Word const*>(&tmp);
+        std::size_t const words = sizeof(Slot) / sizeof(Word);
         for(std::size_t i = 0; i + 1 != words; ++i) { dst[i] = src[i]; }   // captures
         raise(SIGUSR1);                                                    // the interrupt
         dst[words - 1] = src[words - 1];                                   // invoker

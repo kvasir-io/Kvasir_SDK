@@ -7,6 +7,7 @@
 #include "test_harness.hpp"
 
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <cstring>
 
@@ -183,6 +184,45 @@ void fetchOps() {
       0b1100U);
     CHECK_EQ(w, ~0b1000U);
 }
+
+// A sized entry point gets whatever a std::atomic of that size holds - a float, a pointer, an enum - and Word<T>
+// reads and writes it as the unsigned word of that size. The object is read as its own type afterwards, as the
+// program that owns the atomic does.
+enum class State : std::uint8_t { idle, busy };
+
+void wordsOverOtherTypes() {
+    Kvasir::Test::test("Word<T> over other types");
+
+    float         level     = 1.5F;
+    auto const    nextLevel = std::bit_cast<std::uint32_t>(2.5F);
+    std::uint32_t oldLevel{};
+    Shim::exchange(Shim::Word<std::uint32_t>{}, &level, &nextLevel, &oldLevel);
+    CHECK_EQ(oldLevel, std::bit_cast<std::uint32_t>(1.5F));
+    CHECK_EQ(std::bit_cast<std::uint32_t>(level), nextLevel);
+
+    int  target   = 7;
+    int  other    = 9;
+    int* pointer  = &target;
+    int* expected = &target;
+    int* desired  = &other;
+    static_assert(sizeof(int*) == sizeof(std::uintptr_t));
+    // the entry points take the object and the values as untyped memory
+    auto* const object = static_cast<void volatile*>(&pointer);
+    auto* const wanted = static_cast<void*>(&expected);
+    auto* const next   = static_cast<void const*>(&desired);
+    CHECK(Shim::compareExchange(Shim::Word<std::uintptr_t>{}, object, wanted, next));
+    CHECK(pointer == &other);
+    CHECK_EQ(*pointer, 9);
+    expected = &target;
+    CHECK(!Shim::compareExchange(Shim::Word<std::uintptr_t>{}, object, wanted, next));
+    CHECK(expected == &other);   // what the object holds, as the caller's own type
+
+    State state = State::idle;
+    CHECK_EQ(
+      Shim::fetchOp<std::uint8_t>(&state, 1, [](std::uint8_t x, std::uint8_t y) { return x | y; }),
+      0);
+    CHECK(state == State::busy);
+}
 }   // namespace
 
 int main() {
@@ -192,5 +232,6 @@ int main() {
     compareExchange();
     loadStore();
     fetchOps();
+    wordsOverOtherTypes();
     return Kvasir::Test::report();
 }

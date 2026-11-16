@@ -1,0 +1,6 @@
+# Functions TypeSanitizer does not instrument in the SDK test tree (KVASIR_TEST_SANITIZER=type), each with its reason.
+# Only for a report that is no violation: one in Kvasir code that is one gets fixed.
+[type]
+# A task's result slot is storage that is reused: the next task's result, of another type, is constructed in it by
+# placement new. That is a new object, and the sanitizer checks the write against the type that was there.
+fun:*TaskQueue*

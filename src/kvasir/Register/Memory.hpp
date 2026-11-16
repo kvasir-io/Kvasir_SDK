@@ -11,6 +11,8 @@
 //     page.store(i, v);                                                    // one store of word i
 //     std::array<std::byte, 16> rec;
 //     Kvasir::Memory::loadBytes(0x10001000, rec.data(), rec.size());       // a byte copy (memcpy)
+//     Kvasir::Memory::storeBytes(0x50100180, rec.data(), rec.size());      // and the other way
+//     Kvasir::Memory::loadBytesAligned(0x50100180, rec.data(), rec.size()); // device memory: aligned words, in order
 //     auto const id = Kvasir::Memory::loadPlain<std::uint32_t>(0x0080A00C); // a word that never changes (not volatile)
 #include "Mmio.hpp"
 
@@ -54,6 +56,38 @@ namespace Kvasir { namespace Memory {
                                                  std::byte*     out,
                                                  std::size_t    count) {
         Register::mmioLoadBytes(address, out, count);
+    }
+
+    // `count` bytes to the address on, one std::memcpy (any width and order: memory, not a register) - loadBytes'
+    // counterpart, with its limits: not in a RAM function, and what has to be in the memory before a register access
+    // hands it to the hardware is ordered by the caller (Hal::handToHardware()).
+    [[gnu::always_inline]] inline void storeBytes(std::uintptr_t   address,
+                                                  std::byte const* in,
+                                                  std::size_t      count) {
+        Register::mmioStoreBytes(address, in, count);
+    }
+
+    // `count` bytes between device memory and a buffer, for memory that takes aligned accesses of at most a word
+    // and that a register access hands over (a USB controller's buffer RAM): whole words where both ends are word
+    // aligned, bytes otherwise, never moved across the register accesses around the call. Not in a RAM function on a
+    // core without unaligned loads (memcpy there).
+    [[gnu::always_inline]] inline void loadBytesAligned(std::uintptr_t address,
+                                                        std::byte*     out,
+                                                        std::size_t    count) {
+        Register::mmioLoadBytesAligned(address, out, count);
+    }
+
+    [[gnu::always_inline]] inline void storeBytesAligned(std::uintptr_t   address,
+                                                         std::byte const* in,
+                                                         std::size_t      count) {
+        Register::mmioStoreBytesAligned(address, in, count);
+    }
+
+    // `count` bytes from the address on set to `value` (one std::memset: not in a RAM function)
+    [[gnu::always_inline]] inline void fillBytes(std::uintptr_t address,
+                                                 std::byte      value,
+                                                 std::size_t    count) {
+        Register::mmioFillBytes(address, value, count);
     }
 
     // one aligned load of a T from memory that does not change while the program runs (a serial number, calibration

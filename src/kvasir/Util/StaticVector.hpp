@@ -13,6 +13,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>   // destroy, addressof
+#include <new>      // launder
 #include <type_traits>
 #include <utility>
 
@@ -162,12 +163,20 @@ namespace sv_detail {
             alignas(alignof(T)) std::byte data_[sizeof(T) * Capacity];
 
         public:
+            // The elements live in an array T[Capacity] whose lifetime began with data_'s: an array of std::byte
+            // provides storage, and an array is an implicit-lifetime type whatever T is ([intro.object]). launder
+            // gives the pointer to that array ([ptr.launder]; the cast alone still points to a std::byte), and it
+            // decays to its first element: data() + i is arithmetic inside one array ([expr.add]).
             // Through void*: data_ is alignas(T), which gcc's -Wcast-align (strict on ARM) does not see.
             [[nodiscard]] const_pointer data() const noexcept {
-                return static_cast<const_pointer>(static_cast<void const*>(data_));
+                using Array = T const[Capacity];
+                return *std::launder(static_cast<Array*>(static_cast<void const*>(data_)));
             }
 
-            pointer data() noexcept { return static_cast<pointer>(static_cast<void*>(data_)); }
+            pointer data() noexcept {
+                using Array = T[Capacity];
+                return *std::launder(static_cast<Array*>(static_cast<void*>(data_)));
+            }
 
             [[nodiscard]] const_pointer end() const noexcept { return data() + size(); }
 
@@ -242,6 +251,9 @@ namespace sv_detail {
               = std::is_trivially_copy_constructible_v<T> && std::is_trivially_destructible_v<T>;
             static constexpr bool bytewiseMove
               = std::is_trivially_move_constructible_v<T> && std::is_trivially_destructible_v<T>;
+            // what makes the byte copy create the elements in the destination ([cstring.syn], [intro.object])
+            static_assert(!(bytewiseCopy || bytewiseMove) || std::is_implicit_lifetime_v<T>,
+                          "an element copied as bytes is an implicit-lifetime type");
 
             void unsafeCopyBytes(Managed const& other) noexcept {
                 std::memcpy(data_, other.data_, sizeof(T) * other.size());
@@ -746,8 +758,11 @@ private:
             auto const first = end();
             auto const added = sz - size();
             unsafeSetSize(sz);
+            // the byte types only: memset writes bytes, and a bool, an enum or a one-byte struct is no byte
             if constexpr(sizeof(T) == 1) {
-                // -Oz keeps the loop below a loop, one byte per iteration.
+                // -Oz keeps the loop below a loop, one byte per iteration. For every T of one byte, a bool or an
+                // enum included: the byte written is `value`'s whole representation, so each element gets the
+                // bytes of an object of its own type ([basic.types.general]).
                 if(!std::is_constant_evaluated()) {
                     std::memset(first, std::bit_cast<unsigned char>(value), added);
                     return;

@@ -21,6 +21,7 @@ SECTIONS {
            than with .data (common_data_body.inc.ld, which the first match leaves without them) - read-only, and
            covered by an IMAGE_CRC check of the running image. */
         . = ALIGN(4);
+        _LINKER_INTERN_ramfunc_start_ = .;   /* where the RAM functions begin: an image's own link checks can name it */
         *(SORT_BY_ALIGNMENT(.ramfunc*))
         /* hot functions (KVASIR_HOT_FUNC with HOT_FUNCS ram): in RAM already, with the code for the same reason */
         *(SORT_BY_ALIGNMENT(.hotfunc*))
@@ -77,6 +78,10 @@ _LINKER_INTERN_rom_end_     = 0;
 PROVIDE(_LINKER_INTERN_chip_ram_other_size_ = 0);
 _LINKER_INTERN_ram_other_size_ = SIZEOF(.vectors) + SIZEOF(.noInitLowRam) + SIZEOF(.text) + SIZEOF(.ramExec) + SIZEOF(.data) + SIZEOF(.bss) + SIZEOF(.noInit) + SIZEOF(.stack1)
                                + _LINKER_INTERN_chip_ram_other_size_;
+/* What alignment padding between those sections can take at most: ALIGNOF of each (common_ram.ld). */
+_LINKER_INTERN_ram_align_pad_ = ALIGNOF(.vectors) + ALIGNOF(.noInitLowRam) + ALIGNOF(.text) + ALIGNOF(.ramExec) + ALIGNOF(.data)
+                              + ALIGNOF(.bss) + ALIGNOF(.noInit) + ALIGNOF(.stack) + ALIGNOF(.stack1) + ALIGNOF(.heap)
+                              + 24;
 
 ASSERT( (_LINKER_vectors_end_ % 32) == 0, "ERROR: MPU region boundary: the vectors' end is not 32-byte aligned");
 ASSERT( (_LINKER_text_start_ % 32) == 0, "ERROR: MPU region boundary: the code's start is not 32-byte aligned");

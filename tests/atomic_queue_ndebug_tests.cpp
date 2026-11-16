@@ -15,6 +15,7 @@
 #include <array>
 #include <csignal>
 #include <print>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -26,6 +27,9 @@ bool diesBySignal(char const* what,
                   F           f) {
     pid_t const pid = ::fork();
     if(pid == 0) {
+        // this death is meant: no core dump of it. A sanitizer's image is terabytes of address space, and a kernel
+        // that pipes cores to a collector spends minutes on each child (the resource limit does not stop a pipe).
+        ::prctl(PR_SET_DUMPABLE, 0);
         f();
         ::_exit(0);   // the call returned: the bug
     }

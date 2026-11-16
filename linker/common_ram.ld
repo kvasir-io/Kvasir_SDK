@@ -42,3 +42,9 @@ SECTIONS {
 PROVIDE(_LINKER_INTERN_chip_ram_other_size_ = 0);
 _LINKER_INTERN_ram_other_size_ = SIZEOF(.noInitLowRam) + SIZEOF(.stack1) + SIZEOF(.data) + SIZEOF(.ramExec) + SIZEOF(.bss) + SIZEOF(.noInit)
                                + _LINKER_INTERN_chip_ram_other_size_;
+/* What alignment padding between those sections can take at most, which their sizes do not count (padding inside a
+   section is in its SIZEOF): less than ALIGNOF of each before it (a 2 KiB-aligned DMA ring in .bss: up to 2 KiB), and
+   the 3 x 7 B of common_stack_body.inc.ld's ALIGN(8) lines around the stack's own size. common.ld reserves it. */
+_LINKER_INTERN_ram_align_pad_ = ALIGNOF(.noInitLowRam) + ALIGNOF(.stack) + ALIGNOF(.stack1) + ALIGNOF(.data) + ALIGNOF(.ramExec)
+                              + ALIGNOF(.bss) + ALIGNOF(.noInit) + ALIGNOF(.heap)
+                              + 24;

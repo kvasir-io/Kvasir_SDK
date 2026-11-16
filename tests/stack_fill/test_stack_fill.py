@@ -5,8 +5,12 @@ Links image.S with the SDK's real linker scripts, through three chip-shaped scri
 image, a RAM-only image with a section no script names), with ld.lld and arm-none-eabi-ld where installed, and holds
 the stack to the formula, computed here from the image's own sections:
 
-    extra = ram - (sizes of the ram sections but .stack and .heap + min stack + heap + ram // 256)
+    margin = max(sum of the ram sections' alignments + 24, ram // 256)
+    extra = ram - (sizes of the ram sections but .stack and .heap + min stack + heap + margin)
     stack end = align8(end of the stack protector + min stack + extra - stack protector)
+
+The margin is the most the padding between the sections can take (less than each one's alignment, and the stack
+body's three ALIGN(8) lines); an image with a 2 KiB-aligned .bss input links with it where RAM // 256 alone overflowed.
 
 and checks that a heap or minimum stack that does not fit fails the link with a sentence.
 
@@ -27,13 +31,22 @@ LINKER_DIR = HERE.parent.parent / 'linker'
 
 PROTECTOR = 32   # image.S's .stackProtector
 
+# The sections each script family counts in its alignment margin (common_ram.ld / common_ram_only.ld)
+FLASH_PADDED = ('.noInitLowRam', '.stack', '.stack1', '.data',
+                '.ramExec', '.bss', '.noInit', '.heap')
+RAM_ONLY_PADDED = ('.vectors', '.noInitLowRam', '.text', '.ramExec', '.data', '.bss', '.noInit', '.stack', '.stack1',
+                   '.heap')
+
 LAYOUTS = {
-    # script, RAM size, BOOT2 assembled in
-    'flash': ('flash.ld', 16 * 1024, False),
-    'ram_only': ('ram_only.ld', 32 * 1024, False),
-    'ram_only_orphan': ('ram_only_orphan.ld', 32 * 1024, True),
+    # script, RAM size, assembler defines, sections in the margin
+    'flash': ('flash.ld', 16 * 1024, (), FLASH_PADDED),
+    # a 2 KiB-aligned .bss input: a margin of RAM // 256 (64 B here) overflowed the RAM
+    'flash_aligned': ('flash.ld', 16 * 1024, ('ALIGNED',), FLASH_PADDED),
+    'ram_only': ('ram_only.ld', 32 * 1024, (), RAM_ONLY_PADDED),
+    'ram_only_aligned': ('ram_only.ld', 32 * 1024, ('ALIGNED',), RAM_ONLY_PADDED),
+    'ram_only_orphan': ('ram_only_orphan.ld', 32 * 1024, ('BOOT2',), RAM_ONLY_PADDED),
     # the same script for an image without the section: it takes no room
-    'ram_only_orphan_absent': ('ram_only_orphan.ld', 32 * 1024, False),
+    'ram_only_orphan_absent': ('ram_only_orphan.ld', 32 * 1024, (), RAM_ONLY_PADDED),
 }
 
 LINKERS = {
@@ -57,11 +70,11 @@ class StackFill(unittest.TestCase):
             armtc.need(None, 'arm-none-eabi-gcc')
             assembler = ['arm-none-eabi-gcc',
                          '-mcpu=cortex-m3', '-mthumb', '-c']
-        for boot2 in (False, True):
-            obj = cls.tmp / f'image{"_boot2" if boot2 else ""}.o'
-            subprocess.run(assembler + (['-DBOOT2'] if boot2 else []) +
+        for defines in {layout[2] for layout in LAYOUTS.values()}:
+            obj = cls.tmp / f'image{"".join("_" + d for d in defines)}.o'
+            subprocess.run(assembler + [f'-D{d}' for d in defines] +
                            [str(HERE / 'image.S'), '-o', str(obj)], check=True)
-            cls.objects[boot2] = obj
+            cls.objects[defines] = obj
 
     @classmethod
     def tearDownClass(cls):
@@ -69,7 +82,7 @@ class StackFill(unittest.TestCase):
 
     def link(self, linker, layout, min_stack, heap):
         armtc.need(self, LINKERS[linker][0])
-        script, ram, boot2 = LAYOUTS[layout]
+        script, ram, defines, _ = LAYOUTS[layout]
         elf = self.tmp / f'{linker}_{layout}_{min_stack}_{heap}.elf'
         cmd = LINKERS[linker] + [
             f'--library-path={LINKER_DIR}',
@@ -79,7 +92,7 @@ class StackFill(unittest.TestCase):
             '--defsym=cmake_core1_stack_in_scratch=0',
             '--defsym=cmake_scratch_banks=0',
             f'--script={HERE / script}', '--entry=ResetISR',
-            str(self.objects[boot2]), '-o', str(elf)]
+            str(self.objects[defines]), '-o', str(elf)]
         result = subprocess.run(cmd, capture_output=True, text=True)
         return result, elf, ram
 
@@ -95,6 +108,25 @@ class StackFill(unittest.TestCase):
                 found[parts[0]] = (int(parts[1]), int(parts[2]))
         return found
 
+    def alignments(self, elf):
+        """name -> alignment (the section header's Al) from the linked image"""
+        tool = armtc.first(self, 'llvm-readelf', 'arm-none-eabi-readelf')
+        out = subprocess.run([tool, '-S', '-W', str(elf)],
+                             capture_output=True, text=True, check=True).stdout
+        found = {}
+        for line in out.splitlines():
+            if ']' in line and line.lstrip().startswith('['):
+                fields = line.split(']', 1)[1].split()
+                if fields and fields[0].startswith('.') and fields[-1].isdigit():
+                    found[fields[0]] = int(fields[-1])
+        return found
+
+    def margin(self, elf, layout):
+        """the script's margin, from the image's own section alignments"""
+        _, ram, _, padded = LAYOUTS[layout]
+        aligns = self.alignments(elf)
+        return max(sum(max(aligns.get(name, 1), 1) for name in padded) + 24, ram // 256)
+
     def symbols(self, elf):
         tool = armtc.first(self, 'llvm-nm', 'arm-none-eabi-nm')
         out = subprocess.run(
@@ -108,7 +140,8 @@ class StackFill(unittest.TestCase):
         ram_start, ram_end = 0x20000000, 0x20000000 + ram
         others = sum(size for name, (size, addr) in secs.items()
                      if ram_start <= addr < ram_end and name not in ('.stack', '.heap'))
-        extra = ram - (others + min_stack + heap + ram // 256)
+        margin = self.margin(elf, layout)
+        extra = ram - (others + min_stack + heap + margin)
         self.assertGreater(extra, 0)
         syms = self.symbols(elf)
         self.assertEqual(syms['_LINKER_INTERN_stackProtector_end_'] -
@@ -122,7 +155,7 @@ class StackFill(unittest.TestCase):
         top = max(addr + size for size, addr in secs.values()
                   if ram_start <= addr < ram_end)
         self.assertLessEqual(top, ram_end)
-        self.assertLess(ram_end - top, ram // 256 + 64)
+        self.assertLess(ram_end - top, margin + 64)
 
     def expect_refused(self, linker, layout, min_stack, heap):
         result, _, _ = self.link(linker, layout, min_stack, heap)
@@ -144,7 +177,7 @@ class StackFill(unittest.TestCase):
                         linker, layout, 1024, LAYOUTS[layout][1])
 
     def test_margin_does_not_fit(self):
-        # everything fits in RAM, the RAM/256 margin does not: refused
+        # everything fits in RAM, the margin does not: refused
         for linker in LINKERS:
             for layout in LAYOUTS:
                 with self.subTest(linker=linker, layout=layout):
@@ -153,7 +186,7 @@ class StackFill(unittest.TestCase):
                     secs = self.sections(elf)
                     others = sum(size for name, (size, addr) in secs.items()
                                  if 0x20000000 <= addr < 0x20000000 + ram and name not in ('.stack', '.heap'))
-                    heap = ram - others - 1024 - ram // 256 + 16
+                    heap = ram - others - 1024 - self.margin(elf, layout) + 16
                     self.expect_refused(linker, layout, 1024, heap)
 
 

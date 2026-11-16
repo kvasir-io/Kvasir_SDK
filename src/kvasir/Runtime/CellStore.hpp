@@ -31,6 +31,7 @@
 #include "kvasir/Port/Extends.hpp"
 #include "kvasir/Runtime/CrcImageEngine.hpp"   // ImageEngine and the software engines (Util/Crc.hpp)
 #include "kvasir/Runtime/Store.hpp"
+#include "kvasir/Util/PaddingFree.hpp"
 #include "kvasir/Util/Result.hpp"
 #include "kvasir/Util/Retry.hpp"
 
@@ -95,6 +96,10 @@ struct CellStore {
                   "a CellStore config derives from Kvasir::Flash::CellStoreDefaults");
     static_assert(std::is_trivially_copyable_v<T>,
                   "a cell holds T's bytes: T must be trivially copyable");
+    static_assert(
+      PaddingFree<T>,
+      "a cell's CRC and the unchanged check run over T's bytes: T has no padding - name it "
+      "(kvasir/Util/PaddingFree.hpp)");
 
     static constexpr std::uint32_t headerBytes = 16;
     static constexpr std::uint32_t magic       = 0x4C45'434BU;   // 'K' 'C' 'E' 'L'
@@ -217,6 +222,9 @@ private:
         return blockOfCell(c) * blockBytes + (c % cellsPerBlock) * cellBytes;
     }
 
+    // Read into the header's own bytes: they came from a Header a store of this code wrote, which is what gives the
+    // copy its value ([basic.types.general]). Through a byte array and std::bit_cast it measured larger in every
+    // image (a 16-byte copy is a library call at -Oz, four word casts an out-of-line function).
     static bool readHeader(std::uint32_t c,
                            Header&       h) {
         return Region::read(cellAddress(c),

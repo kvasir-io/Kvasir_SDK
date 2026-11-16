@@ -210,11 +210,14 @@ _LINKER_INTERN_min_stack_size_ = cmake_min_stack_size;
 
 /* The stack (common_stack_body.inc.ld) takes the RAM the other sections leave: LENGTH(ram) minus the other RAM
    sections (_LINKER_INTERN_ram_other_size_, common_ram.ld / common_ram_only.ld), the minimum stack, the heap and a
-   1/256 margin; the linker resolves the forward references. Top level, not inside .stack: GNU ld makes a symbol
-   assigned inside an output section relative to that section. Linker arithmetic is unsigned: when that much is not
+   margin: the most the alignment padding between the sections can take (_LINKER_INTERN_ram_align_pad_, the same
+   files), at least 1/256 of the RAM (the 1/256 alone let a 2 KiB-aligned DMA ring in a 256 KiB RAM overflow it); the
+   linker resolves the forward references. Top level, not inside .stack: GNU ld makes a symbol assigned inside an
+   output section relative to that section. Linker arithmetic is unsigned: when that much is not
    left the extra is 0, so an overflow reads "section ... will not fit in region 'ram'", and the assert below catches
    the case where everything fits but the margin does not. */
-_LINKER_INTERN_ram_wanted_  = _LINKER_INTERN_ram_other_size_ + cmake_min_stack_size + cmake_heap_size + LENGTH(ram) / 256;
+_LINKER_INTERN_ram_margin_  = MAX(_LINKER_INTERN_ram_align_pad_, LENGTH(ram) / 256);
+_LINKER_INTERN_ram_wanted_  = _LINKER_INTERN_ram_other_size_ + cmake_min_stack_size + cmake_heap_size + _LINKER_INTERN_ram_margin_;
 _LINKER_INTERN_stack_extra_ = _LINKER_INTERN_ram_wanted_ <= LENGTH(ram) ? LENGTH(ram) - _LINKER_INTERN_ram_wanted_ : 0;
 
 /* ROM/Flash symbols defined in configuration-specific files */
@@ -236,9 +239,9 @@ ASSERT( _LINKER_INTERN_data_start_flash_ % 8 == 0,
 
 ASSERT( _LINKER_INTERN_min_stack_size_ <= _LINKER_INTERN_stack_size_ - _LINKER_INTERN_stackProtector_size_,"ERROR: not enough space for stack");
 
-/* common_stack_body.inc.ld: the sections, MIN_STACK_SIZE, HEAP_SIZE and the RAM/256 margin must fit in RAM */
+/* common_stack_body.inc.ld: the sections, MIN_STACK_SIZE, HEAP_SIZE and the margin must fit in RAM */
 ASSERT( _LINKER_INTERN_ram_wanted_ <= LENGTH(ram),
-        "ERROR: not enough RAM: the sections, the minimum stack, the heap and a RAM/256 margin do not fit");
+        "ERROR: not enough RAM: the sections, the minimum stack, the heap and the alignment margin do not fit");
 
 /* A secondary core's vector table in the image means a SecondaryCore is in use; it needs a
    stack, and a zero-sized one would overflow on the first push. */

@@ -109,10 +109,131 @@ namespace Kvasir { namespace Register {
 #endif
     }
 
+#ifndef KVASIR_REGISTER_MOCK
+    namespace Detail {
+        // `n` bytes between device memory and a buffer, either way, for memory that takes aligned accesses of at most
+        // a word and is handed over by a register access before or after: whole words where both ends are word
+        // aligned, bytes otherwise, kept between what comes before and after.
+        //
+        // The memory clobber, here and at the end, keeps the copy in program order: the hardware reads the memory once
+        // a register is written and writes it before a flag says so, both volatile accesses that plain stores and
+        // loads may otherwise move across. On every core, the memcpy path too.
+        static inline void copyAligned(void*       dst,
+                                       void const* src,
+                                       std::size_t n) {
+            asm volatile("" ::: "memory");
+    #ifdef __ARM_FEATURE_UNALIGNED
+            // Keeps the compiler from making a memcpy of the loops, and unaligned word accesses of that.
+            asm volatile("" : "+r"(dst), "+r"(src));
+
+            auto*       dstByte = static_cast<std::uint8_t*>(dst);
+            auto const* srcByte = static_cast<std::uint8_t const*>(src);
+
+            constexpr std::size_t wordSize = sizeof(std::uint32_t);
+
+            // bytes until dst is word aligned
+            while(n > 0 && (reinterpret_cast<std::uintptr_t>(dstByte) % wordSize) != 0) {
+                *dstByte++ = *srcByte++;
+                --n;
+            }
+
+            // both ends word aligned now: words
+            if((reinterpret_cast<std::uintptr_t>(srcByte) % wordSize) == 0) {
+                // The words lie over whatever the caller handed in (a packet's bytes, a driver's buffer) and over
+                // the device memory: a std::uint32_t has no access to those objects ([basic.lval]), so the word
+                // type may alias. Through void*: the alignment is checked above, which -Wcast-align cannot see.
+                using Word [[gnu::may_alias]] = std::uint32_t;
+                auto*       dstWord           = static_cast<Word*>(static_cast<void*>(dstByte));
+                auto const* srcWord = static_cast<Word const*>(static_cast<void const*>(srcByte));
+
+                while(n >= wordSize) {
+                    *dstWord++ = *srcWord++;
+                    n -= wordSize;
+                }
+
+                dstByte = reinterpret_cast<std::uint8_t*>(dstWord);
+                srcByte = reinterpret_cast<std::uint8_t const*>(srcWord);
+            }
+
+            // the rest: bytes
+            while(n > 0) {
+                *dstByte++ = *srcByte++;
+                --n;
+            }
+    #else
+            std::memcpy(dst, src, n);
+    #endif
+            asm volatile("" ::: "memory");
+        }
+    }   // namespace Detail
+#endif
+
+    // `count` bytes from an address on into out, for device memory that takes aligned accesses of at most a word (a
+    // USB controller's buffer RAM): words where the address and `out` are word aligned, bytes otherwise, and nothing
+    // of it moved across the register accesses around it (Detail::copyAligned). The mock reads byte by byte.
+    [[gnu::always_inline]] inline void mmioLoadBytesAligned(std::uintptr_t address,
+                                                            std::byte*     out,
+                                                            std::size_t    count) {
+#ifdef KVASIR_REGISTER_MOCK
+        for(std::size_t i = 0; i != count; ++i) {
+            out[i] = static_cast<std::byte>(
+              ::Kvasir::Test::readAt<std::uint8_t>(static_cast<unsigned>(address + i)));
+        }
+#else
+        Detail::copyAligned(out, reinterpret_cast<void const*>(address), count);
+#endif
+    }
+
+    // the other way: `count` bytes from `in` to an address on. The mock writes byte by byte.
+    [[gnu::always_inline]] inline void mmioStoreBytesAligned(std::uintptr_t   address,
+                                                             std::byte const* in,
+                                                             std::size_t      count) {
+#ifdef KVASIR_REGISTER_MOCK
+        for(std::size_t i = 0; i != count; ++i) {
+            ::Kvasir::Test::writeAt<std::uint8_t>(static_cast<unsigned>(address + i),
+                                                  static_cast<std::uint8_t>(in[i]));
+        }
+#else
+        Detail::copyAligned(reinterpret_cast<void*>(address), in, count);
+#endif
+    }
+
+    // `count` bytes from an address on set to `value`, as one std::memset (it writes whole words where it can): a
+    // device memory's buffer RAM cleared before the device is used. The mock writes byte by byte.
+    [[gnu::always_inline]] inline void mmioFillBytes(std::uintptr_t address,
+                                                     std::byte      value,
+                                                     std::size_t    count) {
+#ifdef KVASIR_REGISTER_MOCK
+        for(std::size_t i = 0; i != count; ++i) {
+            ::Kvasir::Test::writeAt<std::uint8_t>(static_cast<unsigned>(address + i),
+                                                  static_cast<std::uint8_t>(value));
+        }
+#else
+        std::memset(reinterpret_cast<void*>(address), static_cast<int>(value), count);
+#endif
+    }
+
+    // `count` bytes from `in` to an address on, as one std::memcpy to it (memory written as bytes: a buffer the
+    // hardware takes over afterwards). memcpy is a library call: not for a RAM function. The mock writes byte by byte.
+    [[gnu::always_inline]] inline void mmioStoreBytes(std::uintptr_t   address,
+                                                      std::byte const* in,
+                                                      std::size_t      count) {
+#ifdef KVASIR_REGISTER_MOCK
+        for(std::size_t i = 0; i != count; ++i) {
+            ::Kvasir::Test::writeAt<std::uint8_t>(static_cast<unsigned>(address + i),
+                                                  static_cast<std::uint8_t>(in[i]));
+        }
+#else
+        std::memcpy(reinterpret_cast<void*>(address), in, count);
+#endif
+    }
+
     // One T from an address as a plain, aligned load (not volatile): memory that does not change while the program
     // runs, which the compiler may merge, move or leave out like any read of a constant. The mock reads it as one T.
     template<typename T>
     [[gnu::always_inline]] inline T mmioLoadPlain(std::uintptr_t address) {
+        static_assert(std::is_unsigned_v<T>,
+                      "a plain load is one unsigned word; a record is loadBytes + std::bit_cast");
 #ifdef KVASIR_REGISTER_MOCK
         return ::Kvasir::Test::readAt<T>(static_cast<unsigned>(address));
 #else

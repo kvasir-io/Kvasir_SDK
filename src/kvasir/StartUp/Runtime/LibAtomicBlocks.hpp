@@ -17,26 +17,31 @@ struct Word {
     static_assert(sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8,
                   "a sized entry point's N is its type's size");
 
+    // The object and the caller's values are whatever a std::atomic of this size holds - an enum, a pointer, a
+    // float, a small struct - and T is the unsigned word of that size: no access [basic.lval] gives it. A word type
+    // that may alias, as the compilers' own runtime libraries get by being compiled apart from their callers.
+    using Aliased [[gnu::may_alias]] = T;
+
     static void read(void const volatile* obj,
                      void*                to) {
-        *static_cast<T*>(to) = *static_cast<T const volatile*>(obj);
+        *static_cast<Aliased*>(to) = *static_cast<Aliased const volatile*>(obj);
     }
 
     static void write(void volatile* obj,
                       void const*    from) {
-        *static_cast<T volatile*>(obj) = *static_cast<T const*>(from);
+        *static_cast<Aliased volatile*>(obj) = *static_cast<Aliased const*>(from);
     }
 
     // the object against a plain value
     [[nodiscard]] static bool holds(void const volatile* obj,
                                     void const*          value) {
-        return *static_cast<T const volatile*>(obj) == *static_cast<T const*>(value);
+        return *static_cast<Aliased const volatile*>(obj) == *static_cast<Aliased const*>(value);
     }
 
     // two plain values
     [[nodiscard]] static bool same(void const* a,
                                    void const* b) {
-        return *static_cast<T const*>(a) == *static_cast<T const*>(b);
+        return *static_cast<Aliased const*>(a) == *static_cast<Aliased const*>(b);
     }
 };
 
@@ -116,9 +121,10 @@ template<typename T,
 [[gnu::always_inline]] inline T fetchOp(void volatile* obj,
                                         T              value,
                                         Op             op) {
-    auto* const p   = static_cast<T volatile*>(obj);
-    T const     old = *p;
-    *p              = static_cast<T>(op(old, value));
+    using Aliased [[gnu::may_alias]] = T;   // as Word<T>: the object is whatever the atomic holds
+    auto* const p                    = static_cast<Aliased volatile*>(obj);
+    T const     old                  = *p;
+    *p                               = static_cast<T>(op(old, value));
     return old;
 }
 
