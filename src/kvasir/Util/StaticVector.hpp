@@ -1,5 +1,7 @@
 #pragma once
 
+#include "kvasir/Util/ImplicitLifetime.hpp"
+
 #include <algorithm>   // rotate, move, equal, lexicographical_compare_three_way
 #include <array>
 #include <bit>   // bit_cast
@@ -252,7 +254,7 @@ namespace sv_detail {
             static constexpr bool bytewiseMove
               = std::is_trivially_move_constructible_v<T> && std::is_trivially_destructible_v<T>;
             // what makes the byte copy create the elements in the destination ([cstring.syn], [intro.object])
-            static_assert(!(bytewiseCopy || bytewiseMove) || std::is_implicit_lifetime_v<T>,
+            static_assert(!(bytewiseCopy || bytewiseMove) || Kvasir::ImplicitLifetime<T>,
                           "an element copied as bytes is an implicit-lifetime type");
 
             void unsafeCopyBytes(Managed const& other) noexcept {

@@ -575,6 +575,9 @@ kvasir_add_host_test(kvasir_test_util_bitfield util_bitfield_tests.cpp)
 kvasir_add_must_fail_test(kvasir_test_util_bitfield_must_fail bitfield_must_fail)
 # Util/PaddingFree.hpp: structs with and without padding, floating point, arrays, nesting, the author's declaration
 kvasir_add_host_test(kvasir_test_util_padding_free util_padding_free_tests.cpp)
+# Util/ImplicitLifetime.hpp: the trait-based fallback (arm GCC 15's libstdc++) against the real trait, and the queue's
+# slots
+kvasir_add_host_test(kvasir_test_util_implicit_lifetime util_implicit_lifetime_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_static_vector util_static_vector_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_static_containers util_static_containers_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_static_function util_static_function_tests.cpp LABELS threaded)

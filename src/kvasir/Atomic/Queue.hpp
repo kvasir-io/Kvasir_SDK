@@ -1,5 +1,6 @@
 #pragma once
 #include "kvasir/Atomic/Sync.hpp"
+#include "kvasir/Util/ImplicitLifetime.hpp"
 
 #include <algorithm>
 #include <array>
@@ -18,8 +19,9 @@ namespace Kvasir { namespace Atomic {
 
     // The default action on a push into a full queue. It never returns: an assertion failure in a
     // build with asserts, a trap with NDEBUG (returning from a [[noreturn]] function would be
-    // undefined behaviour). The trap is not a Kvasir panic because Atomic does not depend on Util; on a
-    // target it ends in the fault handler. A policy of your own may log, count or reset instead.
+    // undefined behaviour). The trap is not a Kvasir panic because Atomic takes nothing from Util but a
+    // type trait (ImplicitLifetime.hpp); on a target it ends in the fault handler. A policy of your own
+    // may log, count or reset instead.
     struct OverflowPolicyAssert {
         [[noreturn]] void operator()() {
 #ifdef NDEBUG
@@ -46,7 +48,7 @@ namespace Kvasir { namespace Atomic {
         // implicit-lifetime type: the byte array's lifetime starts the elements' as well.
         template<typename T, std::size_t Size>
         struct RawSlots {
-            static_assert(std::is_implicit_lifetime_v<T>,
+            static_assert(Kvasir::ImplicitLifetime<T>,
                           "raw slots hold implicit-lifetime elements: the byte array creates them");
 
             alignas(T) std::array<std::byte,
@@ -70,7 +72,7 @@ namespace Kvasir { namespace Atomic {
 
         template<typename T, std::size_t Size>
         using Slots
-          = std::conditional_t<std::is_implicit_lifetime_v<T> && std::is_trivially_copyable_v<T>
+          = std::conditional_t<Kvasir::ImplicitLifetime<T> && std::is_trivially_copyable_v<T>
                                  && std::is_trivially_destructible_v<T>,
                                RawSlots<T, Size>,
                                std::array<T, Size>>;
