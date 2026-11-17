@@ -90,17 +90,26 @@ static_assert(!PaddingFree<long double>,
 // structs of integers: std::has_unique_object_representations decides
 static_assert(PaddingFree<Packed>);
 static_assert(!PaddingFree<Gap>);
-// structs with floating point: by their members
+// structs with floating point: by their members, where the compiler has structured-binding packs (P1061)
+#if __cpp_structured_bindings >= 202411L
 static_assert(PaddingFree<WithFloat>);
-static_assert(!PaddingFree<FloatThenTail>);
 static_assert(PaddingFree<Nested>);
-static_assert(!PaddingFree<NestedGap>);
 static_assert(PaddingFree<Named>);
-// arrays, in and out of a struct, cv-qualified
 static_assert(PaddingFree<std::array<float,
                                      3>>
-              && PaddingFree<float[3]> && PaddingFree<WithFloat const>);
+              && PaddingFree<WithFloat const>);
 static_assert(PaddingFree<Tables>);
+#else
+// without them (arm GCC 15) an aggregate with a float member is refused: never wrong towards "padding-free"
+static_assert(!PaddingFree<WithFloat> && !PaddingFree<Nested> && !PaddingFree<Named>
+              && !PaddingFree<std::array<float,
+                                         3>>
+              && !PaddingFree<Tables>);
+#endif
+static_assert(!PaddingFree<FloatThenTail>);
+static_assert(!PaddingFree<NestedGap>);
+// arrays, cv-qualified
+static_assert(PaddingFree<float[3]> && PaddingFree<Packed const> && PaddingFree<Packed[2]>);
 static_assert(!PaddingFree<TablesOfGaps>);
 static_assert(!PaddingFree<std::array<Gap,
                                       2>>
@@ -112,7 +121,7 @@ static_assert(PaddingFree<Declared>);
 
 void decidedAtCompileTime() {
     Kvasir::Test::test("decidedAtCompileTime");
-    CHECK(PaddingFree<WithFloat>);
+    CHECK(PaddingFree<Packed>);
     CHECK(!PaddingFree<Gap>);
 }
 }   // namespace

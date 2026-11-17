@@ -31,8 +31,12 @@ namespace Detail {
       = std::numeric_limits<T>::digits == 24 || std::numeric_limits<T>::digits == 53
      || std::numeric_limits<T>::digits == 113;
 
+#if __cpp_structured_bindings >= 202411L
     // The members of an aggregate, by structured binding: their sizes add up to the aggregate's and each is without
-    // padding itself. Never called: the answer is the return type.
+    // padding itself. Never called: the answer is the return type. Needs structured-binding packs (P1061): arm GCC 15
+    // has none (__cpp_structured_bindings 202403L) and does not even parse the body, so there an aggregate is
+    // padding-free only by has_unique_object_representations or its author's word -- one with a float member is not
+    // (never wrong towards "padding-free"; the compilers with packs walk it).
     template<typename T>
     auto aggregateFilledByMembers(T const& value) {
         auto const& [... member] = value;
@@ -40,6 +44,7 @@ namespace Detail {
                                   && (PaddingFreeOf<std::remove_cvref_t<decltype(member)>>::value
                                       && ...)>{};
     }
+#endif
 
     template<typename T>
     struct PaddingFreeOf : std::false_type {};
@@ -56,12 +61,41 @@ namespace Detail {
         requires(!std::has_unique_object_representations_v<T[N]>)
     struct PaddingFreeOf<T[N]> : PaddingFreeOf<std::remove_cv_t<T>> {};
 
+#if __cpp_structured_bindings >= 202411L
     template<typename T>
         requires(std::is_aggregate_v<T> && std::is_class_v<T>
                  && !std::has_unique_object_representations_v<T> && !declaredPaddingFree<T>)
     struct PaddingFreeOf<T> : decltype(aggregateFilledByMembers(std::declval<T const&>())){};
+#endif
 }   // namespace Detail
 
 template<typename T>
 concept PaddingFree = Detail::PaddingFreeOf<std::remove_cv_t<T>>::value;
+
+namespace Detail { namespace PaddingFreeChecks {
+    struct Words {
+        unsigned a;
+        unsigned b;
+    };
+
+    struct WithFloat {
+        unsigned a;
+        float    b;
+    };
+
+    struct Padded {
+        unsigned char a;
+        unsigned      b;
+    };
+
+    static_assert(PaddingFree<Words> && !PaddingFree<Padded>,
+                  "words fill their bytes, a padded struct does not");
+#if __cpp_structured_bindings >= 202411L
+    static_assert(PaddingFree<WithFloat>,
+                  "the member walk takes a float member");
+#else
+    static_assert(!PaddingFree<WithFloat>,
+                  "without structured-binding packs a float member is not walked: no");
+#endif
+}}   // namespace Detail::PaddingFreeChecks
 }   // namespace Kvasir

@@ -42,8 +42,14 @@ calls Kvasir::SPI::QueueCore::* Kvasir::StaticFunction<void?(Kvasir::Bus::*Outco
 # hold and release, the bus submit). DeviceCore::turn and ::restart, the engine's entries, stay out of line, so the
 # engine's own functions inlined into them are theirs and never an application function's.
 calls Kvasir::Engine::Detail::Engine::* Kvasir::Engine::DeviceCore::ChipHooks::* Kvasir::Engine::Device::DeviceHooks::* Kvasir::Engine::Device::knobs::* Kvasir::Engine::Device::hooks::*
-calls Kvasir::Engine::Detail::EngineState::* Kvasir::Engine::DeviceCore::ChipHooks::* Kvasir::Engine::Device::DeviceHooks::* Kvasir::Engine::Device::knobs::* Kvasir::Engine::Device::hooks::*
-calls Kvasir::Engine::DeviceCore::link Kvasir::Engine::DeviceCore::ChipHooks::* Kvasir::Engine::Device::DeviceHooks::* Kvasir::Engine::Device::knobs::* Kvasir::Engine::Device::hooks::*
+# EngineState::disabledNow's one indirect call is the device's enable (DeviceKnobs::enabled: Device.hpp knobs sets it
+# to DeviceHooks::enabledBy for a shared Config::enabledBy, to DeviceHooks::enabled for a Config::enabled()), and
+# DeviceCore::link adds the gate (DeviceKnobs::gateOffline, set to DeviceHooks::gateOffline alone) to the enable it
+# inlines through disabled_(). A note replaces the unresolved calls, so it names every target the code stores. Named
+# as they are: as "every hook table" they made a cycle through ChipHooks::finishInit wherever gcc keeps the two out of
+# line, and a new indirect call in EngineState now shows as unresolved instead of being taken for one of them.
+calls Kvasir::Engine::Detail::EngineState::disabledNow Kvasir::Engine::Device::DeviceHooks::enabledBy Kvasir::Engine::Device::DeviceHooks::enabled
+calls Kvasir::Engine::DeviceCore::link Kvasir::Engine::Device::DeviceHooks::gateOffline Kvasir::Engine::Device::DeviceHooks::enabledBy Kvasir::Engine::Device::DeviceHooks::enabled
 calls Kvasir::Engine::DeviceCore::restart Kvasir::Engine::DeviceCore::ChipHooks::* Kvasir::Engine::Device::DeviceHooks::* Kvasir::Engine::Device::knobs::* Kvasir::Engine::Device::hooks::*
 calls Kvasir::Engine::DeviceCore::turn Kvasir::Engine::DeviceCore::ChipHooks::* Kvasir::Engine::Device::DeviceHooks::* Kvasir::Engine::Device::knobs::* Kvasir::Engine::Device::hooks::*
 # A chip's write paths (DeviceCore.hpp WriteOps): one small function per write group, the lambdas of writeOpsTable
