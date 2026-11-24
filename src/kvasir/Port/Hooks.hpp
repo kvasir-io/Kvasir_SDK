@@ -79,6 +79,10 @@
 //   Crc::ImageEngines                Runtime/CrcImageEngine.hpp;         a set with `For<P, TableSize>`, the chip's
 //                                    SoftwareEngines                     (chip_rp_common DmaCrc::Sniffer<Dma, ch>,
 //                                                                        chip_atsam_common DmaCrc::Dmac)
+//   AnnouncedReset::WatchdogFor      Runtime/AnnouncedReset.hpp;         the image's chip watchdog (`Kvasir::Watchdog<
+//                                    declared only (no feed)             Config>`), fed while announce() waits for the
+//                                                                        log printer (Health::WatchdogFront's
+//                                                                        feed(AnnouncedResetKey))
 //
 // uc_log's ComBackend<Tag::User> and LogClock<Tag::User> have the same shape (uc_log's own tag, its own lookup).
 //

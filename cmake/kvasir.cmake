@@ -70,6 +70,13 @@ set(JLINK_PROBE
         "Which J-Link on USB: serial number or nickname (the USB line of the JLinkExe command files, uc_log_printer --probe). Empty takes the only one connected; with two connected the printer refuses to start and JLinkExe cannot connect"
 )
 
+set(JLINK_SCRIPT_FILE
+    ""
+    CACHE
+        STRING
+        "A J-Link script the DLL runs at every connect of uc_log_printer (--jlink_script_file), e.g. one whose InitTarget() opens a chip locked by a debug key. Empty: none"
+)
+
 set(DUPLEX_BASE_PORT
     ""
     CACHE STRING "Choose the first tcp port for uc_log duplex channels, empty for default")
@@ -77,6 +84,20 @@ set(DUPLEX_BASE_PORT
 set(UC_LOG_TRANSPORT
     ""
     CACHE STRING "uc_log_printer control and duplex transport: unix (default) or tcp")
+
+set(UC_LOG_RTT_VIA_DLL
+    OFF
+    CACHE
+        BOOL
+        "uc_log_printer reads RTT through the J-Link DLL's own RTT (--rtt_via_dll): max throughput, but a stop, reset or flash can drop or repeat lines without a message. For rate measurements only"
+)
+
+set(UC_LOG_STALL_FIRST_STEP
+    ""
+    CACHE
+        STRING
+        "A test switch: uc_log_printer starts a stall's recovery ladder at this step, 2 or 3 (--stall_first_step). Empty: the whole ladder"
+)
 
 if(COMPILE_TARGET STREQUAL arm_clang)
     set(CPPLIB

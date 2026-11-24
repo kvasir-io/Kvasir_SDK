@@ -9,14 +9,14 @@ namespace Kvasir::Atomic {
 // A software spinlock on the architecture's exclusive accesses (ldaexb/strexb/stlb on
 // Armv8-M mainline). Not the SIO hardware spinlocks: erratum RP2350-E2 makes writes to the
 // doorbell and MTIME registers release those spuriously, so pico-sdk and this SDK both
-// stay away from them (RP2350 datasheet 3.1.4 / RP2350-E2, md l.1903, l.66724).
+// stay away from them (RP2350 datasheet 3.1.4 / RP2350-E2, md l.2056, l.76939).
 //
 // Exclusives only arbitrate between cores through the bus fabric's global monitor, and a
 // Cortex-M33 only sends them there for shareable memory - which, by default, nothing is.
 // The chip's startup sets ACTLR.EXTEXCLALL on every core in a multicore build so that all
 // exclusives go global: bit 29, "0 = ... only assert HEXCL and respond to HEXOKAY if the
 // address is shareable", 1 = all of them (Cortex-M33 TRM 100230 B2.2, md l.1788; RP2350
-// datasheet Table 188 ACTLR, md l.8655). Measured without it: two cores doing fetch_add on one word keep
+// datasheet Table 194 ACTLR, md l.9775). Measured without it: two cores doing fetch_add on one word keep
 // half the increments, and this lock holds or fails depending on which core is a cycle
 // ahead. With it: exact counts, every time.
 //

@@ -7,6 +7,11 @@
 #include <chrono>
 #include <concepts>
 
+namespace Kvasir::AnnouncedReset::Detail {
+template<typename Watchdog>
+struct FeedWatchdog;
+}   // namespace Kvasir::AnnouncedReset::Detail
+
 namespace Kvasir::Health {
 template<typename Startup, typename Watchdog, typename Clock, typename Config>
 struct Supervisor;
@@ -16,6 +21,16 @@ class FeedKey {
 
     template<typename Startup, typename Watchdog, typename Clock, typename Config>
     friend struct Supervisor;
+};
+
+/// The passkey of the one other feed (Health/WatchdogFront.hpp's feed(AnnouncedResetKey)): only
+/// AnnouncedReset::announce() makes one, while it waits for the log printer right before the reset it announces
+/// (Runtime/AnnouncedReset.hpp) - so a gated watchdog stays fed by its supervisor alone everywhere else.
+class AnnouncedResetKey {
+    constexpr AnnouncedResetKey() = default;
+
+    template<typename Watchdog>
+    friend struct ::Kvasir::AnnouncedReset::Detail::FeedWatchdog;
 };
 
 /// A watchdog Health::Supervisor can drive: feed() - with its FeedKey when the watchdog is gated, without one when

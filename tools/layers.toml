@@ -4,6 +4,8 @@
 # layer has `log = true`. `has_include = false`: no `__has_include` feature switch in that layer.
 #
 #   base          Mpl, Util base (attributes, concepts, Static*, Crc, ...)          -> std only
+#   net           the network stack's core (kvasir_devices src/kvasir/Net, Kvasir::Net): std only like base, and its
+#                 log seam (Net/Log.hpp takes uc_log when it is on the include path: a __has_include switch)
 #   register      the register model (Register, Io vocabulary)                    -> base
 #   port          the port contract (hook primaries, interrupt traits, linker symbols, resources) and the HAL
 #                 vocabulary (Hal/: clock, owner, DMA channel, pin, UART and SPI vocabulary)
@@ -20,12 +22,13 @@
 #   log_adapter   formatters for other libraries (aglio, RegisterFmt): opt-in; a library layer includes one only as a
 #                 [keep.include] (none: the log variants force RegisterFmt in, util.cmake; a driver names Register/Flags.hpp)
 
-order = ["base", "register", "port", "core", "runtime", "chip", "bus", "chip_drivers", "devices", "app"]
+order = ["base", "net", "register", "port", "core", "runtime", "chip", "bus", "chip_drivers", "devices", "app"]
 
 skip_dirs = [".git", "build", "build_*", "build-*", "_deps", "docker_build", "cmake-build-*"]
 
 [layer.base]
 has_include = false
+[layer.net]
 [layer.register]
 log = false          # no log library inside the register model
 has_include = false
@@ -172,6 +175,8 @@ exclude = ["test/**"]
 "src/kvasir/Devices/{PushButton,QuadratureDecoder,RotaryEncoder,Quantities}.hpp" = "bus"   # what the chips' input and SPI drivers build on
 "src/kvasir/Devices/USB/{Backend,Config,Descriptors,Mixins,VendorReset}.hpp" = "bus"   # the contract a chip's USB backend implements
 "src/kvasir/Devices/**" = "devices"
+"src/kvasir/Net/drivers/**" = "devices"   # the link drivers: Kvasir drivers (SDK, chip_rp_common for the radio's PIO bus)
+"src/kvasir/Net/**" = "net"
 
 # --- include spellings: where an include goes when it does not resolve next to the including file --------------
 # (longest prefix wins; `repo` + `path`: the spelling with the prefix replaced by `path` is classified by that
@@ -182,6 +187,10 @@ exclude = ["test/**"]
 prefix = "kvasir/Devices/"
 repo = "kvasir_devices"
 path = "src/kvasir/Devices/"
+[[spelling]]
+prefix = "kvasir/Net/"
+repo = "kvasir_devices"
+path = "src/kvasir/Net/"
 [[spelling]]
 prefix = "kvasir/"
 repo = "Kvasir_SDK"

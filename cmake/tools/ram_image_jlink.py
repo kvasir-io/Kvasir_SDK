@@ -5,7 +5,7 @@ A reset runs the chip's boot ROM, which boots whatever is in flash (or waits in 
 the image just loaded into RAM. So the script loads the image and then does what a reset would
 do with this image's vector table (Armv6-M ARM DDI0419E B1.5.5 "Reset behavior", the same in
 Armv8-M): SP_main = word 0, PC = word 1 with bit 0 cleared, EPSR.T = 1 (xPSR bit 24, B1.4.2),
-and VTOR = the table (0xE000ED08: RP2040 datasheet 2.4.8 Table 106, Armv8-M ARM DDI0553B.y
+and VTOR = the table (0xE000ED08: RP2040 datasheet 2.4.8 Table 107, Armv8-M ARM DDI0553B.y
 D1.2.272), so interrupts reach this image's handlers and not the boot ROM's.
 
 The words come from the linked ELF: the table starts at the linker symbol

@@ -11,9 +11,38 @@ struct Kvasir::Register::CpuHzCeiling<Kvasir::Tag::User> {
     static constexpr std::uint64_t value = 266'000'000;
 };
 
+// what an application binds (AnnouncedReset::WatchdogFor, next to its watchdog's alias), here a watchdog that counts
+// its feeds and how many polls of a wait went by since the last one
+namespace announced_reset_test {
+struct FeedLog {
+    std::uint64_t feeds{};
+    std::uint32_t pollsSinceFeed{};
+    std::uint32_t maxGap{};   // the most polls of a wait between two feeds
+};
+
+inline FeedLog feedLog{};
+
+// what Detail::feedFor asks of the binding
+template<typename Hook>
+concept Bound = requires { typename Hook::type; };
+
+struct FakeWatchdog {
+    static void feed(Kvasir::Health::AnnouncedResetKey /*key*/) {
+        ++feedLog.feeds;
+        feedLog.pollsSinceFeed = 0;
+    }
+};
+}   // namespace announced_reset_test
+
+template<>
+struct Kvasir::AnnouncedReset::WatchdogFor<Kvasir::Tag::User> {
+    using type = announced_reset_test::FakeWatchdog;
+};
+
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <type_traits>
 
 #if defined(                                                                                 \
   KVASIR_TEST_UC_LOG_PRINTER)   // tests/CMakeLists.txt, where the nested uc_log checkout is
@@ -38,6 +67,12 @@ struct ScriptedAccess {
 
     std::uint32_t load(Field f) const {
         auto const i = static_cast<std::size_t>(f);
+        if(f == Field::ack
+           || (f == Field::magic && acked)) {   // a poll of the ack wait or of the grace
+            auto& log = announced_reset_test::feedLog;
+            ++log.pollsSinceFeed;
+            log.maxGap = log.pollsSinceFeed > log.maxGap ? log.pollsSinceFeed : log.maxGap;
+        }
         if(f == Field::ack) {
             ++ackPolls;
             if(ackAfter && ackPolls > *ackAfter) {
@@ -194,12 +229,15 @@ int main() {
     Kvasir::Test::test(
       "without USE_UC_LOG the public calls are constants, even with the block armed");
     {
-        kvasir_announced_reset.armed = hostArmed;
+        announced_reset_test::feedLog = {};
+        kvasir_announced_reset.armed  = hostArmed;
         CHECK(announce() == Outcome::notArmed);
         CHECK(announce(4'000) == Outcome::notArmed);
         CHECK(!printerListening());
         CHECK(!waitForPrinter(10));
         CHECK_EQ(kvasir_announced_reset.request, 0U);   // untouched
+        CHECK_EQ(announced_reset_test::feedLog.feeds,
+                 std::uint64_t{0});   // and the watchdog not fed
         kvasir_announced_reset.armed = 0;
     }
 #endif
@@ -216,6 +254,82 @@ int main() {
         // the 200 MHz the bound once assumed would wait ~0.375 s on a 266 MHz part
         CHECK(static_cast<std::uint64_t>(p.ack) * minCyclesPerPoll > 200'000'000ULL / 2);
     }
+
+    using announced_reset_test::feedLog;
+
+    Kvasir::Test::test("the bound watchdog is fed at every poll of the ack wait and of the grace");
+    {
+        feedLog = {};
+        ScriptedAccess a{.ackAfter = 10};
+        CHECK(announceVia(a, true, small) == Outcome::acknowledged);
+        CHECK_EQ(a.ackPolls, 11U);
+        CHECK_EQ(a.gracePolls, small.grace);
+        CHECK_EQ(feedLog.feeds, std::uint64_t{a.ackPolls + a.gracePolls});
+        CHECK_EQ(feedLog.maxGap, 1U);   // never two polls without a feed between them
+    }
+
+    Kvasir::Test::test("no answer: fed to the end of the bound");
+    {
+        feedLog = {};
+        ScriptedAccess a{};
+        CHECK(announceVia(a, true, small) == Outcome::timedOut);
+        CHECK_EQ(a.ackPolls, small.ack);
+        CHECK_EQ(feedLog.feeds, std::uint64_t{small.ack});
+        CHECK_EQ(feedLog.maxGap, 1U);
+    }
+
+    Kvasir::Test::test("not armed, no debugger: nothing fed (the caller's watchdog as it was)");
+    {
+        feedLog = {};
+        ScriptedAccess a{.ackAfter = 0};
+        a.words[1] = 0;
+        CHECK(announceVia(a, true, small) == Outcome::notArmed);
+        CHECK(announceVia(a, false, small) == Outcome::notArmed);
+        CHECK_EQ(feedLog.feeds, std::uint64_t{0});
+    }
+
+    // the binding is looked up where the image calls, not where the header is read: a call of the header on a block
+    // (announceOn) and the application's own call with the header's access feed it too
+    Kvasir::Test::test("announceOn() and announceVia(VolatileAccess) feed the bound watchdog");
+    {
+        Block volatile silent{magicValue,
+                              hostArmed,
+                              0,
+                              0};   // a printer armed it and died: no ack ever
+        feedLog = {};
+        CHECK(announceOn(silent, true, small) == Outcome::timedOut);
+        CHECK_EQ(feedLog.feeds, std::uint64_t{small.ack});
+        feedLog = {};
+        CHECK(announceVia(VolatileAccess{silent}, true, small) == Outcome::timedOut);
+        CHECK_EQ(feedLog.feeds, std::uint64_t{small.ack});
+    }
+
+    Kvasir::Test::test("an image that binds no watchdog feeds nothing");
+    {
+        // the binding is what FeedOf finds; without one (the primary, declared only) there is no type to find
+        static_assert(std::is_same_v<Detail::FeedOf<>,
+                                     Detail::FeedWatchdog<announced_reset_test::FakeWatchdog>>);
+        static_assert(!announced_reset_test::Bound<WatchdogFor<struct NoImage>>);
+        feedLog = {};
+        ScriptedAccess a{.ackAfter = 3};
+        CHECK(
+          (announceVia<ScriptedAccess, Detail::NoFeed>(a, true, small) == Outcome::acknowledged));
+        CHECK_EQ(feedLog.feeds, std::uint64_t{0});
+    }
+
+#ifdef USE_UC_LOG
+    Kvasir::Test::test(
+      "announce() feeds the bound watchdog at every poll (the image's WatchdogFor)");
+    {
+        feedLog = {};
+        kvasir_announced_reset.armed
+          = hostArmed;   // a printer armed the block and is gone: no ack comes
+        CHECK(announce() == Outcome::timedOut);
+        CHECK_EQ(feedLog.feeds, std::uint64_t{defaultPolls<>().ack});
+        kvasir_announced_reset.armed = 0;
+        kvasir_announced_reset.ack   = kvasir_announced_reset.request;
+    }
+#endif
 
     return Kvasir::Test::report();
 }

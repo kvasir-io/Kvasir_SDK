@@ -4,7 +4,7 @@
 // Why: on the RP2040, a J-Link access while the chip resets itself (a watchdog reboot, the boot
 // ROM's reset_to_usb_boot) fails, and SEGGER's DLL then "recovers" the chip through the Rescue
 // Debug Port. That sets CHIP_RESET.PSM_RESTART_FLAG (RP2040 data sheet 2.3.4.2 "Rescue DP" and the
-// CHIP_RESET register, md l.7562 / l.7892), and the boot ROM parks core 0 in its safe loop (wfi at
+// CHIP_RESET register, md l.8814 / l.9217), and the boot ROM parks core 0 in its safe loop (wfi at
 // 0x30) instead of booting or entering BOOTSEL. The DLL cannot be told not to, so the firmware and
 // the log printer (uc_log) agree that the probe stays off the chip while it resets:
 //
@@ -48,12 +48,24 @@
 // the hook chip/WaitBounds.hpp specialises; kvasir/Port/Hooks.hpp). Interrupts are masked while it waits,
 // so interrupt load cannot stretch a wait past the host's pause; a caller that goes on (not armed, timed out) had
 // them masked for at most the ack wait.
+//
+// The image's watchdog is fed while it waits, once a poll (WatchdogFor below, which the application binds): an armed
+// block whose printer does not answer costs the whole ack wait, longer than a short watchdog, and the reset after it
+// would then be the watchdog's, not the one announced (on an RP2350: a printer killed without its shutdown left the
+// block armed, and a 500 ms watchdog turned the boot ROM's FLASH_UPDATE reboot of an A/B update into a NORMAL boot:
+// the update was not taken). A feed restarts the watchdog's full timeout (Kvasir::Watchdog<Config>::feed, the application's
+// reload), by design: the wait itself is bounded (~0.6 s by the counter; by counted polls longer only below the
+// chip's fastest clock, above) and the reset follows it - a caller that leaves the reset to the watchdog (StopFeeding)
+// gets it one timeout after announce() returns, inside the printer's pause it asked for (timeout + 1 s). One feed a
+// poll: two feeds are at most one poll apart, microseconds against any watchdog's timeout.
 
 #include "kvasir/Common/Tags.hpp"
+#include "kvasir/Health/HealthKey.hpp"   // AnnouncedResetKey: the watchdog's feed while announce() waits
 #include "kvasir/Port/Capabilities.hpp"
 #include "kvasir/Port/Hooks.hpp"
 
 #include <cstdint>
+#include <type_traits>
 #ifdef __arm__
     #include "core/InterruptMask.hpp"
 #endif
@@ -70,6 +82,18 @@ extern "C" [[gnu::weak]] std::uint32_t kvasir_announced_reset_time_us();
 #endif
 
 namespace Kvasir::AnnouncedReset {
+
+/// The image's chip watchdog, fed while announce() waits for the printer (the late-hook form, kvasir/Port/Hooks.hpp):
+/// the application binds it next to the watchdog's alias,
+///
+///     template<>
+///     struct Kvasir::AnnouncedReset::WatchdogFor<Kvasir::Tag::User> { using type = ::Watchdog; };
+///
+/// (`::Watchdog` or the alias's namespace: inside the specialisation a bare `Watchdog` finds Kvasir::Watchdog). Any
+/// chip's `Kvasir::Watchdog<Config>`, gated or not (its front's feed(Health::AnnouncedResetKey)). Declared only: no
+/// feed - an image without a watchdog waits as it did.
+template<typename T, typename... Ts>
+struct WatchdogFor;
 
 /// The host's side (uc_log `printer/AnnouncedReset.hpp`) has the same numbers.
 inline constexpr std::uint32_t magicValue = 0x5253'5441U;   // "ATSR" in memory: the block is there
@@ -145,6 +169,36 @@ namespace Detail {
         IrqMask& operator=(IrqMask const&) = delete;
     };
 #endif
+
+    // No watchdog bound (WatchdogFor declared only): nothing to feed.
+    struct NoFeed {
+        static constexpr void feed() {}
+    };
+
+    // The bound watchdog's feed while announce() waits: the one place an AnnouncedResetKey is made.
+    template<typename Watchdog>
+    struct FeedWatchdog {
+        static_assert(
+          requires(Health::AnnouncedResetKey key) { Watchdog::feed(key); },
+          "AnnouncedReset::WatchdogFor<Tag::User>'s type is no chip watchdog: it has no "
+          "feed(Health::AnnouncedResetKey) (Health/WatchdogFront.hpp)");
+
+        static void feed() { Watchdog::feed(Health::AnnouncedResetKey{}); }
+    };
+
+    // The application's WatchdogFor, looked up where Dep is known; NoFeed where it bound none.
+    template<typename... Dep>
+    consteval auto feedFor() {
+        using Hook = Port::LateT<WatchdogFor<Tag::User>, Dep...>;
+        if constexpr(requires { typename Hook::type; }) {
+            return std::type_identity<FeedWatchdog<typename Hook::type>>{};
+        } else {
+            return std::type_identity<NoFeed>{};
+        }
+    }
+
+    template<typename... Dep>
+    using FeedOf = typename decltype(feedFor<Dep...>())::type;
 
     // false only when the core can tell for certain that no debugger has halting debug enabled
     // (cortex_common/Debug.hpp's Core::haltingDebug() is `off`; `unknown` on the Cortex-M0+ and M4)
@@ -252,8 +306,10 @@ struct VolatileAccess {
     }
 };
 
-/// The handshake. `debugEnabled` false: no debugger, return at once.
-template<typename Access>
+/// The handshake. `debugEnabled` false: no debugger, return at once. Feed: the watchdog's feed (`static void feed()`),
+/// once a poll of the waits - the bound one (WatchdogFor) by default, Detail::NoFeed where none is.
+template<typename Access,
+         typename Feed = Detail::FeedOf<Access>>
 Outcome announceVia(Access const& access,
                     bool          debugEnabled,
                     Polls         polls,
@@ -272,10 +328,13 @@ Outcome announceVia(Access const& access,
     access.store(Field::request, request);
     std::uint32_t const still = Detail::pollsFor<Access>(Detail::stillUs);
     for(Detail::Deadline ack{nowUs, waits.ackUs, polls.ack, still}; !ack.expired();) {
+        // every poll: the watchdog never runs out while the reset waits for its announcement
+        Feed::feed();
         if(access.load(Field::ack) == request) {
             // the host closes its session after the ack: let it finish before the reset
             for(Detail::Deadline grace{nowUs, waits.graceUs, polls.grace, still}; !grace.expired();)
             {
+                Feed::feed();
                 // a volatile read per pass, so the loop is not optimised away
                 if(access.load(Field::magic) != magicValue) { break; }
             }
@@ -291,7 +350,12 @@ inline Outcome announceOn(Block volatile& block,
                           bool            debugEnabled,
                           Polls           polls,
                           std::uint32_t   stayAwayMs = 0) {
-    return announceVia(VolatileAccess{block}, debugEnabled, polls, stayAwayMs);
+    // the feed named through Dummy, as announce(): a call that depends on nothing of the template would look the binding
+    // up where this header is read, before any image's WatchdogFor - and keep that answer (no feed) for the whole unit
+    return announceVia<VolatileAccess, Detail::FeedOf<Dummy...>>(VolatileAccess{block},
+                                                                 debugEnabled,
+                                                                 polls,
+                                                                 stayAwayMs);
 }
 
 inline bool printerListeningOn(Block const volatile& block) {
@@ -339,11 +403,12 @@ template<typename... Dummy>
     requires(sizeof...(Dummy) == 0)
 inline Outcome announce([[maybe_unused]] std::uint32_t stayAwayMs = 0) {
 #ifdef USE_UC_LOG
-    return announceVia(VolatileAccess{kvasir_announced_reset},
-                       Detail::haltingDebugMayBeEnabled(),
-                       defaultPolls<Dummy...>(),
-                       stayAwayMs,
-                       &kvasir_announced_reset_time_us);
+    return announceVia<VolatileAccess, Detail::FeedOf<Dummy...>>(
+      VolatileAccess{kvasir_announced_reset},
+      Detail::haltingDebugMayBeEnabled(),
+      defaultPolls<Dummy...>(),
+      stayAwayMs,
+      &kvasir_announced_reset_time_us);
 #else
     return Outcome::notArmed;
 #endif

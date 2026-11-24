@@ -39,7 +39,7 @@ inline constexpr std::uint32_t pollMargin = KVASIR_WAIT_POLL_MARGIN;
 // Cortex-M0+: LDR 1 (single-cycle I/O port) or 2, CMP 1, B<cc> taken 2 (TRM DDI0484C Table 3-1, md l.837, l.868,
 // l.907). Cortex-M4: LDR 2, CMP 1, B<cc> taken 1 + P with P >= 1 (TRM 100166 r0p1 3.3.1 Table 3-1, md l.1241,
 // l.1296, l.1331, l.1384). Cortex-M33 (no timing in its TRM; the RP2350 datasheet's): LDR 1, the compare 1, a taken
-// B<cc> after a flag-setting instruction 2 (3.7.4.9.5, 3.7.4.9.7, RP2350_Datasheet.md l.6426, l.6482, l.6516).
+// B<cc> after a flag-setting instruction 2 (3.7.4.9.5, 3.7.4.9.7, RP2350_Datasheet.md l.7417, l.7479, l.7513).
 // Fewer assumed cycles mean more polls and a later timeout, never an early one.
 inline constexpr std::uint32_t minCyclesPerPoll = 4;
 

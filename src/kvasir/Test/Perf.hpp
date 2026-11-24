@@ -6,7 +6,7 @@
 //                       Armv7-M, Armv8-M Mainline; Armv6-M's DWT "does not provide any other cycle counter" than
 //                       PCSR, DDI0419E D3.7). Unit "cycles". start() reads DWT_CTRL.NOCYCCNT first (bit 25: "If
 //                       DWT_CTRL.NOCYCCNT is 1, there is no cycle counter support", DDI0553B.y B14.2.1 rule RFKFP, field in D1.2.58;
-//                       the RP2350 data sheet's Table 143 gives it a reset value of 1 although §3.7 lists the
+//                       the RP2350 data sheet's Table 149 gives it a reset value of 1 although §3.7 lists the
 //                       counter - the board answers: 0x40000001 on the RP2350, i.e. present) and then enables the
 //                       counter (Core::Debug::enableCycleCounter: DEMCR.TRCENA, DWT_CTRL.CYCCNTENA; CYCCNT is never
 //                       written, every sample is a difference). A runner whose DwtCycles cannot start falls back to

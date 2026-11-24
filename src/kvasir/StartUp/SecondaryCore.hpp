@@ -378,8 +378,8 @@ void SecondaryCore<Main,
 #if KVASIR_CORE_ARMV8M_MAIN
     // CPACR (0xE000ED88, DDI0553B.y D1.2.14, md l.69493) is read-modify-written so the bits
     // the bootrom set stay: cp7 on the RP2350, whose boot ROM runs RCP instructions on core 1
-    // while it waits for the launch (RP2350 datasheet 3.6.3.1, md l.5085; a coprocessor needs
-    // its CPACR bits, 3.6, md l.4562). The mask comes in a register: it is not a Thumb modified
+    // while it waits for the launch (RP2350 datasheet 3.6.3.1, md l.6019; a coprocessor needs
+    // its CPACR bits, 3.6, md l.5356). The mask comes in a register: it is not a Thumb modified
     // immediate. dsb/isb make the enable take effect before the first instruction that could
     // use a coprocessor (an SCS write is visible after its completion and a Context
     // synchronization event, DDI0553B.y B7.2.16 RSJQJ/RNPDJ, md l.10750-10754).

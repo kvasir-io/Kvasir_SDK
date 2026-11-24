@@ -2,7 +2,8 @@
 // arm/feed/disarm exist for a gated and an ungated watchdog, with and without a disarmNow() body, that each calls its
 // private body exactly once, gatedFeedOf<Config>(), and that the front satisfies WatchdogShape. The FeedKey comes
 // from a Supervisor specialisation of this test's own (HealthKey.hpp only declares the template; its friend
-// declaration covers every specialisation), so nothing of Supervisor.hpp is compiled.
+// declaration covers every specialisation), so nothing of Supervisor.hpp is compiled; the AnnouncedResetKey of
+// AnnouncedReset::announce()'s feed the same way, from a Detail::FeedWatchdog specialisation.
 #include "kvasir/Health/HealthKey.hpp"
 #include "kvasir/Health/WatchdogFront.hpp"
 #include "test_harness.hpp"
@@ -19,12 +20,22 @@ struct Kvasir::Health::Supervisor<watchdog_front_test::KeyTag, void, void, void>
     static Kvasir::Health::FeedKey key() { return {}; }
 };
 
+template<>
+struct Kvasir::AnnouncedReset::Detail::FeedWatchdog<watchdog_front_test::KeyTag> {
+    static Kvasir::Health::AnnouncedResetKey key() { return {}; }
+};
+
 namespace watchdog_front_test {
+using Kvasir::Health::AnnouncedResetKey;
 using Kvasir::Health::FeedKey;
 using Kvasir::Health::gatedFeedOf;
 using Kvasir::Health::WatchdogFront;
 
 FeedKey key() { return Kvasir::Health::Supervisor<KeyTag, void, void, void>::key(); }
+
+AnnouncedResetKey announcedKey() {
+    return Kvasir::AnnouncedReset::Detail::FeedWatchdog<KeyTag>::key();
+}
 
 struct Calls {
     int arm{};
@@ -87,6 +98,23 @@ static_assert(!BodyVisible<Plain> && !BodyVisible<Gated>,
 static_assert(!std::is_default_constructible_v<FeedKey>,
               "only a Supervisor makes a key");
 
+// announce()'s feed: on every watchdog, gated or not, and nothing but the feed
+template<typename W>
+concept AnnouncedFeed = requires(AnnouncedResetKey k) { W::feed(k); };
+template<typename W>
+concept AnnouncedArmOrDisarm
+  = requires(AnnouncedResetKey k) { W::arm(k); } || requires(AnnouncedResetKey k) { W::disarm(k); };
+static_assert(AnnouncedFeed<Plain> && AnnouncedFeed<Gated> && AnnouncedFeed<PlainNoStop>
+              && AnnouncedFeed<GatedNoStop>);
+static_assert(!AnnouncedArmOrDisarm<Plain> && !AnnouncedArmOrDisarm<Gated>,
+              "the announced reset's key only feeds");
+static_assert(!std::is_default_constructible_v<AnnouncedResetKey>
+                && !std::is_constructible_v<AnnouncedResetKey,
+                                            FeedKey>
+                && !std::is_constructible_v<FeedKey,
+                                            AnnouncedResetKey>,
+              "only AnnouncedReset makes its key, and neither key stands in for the other");
+
 static_assert(Kvasir::Health::WatchdogShape<Plain> && Kvasir::Health::WatchdogShape<Gated>
               && Kvasir::Health::WatchdogShape<GatedNoStop>);
 
@@ -131,6 +159,17 @@ int main() {
         CHECK(GatedNoStop::calls.arm == 1 && GatedNoStop::calls.feed == 1
               && GatedNoStop::calls.disarm == 0);
         CHECK(PlainNoStop::calls.feed == 1 && PlainNoStop::calls.disarm == 0);
+    }
+    {
+        test("announce()'s key: the same feed body, gated or not, nothing armed or disarmed");
+        Calls const gated = Gated::calls;
+        Calls const plain = Plain::calls;
+        Gated::feed(announcedKey());
+        Plain::feed(announcedKey());
+        CHECK(Gated::calls.feed == gated.feed + 1 && Gated::calls.arm == gated.arm
+              && Gated::calls.disarm == gated.disarm);
+        CHECK(Plain::calls.feed == plain.feed + 1 && Plain::calls.arm == plain.arm
+              && Plain::calls.disarm == plain.disarm);
     }
     return Kvasir::Test::report();
 }

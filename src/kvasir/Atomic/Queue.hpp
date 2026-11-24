@@ -115,7 +115,7 @@ namespace Kvasir { namespace Atomic {
 
         // An index is always below Size, so the wrap is one compare: `% Size` was a division on every
         // push and pop (a call into the RP2040's divider, software on the SAM D21: the Cortex-M0+ has no divide
-        // instruction, DDI0484C Table 3-1, md l.813-930; the RP2040's SIO divider, its datasheet 2.3.1.5, md l.1519,
+        // instruction, DDI0484C Table 3-1, md l.813-930; the RP2040's SIO divider, its datasheet 2.3.1.5, md l.1636,
         // behind chip_rp2040's divider.S). A
         // power of two keeps its mask: clang does not find it from the compare.
         static constexpr IndexType next(IndexType in) {

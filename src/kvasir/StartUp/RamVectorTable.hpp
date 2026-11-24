@@ -28,8 +28,8 @@
 //
 // Entries: the table's size in words, a power of two at or above the chip's count (16 core
 // exceptions + IRQs: 16 + 52 = 68 on the RP2350, RP2350 datasheet 3.2 "52 interrupt inputs"
-// (RP2350_Datasheet.md l.3746); 16 + 32 = 48 on the RP2040, whose NVIC has 32 inputs with
-// IRQs 26-31 tied to zero, RP2040 datasheet 2.3.2 (RP2040_Datasheet.md l.2923-2925) - the
+// (RP2350_Datasheet.md l.4515); 16 + 32 = 48 on the RP2040, whose NVIC has 32 inputs with
+// IRQs 26-31 tied to zero, RP2040 datasheet 2.3.2 (RP2040_Datasheet.md l.3627-3629) - the
 // generated interruptEnd is 52 / 32); it is also the alignment VTOR requires. A size below the chip's count fails the build: the IRQs past it would fetch zero
 // vectors. Reading past the real table copies whatever follows it, harmlessly. Traits is the
 // chip's interrupt table (chip/Interrupt.hpp), a parameter only so that a host test can

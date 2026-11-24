@@ -335,7 +335,7 @@ set_tests_properties(
     kvasir_test_fatal_sites_must_fail_stale_allow
     PROPERTIES PASS_REGULAR_EXPRESSION "ALLOW entry \\(Runtime/ubsan\\.hpp, ubsanFatalReport\\) is stale")
 # the same rules over the packages (Runtime/Check.hpp's error classes are theirs too) run in each package's own CI:
-# .github/workflows/package-layers.yml (cores, chips, commons, kvasir_devices), net's host-checks.yml
+# .github/workflows/package-layers.yml (cores, chips, commons, kvasir_devices with its network stack)
 # tools/layer_check.py: the layer table against the SDK's own sources and its nested repositories (kept findings pass, a
 # new one or a stale keep entry fails), and the tool's rules on a fixture tree
 kvasir_add_python_test(
@@ -566,6 +566,9 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../uc_log/host/uc_log/printer/AnnouncedRes
                                                                    ${CMAKE_CURRENT_SOURCE_DIR}/../uc_log/host)
     target_compile_definitions(kvasir_test_announced_reset PRIVATE KVASIR_TEST_UC_LOG_PRINTER=1)
 endif()
+# announce() itself, as a firmware with uc_log has it: the watchdog it binds (AnnouncedReset::WatchdogFor) fed
+kvasir_add_host_test(kvasir_test_announced_reset_logged announced_reset_tests.cpp)
+target_compile_definitions(kvasir_test_announced_reset_logged PRIVATE USE_UC_LOG=1)
 kvasir_add_host_test(kvasir_test_util_control_pid util_control_pid_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_control_pid_fixed util_control_pid_fixed_tests.cpp)
 kvasir_add_host_test(kvasir_test_util_control_filters util_control_filters_tests.cpp)

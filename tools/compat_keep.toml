@@ -30,7 +30,16 @@
 "kvasir_devices/src/kvasir/Devices/I2C/Quantities.hpp: alias" = "the quantity types declared into Kvasir::I2C so a description writes them unqualified (the header's purpose)"
 "kvasir_devices/src/kvasir/Devices/I2C/Adapters/TouchController.hpp: alias" = "the touch controller's public names of the chips' identification and edge types"
 "kvasir_devices/src/kvasir/Devices/Quantities.hpp: alias" = "Kvasir::Units::si, the unit system the quantities are spelled in, and the default temperature and humidity quantity of the bus drivers"
+"kvasir_devices/src/kvasir/Net/drivers/W5500SpiCommands.hpp: alias" = "the byte-pointer helpers' public names for the drivers"
 "Kvasir_SDK/src/kvasir/Atomic/CriticalSection.hpp: alias" = "the build's default policy (one per core configuration), and the documented spelling Kvasir::criticalSection of the function beside its policies in Atomic"
 "Kvasir_SDK/src/kvasir/Atomic/Sync.hpp: alias" = "the build's default queue synchronisation, one per core configuration"
 "Kvasir_SDK/src/kvasir/Register/Diagnostic.hpp: alias: using ::Kvasir::Diagnostic::Text;" = "the register diagnostics build their messages from Diagnostic::Text"
 "Kvasir_SDK/src/kvasir/StartUp/Checks.hpp: alias" = "the Startup checks build their reports from the resource diagnostics' pieces"
+
+# --- external formats and terms -----------------------------------------------------------------------------------------
+"kvasir_devices/src/kvasir/Net/Mdns.hpp: legacy" = "RFC 6762 section 6.7 'legacy unicast': a querier from a port other than 5353"
+"kvasir_devices/test/net_fuzz/fuzz_services.cpp: legacy" = "RFC 6762 section 6.7 'legacy unicast' queries in the fuzz input"
+"kvasir_devices/test/net/test_mdns.cpp: legacy" = "RFC 6762 section 6.7 'legacy unicast' queries and their answers"
+
+# --- wording that is no compat -----------------------------------------------------------------------------------------
+"kvasir_devices/tools/net_check_docs.py: old wording: renamed to `" = "the docstring's example of what the check finds: a doc naming an identifier the code renamed"

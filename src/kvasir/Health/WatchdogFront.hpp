@@ -65,6 +65,11 @@ struct WatchdogFront {
         Hw::feedNow();
     }
 
+    /// AnnouncedReset::announce()'s feed, gated watchdog or not, while it waits for the log printer: a restart of the
+    /// full timeout, as feed(). Only that wait holds the key - bounded and right before the reset it announces - so it
+    /// keeps an announced reset from turning into a watchdog reset and is no way round the gate otherwise.
+    [[gnu::always_inline]] static void feed(AnnouncedResetKey) { Hw::feedNow(); }
+
     /// Stop the countdown; only where the hardware can (the STM32 IWDG cannot).
     [[gnu::always_inline]] static void disarm()
         requires(!Gated && requires { Hw::disarmNow(); })

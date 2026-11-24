@@ -72,7 +72,7 @@ set(kvasir_image_link_warning_flags ${kvasir_gcc_warning_flags} -Wno-unused-macr
 # of libc++'s debug hardening mode (reported through std::__glibcxx_assert_fail, defined in StartUp/Runtime/Libc.hpp).
 #
 # gcc's null-pointer checks stay on: address 0 is readable on these chips (the boot ROM on the RP chips - ROM_BASE,
-# RP2040 datasheet md l.1238, RP2350 md l.1439 -, the flash on SAM D21/C21 - "Internal Flash 0x00000000", SAM D21
+# RP2040 datasheet md l.1285, RP2350 md l.1530 -, the flash on SAM D21/C21 - "Internal Flash 0x00000000", SAM D21
 # datasheet md l.1507), so nothing else catches a null dereference. Their price is in constant evaluation: with them gcc
 # cannot evaluate "a pointer into a namespace-scope object or a template argument != nullptr" ("... != 0 is not a
 # constant expression", in the sanitize variant only). Code that is evaluated at compile time therefore looks things up

@@ -673,10 +673,15 @@ function(target_configure_kvasir target)
     if(NOT _p_LOG)
         set(_uc_log_no_log NO_LOG)
     endif()
+    set(_uc_log_rtt_via_dll "")
+    if(UC_LOG_RTT_VIA_DLL)
+        set(_uc_log_rtt_via_dll RTT_VIA_DLL)
+    endif()
     target_add_uc_log_rtt_jlink(
         ${target}
         ${_uc_log_ram_image}
         ${_uc_log_no_log}
+        ${_uc_log_rtt_via_dll}
         TARGET_MPU
         ${_chip_MPU}
         SWD_SPEED
@@ -685,10 +690,14 @@ function(target_configure_kvasir target)
         ${_jlink_ip}
         JLINK_PROBE
         "${_jlink_probe}"
+        JLINK_SCRIPT_FILE
+        "${JLINK_SCRIPT_FILE}"
         DUPLEX_BASE_PORT
         ${DUPLEX_BASE_PORT}
         TRANSPORT
         ${UC_LOG_TRANSPORT}
+        STALL_FIRST_STEP
+        "${UC_LOG_STALL_FIRST_STEP}"
         PRE_RESET_COMMANDS
         ${_chip_JLINK_CONNECT_COMMANDS}
         PARK_SIGNATURE
