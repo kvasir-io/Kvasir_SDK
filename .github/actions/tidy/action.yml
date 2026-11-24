@@ -36,6 +36,12 @@ inputs:
         description: 'I/N: the I-th of N slices of the units (a matrix of jobs)'
         required: false
         default: ''
+    cache-id:
+        description: 'what tells this job''s tree apart from another job''s tree at the same path (a matrix entry, the
+            arguments of a reusable workflow called twice): part of the cache key. Without it such jobs share one
+            entry, only the first saves, and the other restores a foreign tree''s cache and runs every unit'
+        required: false
+        default: ''
 
 runs:
     using: composite
@@ -73,22 +79,27 @@ runs:
           shell: bash
           env:
               TREES: ${{ inputs.trees }}
+              CACHE_ID: ${{ inputs.cache-id }}
           run: |
             {
                 echo 'list<<KVASIR_TIDY_EOF'
                 for t in $TREES; do echo "$t/.tidy/cache"; done
                 echo 'KVASIR_TIDY_EOF'
                 cfg=$(cd "$KVASIR_TIDY_SDK" && cat .clang-tidy tools/tidy.py tools/tidy_checks.txt | sha256sum | cut -c1-16)
-                echo "key=kvasir-tidy-$cfg-${{ inputs.variant }}-${{ inputs.shard }}"
+                id=""
+                [ -z "$CACHE_ID" ] || id=$(printf '%s' "$CACHE_ID" | sha256sum | cut -c1-12)
+                echo "key=kvasir-tidy-$cfg-${{ inputs.variant }}-${{ inputs.shard }}-$id-"
             } >> "$GITHUB_OUTPUT"
 
+        # restore and save apart: a tidy step with findings fails, and actions/cache saves only after a green job - the
+        # next run would tidy every unit of a red one again. Each unit's findings are stored with it.
         - name: tidy - cache
           if: env.ACT == ''
-          uses: actions/cache@v6
+          uses: actions/cache/restore@v6
           with:
               path: ${{ steps.paths.outputs.list }}
-              key: ${{ steps.paths.outputs.key }}-${{ github.sha }}
-              restore-keys: ${{ steps.paths.outputs.key }}-
+              key: ${{ steps.paths.outputs.key }}${{ github.sha }}
+              restore-keys: ${{ steps.paths.outputs.key }}
 
         - name: tidy - base of the change
           if: inputs.mode == 'changed'
@@ -106,6 +117,7 @@ runs:
             echo "KVASIR_TIDY_BASE=$base" >> "$GITHUB_ENV"
 
         - name: tidy
+          id: tidy
           shell: bash
           env:
               TREES: ${{ inputs.trees }}
@@ -122,3 +134,11 @@ runs:
             [ "$MODE" != changed ] || [ -z "${KVASIR_TIDY_BASE:-}" ] || args+=(--changed "$KVASIR_TIDY_BASE")
             [ -z "$SHARD" ] || args+=(--shard "$SHARD")
             python3 -B "$KVASIR_TIDY_SDK/tools/tidy.py" "${args[@]}"
+
+        # after findings too (the units that crashed are not stored; a timeout of the calling step cancels this too)
+        - name: tidy - cache save
+          if: ${{ !cancelled() && env.ACT == '' && steps.tidy.outcome != 'skipped' }}
+          uses: actions/cache/save@v6
+          with:
+              path: ${{ steps.paths.outputs.list }}
+              key: ${{ steps.paths.outputs.key }}${{ github.sha }}

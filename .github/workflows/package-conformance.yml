@@ -5,8 +5,9 @@ name: Package conformance
 # fetches Kvasir_SDK (master, with svd_converter, uc_log, cmake_git_version and the runtime libraries), kvasir_devices
 # and, for a core, a chip of that core (whose `core` becomes the checkout), converts the chip and core SVDs with the
 # write-only guard on, and compiles the contract TU, the driver instantiations and every public header alone for the
-# target. Building is the test; then ctest runs the tree's must-fail sets, if it has any, and clang-tidy reads the tree
-# (clang, first variant). The caller is checked out with its submodules (core, the commons).
+# target. Building is the test; then ctest runs the tree's must-fail sets, if it has any. clang-tidy reads the clang
+# tree of the first variant in jobs of its own (job `tidy`, `tidy-shards` slices), beside the build. The caller is
+# checked out with its submodules (core, the commons).
 # Callers: the chip and core repositories' ci.yml / tests.yml, job `conformance`; a tree another repository holds (the
 # RP chips' one tree in chip_rp_common) is named by `source-dir` and configured with `cmake-args`.
 # The other direction: Kvasir_SDK's own ci.yml names a package with `package`. The caller's checkout is then the SDK
@@ -42,6 +43,11 @@ on:
                 required: false
                 type: string
                 default: ''
+            tidy-shards:
+                description: 'JSON list of the tidy jobs'' slices of the units, e.g. ["1/2","2/2"]; [""] for one job'
+                required: false
+                type: string
+                default: '[""]'
 
 jobs:
     conformance:
@@ -94,22 +100,70 @@ jobs:
             - name: Must-fail cases
               run: ctest --test-dir build/conformance --output-on-failure
 
-            # clang-tidy (Kvasir_SDK master's tools/tidy.py and .clang-tidy) over the tree, clang and the first variant
-            # only: the package's findings fail, the SDK's and kvasir_devices' are counted as foreign
+    # clang-tidy over the clang tree of the first variant, in jobs of their own beside the build: the tree is configured,
+    # not built - the runner builds the generated headers it needs (SVDs, git version) - and each job takes one slice
+    # of the units (tidy-shards). The 4 vCPUs of a runner are what the runner's -j already uses: more jobs are the
+    # only way to more cores.
+    tidy:
+        name: ${{ inputs.package && format('{0} ', inputs.package) || '' }}tidy${{ fromJSON(inputs.variants)[0] && format(' {0}', fromJSON(inputs.variants)[0]) || '' }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }}
+        if: contains(fromJSON(inputs.compilers), 'clang')
+        runs-on: ubuntu-latest
+        container:
+            image: archlinux:latest
+        strategy:
+            fail-fast: false
+            matrix:
+                shard: ${{ fromJSON(inputs.tidy-shards) }}
+
+        steps:
+            - name: Set up the toolchain
+              run: |
+                pacman -Syu --noconfirm --disable-download-timeout
+                pacman -S --noconfirm --disable-download-timeout git cmake ninja base-devel python clang llvm lld
+
+            - name: Checkout repository
+              uses: actions/checkout@v7
+              with:
+                submodules: recursive
+
+            # as in the conformance job (cmake_git_version and the runner's NOLINT lint need git to see the checkout)
+            - name: Configure git safe directory
+              run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+            - name: Clone the package
+              if: inputs.package != ''
+              run: git clone --quiet --depth 1 --recurse-submodules --shallow-submodules
+                https://github.com/kvasir-io/${{ inputs.package }}.git "$RUNNER_TEMP/${{ inputs.package }}"
+
+            - name: Configure
+              run: >
+                cmake -S ${{ inputs.package && format('"$RUNNER_TEMP/{0}"/', inputs.package) || '' }}${{ inputs.source-dir }}
+                -B build/conformance -G Ninja -DCOMPILE_TARGET=arm_clang ${{ inputs.cmake-args }}
+                ${{ inputs.package && '-DKVASIR_ROOT="$GITHUB_WORKSPACE"' || '' }}
+                ${{ fromJSON(inputs.variants)[0] && format('-DCONFORMANCE_VARIANT={0}', fromJSON(inputs.variants)[0]) || '' }}
+
+            # Kvasir_SDK master's tools/tidy.py and .clang-tidy: the package's findings fail, the SDK's and
+            # kvasir_devices' are counted as foreign. cache-id: one caller runs this workflow once per chip
+            # (chip_rp_common) or per package (Kvasir_SDK), all at build/conformance - one shared cache entry would be
+            # another tree's for all but the first (the shard is in the key already)
             - name: clang-tidy
-              if: inputs.package == '' && matrix.compiler == 'clang' && matrix.variant == fromJSON(inputs.variants)[0]
+              if: inputs.package == ''
               uses: kvasir-io/Kvasir_SDK/.github/actions/tidy@master
               timeout-minutes: 30
               with:
                 trees: build/conformance
+                shard: ${{ matrix.shard }}
+                cache-id: ${{ inputs.source-dir }} ${{ inputs.cmake-args }} ${{ fromJSON(inputs.variants)[0] }}
 
             # called by Kvasir_SDK for a package: the action, runner and config of the SDK under test, and the SDK's
             # findings fail (its nested checkouts count as the SDK); the package's and kvasir_devices' are foreign
             - name: clang-tidy (Kvasir_SDK)
-              if: inputs.package != '' && matrix.compiler == 'clang' && matrix.variant == fromJSON(inputs.variants)[0]
+              if: inputs.package != ''
               uses: ./.github/actions/tidy
               timeout-minutes: 45
               with:
                 trees: build/conformance
                 sdk: .
                 nested: 'true'
+                shard: ${{ matrix.shard }}
+                cache-id: ${{ inputs.package }} ${{ inputs.source-dir }} ${{ inputs.cmake-args }} ${{ fromJSON(inputs.variants)[0] }}
